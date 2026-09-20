@@ -1,0 +1,40 @@
+[package]
+name = "spike-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "#40 ConPTY 守护进程 PoC（Ageminal 决策地图）"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# VT parity 探针（#42）：只有显式开启才拉 alacritty_terminal 那棵依赖树，
+# 保证 daemon 的默认构建仍然精简。
+vt-parity = ["dep:alacritty_terminal"]
+
+[dependencies.alacritty_terminal]
+version = "0.26"
+optional = true
+default-features = false
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Console",
+  "Win32_System_Threading",
+  "Win32_System_Pipes",
+  "Win32_System_IO",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Memory",
+  "Win32_System_LibraryLoader",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
