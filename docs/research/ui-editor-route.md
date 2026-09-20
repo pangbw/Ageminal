@@ -1,5 +1,9 @@
 # 技术路线调研：UI 框架与编辑器内核（Tauri vs GPUI）
 
+> **状态回写（2026-09-20）**：**路线已定**——自研 **Tauri 2** 应用（GPUI 分支已封存），前端 **Vue 3**（C1 #9），编辑器内核 **CodeMirror 6**（C4 #12），终端 **xterm.js 6**（C3 #11）。
+>
+> 本文对 `alacritty_terminal`「第三方需实测 ⚠️」的疑虑**已由 #42 澄清**：以 `default-features = false` 引入时依赖树仅 **68 行**（只带 `vte`，**不拖 winit / crossfont**）；但其 **0.26 把 `TermSize` 关进了 `#[cfg(test)]`**，外部构造 `Term` 只能借 `Grid` 当 `Dimensions`。
+
 > 调研日期：2026-09-19
 > 背景：Ageminal 原计划 Tauri + Web 前端；用户提出「用 Zed 的 GPUI 做 UI，并复用 Zed 编辑器核心做语法高亮」。本文核实该构想在纯 Windows 上的可行性。
 > 记号：**确定事实**来自官方文档 / crates.io API / GitHub issue 原文；**⚠️推测**为无直接来源的推断。
