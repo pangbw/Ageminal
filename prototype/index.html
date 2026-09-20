@@ -1,0 +1,1336 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ageminal · 多工作区 Agent 开发环境</title>
+<style>
+  /* ============================================================
+     调色板：Zed「One Dark Pro Glass」(BoyeDarat) 官方 token
+     近黑底 #080909 + 边框 #212121
+
+     ⚠️ #39 真机实测后的修订（见 REQUIREMENTS §11）：
+       · 窗口材质**默认实色**；Acrylic 是设置页里的可选开关（Mica 弃用：可见性取决于壁纸）
+       · 因此这里**不用 `backdrop-filter`**——WebView2 采不到桌面像素，它只会白费 GPU
+       · 布局原型只表达层级与密度，材质观感以 §11 为准
+     ============================================================ */
+  :root{
+    /* ---- One Dark Pro Glass（BoyeDarat）官方 token ---- */
+    --bg:#080909;                 /* 窗口基色 background #080909DD */
+    --glass:rgba(8,9,9,.74);      /* 主面板底色（#39：默认实色，不用 backdrop-filter） */
+    --elevated:#080909;           /* elevated_surface.background（菜单/弹层） */
+
+    --border:#212121;             /* border.*（全主题统一） */
+    --border-soft:#1c1c1c;
+
+    --element:#2c313a;            /* element.background / hover / selected */
+    --hover:#2c313a;
+    --active:#2c313a;
+
+    --text:#e6e9f0;               /* 可读性优先：明显提亮（原主题 #abb2bf） */
+    --muted:#b8bfcc;
+    --faint:#949cab;              /* ignored（原 #636b78 过暗） */
+
+    --accent:#61afef;             /* One Dark Pro 蓝 */
+    --accent-dim:rgba(97,175,239,.15);
+    --accent-line:#3d6b96;
+
+    --green:#a5e075;              /* created */
+    --red:#ff616e;                /* deleted */
+    --yellow:#e5c07b;             /* modified */
+    --orange:#d19a66;             /* warning */
+    --purple:#c678dd;
+    --cyan:#56b6c2;
+
+    /* terminal ansi */
+    --ansi-red:#e05561;
+    --ansi-green:#8cc265;
+    --ansi-yellow:#d18f52;
+    --ansi-blue:#4aa5f0;
+    --ansi-magenta:#c162de;
+    --ansi-cyan:#42b3c2;
+    --ansi-white:#d7dae0;
+    --ansi-black:#3f4451;
+    --ansi-bright-black:#6b7488;
+
+    --claude:#e05561;
+    --codex:#8cc265;
+
+    --mono:'Zed Mono','JetBrains Mono','Cascadia Code','Consolas',ui-monospace,monospace;
+    --ui:'Zed Sans','Segoe UI Variable Text','Segoe UI',system-ui,'Microsoft YaHei UI','Microsoft YaHei',sans-serif;
+
+    --r-sm:4px; --r-md:6px; --r-lg:10px;
+    --shadow:0 12px 42px rgba(0,0,0,.62);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{
+    background:#050606;color:var(--text);font:13.5px/1.62 var(--ui);
+    overflow:hidden;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+  }
+  /* 模拟被毛玻璃模糊的桌面壁纸：近黑 + 微弱蓝青云团 + 细噪点 */
+  .wallpaper{
+    position:fixed;inset:0;z-index:0;
+    background:
+      radial-gradient(52% 42% at 16% 20%, rgba(40,58,80,.55), transparent 70%),
+      radial-gradient(46% 40% at 84% 26%, rgba(22,58,66,.42), transparent 72%),
+      radial-gradient(64% 52% at 48% 90%, rgba(30,42,60,.50), transparent 76%),
+      radial-gradient(38% 34% at 70% 66%, rgba(20,32,46,.42), transparent 70%),
+      #050606;
+  }
+  .wallpaper::after{
+    content:"";position:absolute;inset:0;opacity:.05;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  button{font-family:inherit;color:inherit;background:none;border:none;cursor:pointer}
+  ::-webkit-scrollbar{width:11px;height:11px}
+  ::-webkit-scrollbar-thumb{background:rgba(78,86,102,.5);border-radius:6px;border:3px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(90,99,117,.8);background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
+  .hidden{display:none!important}
+
+  /* ---------- app shell（默认实色；材质是可选增强 #39） ---------- */
+  .app{
+    height:100vh;display:flex;flex-direction:row;overflow:hidden;position:relative;z-index:1;
+    background:var(--glass);
+  }
+  .right-region{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0}
+
+  /* ---------- title bar / tab strip ---------- */
+  .titlebar{
+    height:38px;flex:0 0 38px;display:flex;align-items:stretch;
+    background:transparent;border-bottom:1px solid var(--border);
+    user-select:none;position:relative;z-index:60;
+  }
+  .tabs{display:flex;align-items:stretch;flex:1 1 auto;min-width:0}
+  .tabs-scroll{display:flex;align-items:stretch;flex:0 1 auto;min-width:0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
+  .tabs-scroll::-webkit-scrollbar{display:none}
+  .tab-new{
+    width:34px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    color:var(--faint);transition:background .1s,color .1s
+  }
+  .tab-new:hover{background:var(--hover);color:var(--text)}
+  .tab{
+    display:flex;align-items:center;gap:7px;padding:0 8px 0 12px;height:100%;
+    min-width:124px;max-width:214px;color:var(--muted);
+    border-right:1px solid var(--border-soft);position:relative;flex:0 0 auto;
+    transition:background .1s,color .1s;
+  }
+  .tab:hover{background:var(--hover);color:var(--text)}
+  .tab.active{background:var(--bg);color:var(--text)}
+  .tab .t-icon{display:flex;color:var(--faint)}
+  .tab.active .t-icon{color:var(--muted)}
+  .tab .t-icon svg{width:13px;height:13px}
+  .tab .t-title{flex:1 1 auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13px}
+  .tab .t-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .tab .t-close{
+    width:18px;height:18px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;
+    color:var(--faint);flex:0 0 auto;opacity:0;transition:opacity .1s,background .1s
+  }
+  .tab:hover .t-close,.tab.active .t-close{opacity:1}
+  .tab .t-close:hover{background:var(--active);color:var(--text)}
+  .tab .t-close svg{width:9px;height:9px}
+
+  .titlebar-actions{display:flex;align-items:stretch;flex:0 0 auto;margin-left:auto}
+  .tb-btn{
+    width:36px;display:flex;align-items:center;justify-content:center;color:var(--muted);
+    transition:background .1s,color .1s
+  }
+  .tb-btn:hover{background:var(--hover);color:var(--text)}
+  .tb-btn svg{width:15px;height:15px}
+  .win-ctrls{display:flex;align-items:stretch;border-left:1px solid var(--border-soft)}
+  .win-btn{width:44px;display:flex;align-items:center;justify-content:center;color:var(--muted);transition:background .1s,color .1s}
+  .win-btn:hover{background:var(--hover);color:var(--text)}
+  .win-btn.close:hover{background:#c42b1c;color:#fff}
+  .win-btn svg{width:10px;height:10px}
+
+  /* ---------- workspace ---------- */
+  .workspace{flex:1 1 auto;display:flex;min-height:0;position:relative}
+
+  .pane{background:transparent;display:flex;flex-direction:column;min-height:0;position:relative}
+  .pane-left{flex:0 0 252px;width:252px}
+  .pane-right{flex:0 0 260px;width:260px}
+  .pane-main{flex:1 1 auto;min-width:0;background:transparent}
+
+  /* drag handles */
+  .handle{flex:0 0 4px;width:4px;cursor:col-resize;background:transparent;position:relative;z-index:20;transition:background .12s}
+  .handle::after{content:"";position:absolute;left:1px;right:1px;top:0;bottom:0;background:var(--border-soft);transition:background .12s}
+  .handle:hover::after,.handle.dragging::after{background:var(--accent)}
+  body.dragging{cursor:col-resize;user-select:none}
+
+  .pane-head{
+    height:34px;flex:0 0 34px;display:flex;align-items:center;justify-content:space-between;
+    padding:0 8px 0 12px;font-size:11.5px;font-weight:600;letter-spacing:.05em;
+    color:var(--muted);border-bottom:1px solid var(--border-soft)
+  }
+  .pane-head .brand{text-transform:none;letter-spacing:.01em;font-size:13.5px;font-weight:600;color:var(--text)}
+  .pane-head-actions{display:flex;align-items:center;gap:2px}
+  .icon-btn{
+    width:24px;height:24px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;
+    color:var(--faint);transition:background .1s,color .1s
+  }
+  .icon-btn:hover{background:var(--hover);color:var(--text)}
+  .icon-btn svg{width:14px;height:14px}
+  .pane-scroll{flex:1 1 auto;overflow:auto;padding:6px 0 14px}
+
+  /* collapsed rails */
+  .rail{
+    flex:0 0 30px;width:30px;background:transparent;border-right:1px solid var(--border-soft);
+    display:flex;flex-direction:column;align-items:center;padding-top:6px;gap:4px
+  }
+  .rail.right{border-right:none;border-left:1px solid var(--border-soft)}
+  .rail .rail-label{
+    writing-mode:vertical-rl;font-size:10.5px;letter-spacing:.14em;color:var(--faint);
+    margin-top:6px;text-transform:uppercase
+  }
+
+  /* ---------- project tree ---------- */
+  .proj{margin-bottom:1px}
+  .proj-row{
+    display:flex;align-items:center;gap:6px;padding:5px 10px;cursor:pointer;
+    color:var(--text);transition:background .1s
+  }
+  .proj-row:hover{background:var(--hover)}
+  .chev{display:flex;color:var(--faint);transition:transform .14s;flex:0 0 auto}
+  .chev svg{width:10px;height:10px}
+  .proj.collapsed .chev{transform:rotate(-90deg)}
+  .proj.collapsed .wt-list{display:none}
+  .proj-name{font-weight:600;font-size:13px;white-space:nowrap;flex:0 0 auto}
+  .proj-path{margin-left:7px;flex:1 1 auto;min-width:0;font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wt-list{padding:0 6px 3px}
+  .wt-row{
+    display:flex;align-items:center;gap:7px;padding:5px 8px;cursor:pointer;border-radius:var(--r-md);
+    color:var(--muted);position:relative;transition:background .1s,color .1s
+  }
+  .wt-row:hover{background:var(--hover);color:var(--text)}
+  .wt-row.active{background:var(--accent-dim);color:var(--text)}
+  .wt-row .wt-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;line-height:1.35}
+  .wt-name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wt-branch{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .wt-branch .branch-ico{display:inline-flex;vertical-align:-2px;margin-right:3px}
+  .branch-ico svg{width:11px;height:11px}
+  .wt-agent{display:flex;align-items:center;gap:5px;flex:0 0 auto}
+  .agent-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
+  .agent-dot.running{animation:pulse 1.9s infinite}
+  .agent-dot.waiting{animation:pulse .9s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.32}}
+  .wt-run{
+    width:20px;height:20px;border-radius:var(--r-sm);display:flex;align-items:center;justify-content:center;
+    color:var(--faint);flex:0 0 auto;opacity:0;transition:opacity .1s,background .1s,color .1s
+  }
+  .wt-row:hover .wt-run{opacity:1}
+  .wt-run:hover{background:var(--active);color:var(--accent)}
+  .wt-run svg{width:13px;height:13px}
+
+  /* ---------- main area ---------- */
+  .pane-main{display:flex;flex-direction:column}
+  .editor-tabs{display:flex;align-items:stretch;height:34px;flex:0 0 34px;background:transparent;border-bottom:1px solid var(--border)}
+  .term{flex:1 1 auto;background:transparent;padding:13px 17px;font-family:var(--mono);font-size:13.5px;line-height:1.75;overflow:auto}
+  .p-line{white-space:pre-wrap;word-break:break-word}
+  .t-user{color:var(--ansi-green)}
+  .t-muted{color:var(--faint)}
+  .t-path{color:var(--ansi-blue)}
+  .t-branch{color:var(--ansi-yellow)}
+  .t-cmd{color:var(--text)}
+  .t-dim{color:var(--ansi-bright-black)}
+  .t-accent{color:var(--accent)}
+  .t-warn{color:var(--orange)}
+  .t-err{color:var(--ansi-red)}
+  .t-mag{color:var(--ansi-magenta)}
+  .t-cyan{color:var(--ansi-cyan)}
+  .caret{display:inline-block;width:7px;height:14px;background:var(--ansi-white);vertical-align:-2px;animation:blink 1.05s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  /* reconnect banner + divider */
+  .reconnect-banner{
+    display:flex;align-items:center;gap:9px;padding:6px 14px;flex:0 0 auto;
+    background:rgba(97,175,239,.10);border-bottom:1px solid var(--border-soft);
+    color:var(--muted);font-size:12.5px
+  }
+  .reconnect-banner .spin{
+    width:11px;height:11px;border-radius:50%;border:1.6px solid var(--accent-line);border-top-color:var(--accent);
+    animation:spin .8s linear infinite
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .reconnect-banner .ok{width:12px;height:12px;color:var(--ansi-green);display:flex}
+  .reconnect-divider{display:flex;align-items:center;gap:10px;color:var(--ansi-bright-black);font-size:11.5px;margin:8px 0}
+  .reconnect-divider::before,.reconnect-divider::after{content:"";height:1px;flex:1 1 auto;background:var(--border-soft)}
+
+  .preview{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:transparent}
+  .preview-head{
+    height:34px;flex:0 0 34px;display:flex;align-items:center;gap:8px;padding:0 14px;
+    border-bottom:1px solid var(--border-soft);color:var(--muted);font-size:12.5px
+  }
+  .preview-head .ph-name{color:var(--text);font-family:var(--mono);font-size:13px}
+  .preview-head .ph-tag{margin-left:auto;font-size:11.5px;color:var(--faint);border:1px solid var(--border-soft);border-radius:20px;padding:1px 9px}
+  .code{flex:1 1 auto;overflow:auto;margin:0;padding:10px 0;font-family:var(--mono);font-size:13.5px;line-height:1.78;counter-reset:ln;color:var(--text)}
+  .code .cl{display:flex;padding:0 18px;white-space:pre}
+  .code .cl::before{counter-increment:ln;content:counter(ln);width:34px;flex:0 0 34px;text-align:right;margin-right:16px;color:#495162}
+  .code .cl:hover{background:rgba(44,49,58,.45)}
+  .k{color:#c678dd}.s{color:#98c379}.c{color:#7F838C;font-style:italic}.f{color:#61afef}.n{color:#d19a66}.t{color:#e5c07b}.p{color:#E15687}
+
+  .browser{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:transparent}
+  .browser-bar{height:36px;flex:0 0 36px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border-soft)}
+  .browser-dots{display:flex;gap:6px}
+  .browser-dots i{width:9px;height:9px;border-radius:50%;background:var(--element);display:block}
+  .url{flex:1 1 auto;height:25px;display:flex;align-items:center;gap:8px;background:rgba(44,49,58,.5);border:1px solid var(--border-soft);border-radius:var(--r-md);padding:0 11px;color:var(--muted);font-family:var(--mono);font-size:12px}
+  .browser-body{flex:1 1 auto;display:flex;align-items:center;justify-content:center;color:var(--faint);flex-direction:column;gap:12px}
+  .ph-box{border:1px dashed var(--border);border-radius:var(--r-lg);padding:32px 44px;text-align:center;color:var(--faint)}
+  .ph-box strong{display:block;color:var(--muted);font-size:13px;margin-bottom:5px}
+  .other-pane{flex:1 1 auto;display:flex;align-items:center;justify-content:center;color:var(--faint);flex-direction:column;gap:10px}
+
+  /* ---------- file tree ---------- */
+  .filetree-head{padding:7px 9px;border-bottom:1px solid var(--border-soft);flex:0 0 auto}
+  .filetree-head .root{
+    display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11.5px;color:var(--muted);
+    padding:0 2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis
+  }
+  .search{
+    display:flex;align-items:center;gap:7px;background:rgba(44,49,58,.5);border:1px solid var(--border-soft);
+    border-radius:var(--r-md);padding:0 8px;height:26px
+  }
+  .search:focus-within{border-color:var(--accent-line)}
+  .search svg{width:12px;height:12px;color:var(--faint);flex:0 0 auto}
+  .search input{background:none;border:none;outline:none;color:var(--text);font:12.5px var(--ui);width:100%}
+  .search input::placeholder{color:var(--faint)}
+  .ft-row{
+    display:flex;align-items:center;gap:6px;padding:4px 10px;cursor:pointer;border-radius:var(--r-sm);
+    color:var(--muted);font-size:13px;white-space:nowrap;position:relative;margin:0 4px
+  }
+  .ft-row:hover{background:var(--hover);color:var(--text)}
+  .ft-row.sel{background:var(--accent-dim);color:var(--text)}
+  .ft-row .tw{display:flex;color:var(--faint);width:10px;flex:0 0 10px}
+  .ft-row .tw svg{width:10px;height:10px}
+  .ft-row .fi{display:flex;flex:0 0 auto}
+  .ft-row .fi svg{width:13px;height:13px}
+  .ft-row.dir .fi{color:var(--accent)}
+  .ft-row.file .fi{color:var(--faint)}
+  .ft-row .fname{overflow:hidden;text-overflow:ellipsis}
+  .ft-empty{padding:18px 14px;color:var(--faint);font-size:12.5px;text-align:center}
+
+  /* ---------- overlays ---------- */
+  .overlay{
+    position:absolute;inset:0;background:var(--glass);z-index:100;display:flex;flex-direction:column
+  }
+
+  /* settings */
+  .settings-nav{flex:0 0 208px;width:208px;background:transparent;border-right:1px solid var(--border-soft);padding:14px 8px;overflow:auto}
+  .snav-title{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);padding:0 10px 9px;font-weight:600}
+  .snav-item{
+    display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--r-md);color:var(--muted);
+    cursor:pointer;font-size:13px;transition:background .1s,color .1s;margin-bottom:1px
+  }
+  .snav-item:hover{background:var(--hover);color:var(--text)}
+  .snav-item.active{background:var(--accent-dim);color:var(--text)}
+  .snav-item.active .sico{color:var(--accent)}
+  .sico{display:flex;color:var(--faint)}
+  .sico svg{width:14px;height:14px}
+  .snav-sub{display:block;margin-left:32px;font-size:12px;color:var(--faint);padding:5px 9px;border-radius:var(--r-sm);cursor:pointer}
+  .snav-sub:hover{background:var(--hover);color:var(--text)}
+  .snav-sub.active{background:var(--accent-dim);color:var(--text)}
+
+  .settings-body{flex:1 1 auto;min-width:0;overflow:auto;padding:24px 32px;background:transparent}
+  .settings-body h2{margin:0 0 4px;font-size:16px;font-weight:600}
+  .settings-sub{color:var(--faint);font-size:12.5px;margin-bottom:24px}
+  .settings-wincontrols{position:absolute;top:0;right:0;height:38px;display:flex;align-items:center;gap:8px;z-index:4;padding-right:4px}
+  .block{border:1px solid var(--border-soft);border-radius:var(--r-lg);background:rgba(44,49,58,.20);max-width:720px;overflow:hidden}
+  .block-head{padding:12px 16px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;justify-content:space-between}
+  .block-head .bt{font-size:13px;font-weight:600}
+  .block-head .bd{font-size:11.5px;color:var(--faint);margin-top:2px}
+  .proj-meta{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  .wt-set{display:flex;flex-direction:column;padding:8px 16px 14px}
+  .wt-set-row{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid var(--border-soft)}
+  .wt-set-row:last-child{border-bottom:none}
+  .tree-elbow{display:flex;color:var(--border);flex:0 0 auto}
+  .tree-elbow svg{width:12px;height:10px}
+  .wt-set-name{font-size:13px}
+  .wt-set-branch{font-family:var(--mono);font-size:11.5px;color:var(--faint)}
+  .toggle{
+    margin-left:auto;width:36px;height:20px;border-radius:20px;background:var(--element);position:relative;
+    flex:0 0 auto;transition:background .15s;cursor:pointer
+  }
+  .toggle::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#c3cad6;transition:transform .15s cubic-bezier(.4,.9,.3,1.2)}
+  .toggle.on{background:var(--accent-line)}
+  .toggle.on::after{transform:translateX(16px);background:var(--accent)}
+  .set-placeholder{border:1px dashed var(--border);border-radius:var(--r-lg);padding:38px;text-align:center;color:var(--faint);max-width:720px}
+  .set-placeholder strong{display:block;color:var(--muted);margin-bottom:6px}
+  .set-row{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;border-bottom:1px solid var(--border-soft);max-width:720px}
+  .set-row:last-child{border-bottom:none}
+  .set-row .sl{font-size:13px}.set-row .sd{font-size:11.5px;color:var(--faint);margin-top:2px}
+  .select{height:28px;min-width:150px;display:flex;align-items:center;justify-content:space-between;gap:10px;background:rgba(44,49,58,.5);border:1px solid var(--border-soft);border-radius:var(--r-md);padding:0 10px;color:var(--muted);font-size:12px}
+  .select svg{width:11px;height:11px;color:var(--faint)}
+
+  /* empty state */
+  .empty{flex:1 1 auto;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:15px;color:var(--muted);text-align:center;background:transparent}
+  .empty .ring{width:68px;height:68px;border-radius:16px;border:1px solid var(--border-soft);background:transparent;display:flex;align-items:center;justify-content:center;color:var(--faint)}
+  .empty .ring svg{width:30px;height:30px}
+  .empty h3{margin:0;color:var(--text);font-size:16px;font-weight:600}
+  .empty p{margin:0;font-size:13px;color:var(--muted);max-width:360px}
+
+  .btn{
+    height:32px;padding:0 14px;border-radius:var(--r-md);font-size:13px;font-family:var(--ui);
+    background:var(--element);border:1px solid var(--border-soft);color:var(--text);cursor:pointer;
+    display:inline-flex;align-items:center;gap:7px;transition:background .1s,border-color .1s
+  }
+  .btn:hover{background:var(--hover);border-color:var(--border)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#080909;font-weight:600}
+  .btn.primary:hover{background:#85bcf0;border-color:#85bcf0}
+  .btn svg{width:13px;height:13px}
+
+  /* ---------- modal ---------- */
+  .modal-wrap{position:fixed;inset:0;background:rgba(3,4,4,.62);z-index:150;display:flex;align-items:center;justify-content:center}
+  .modal{width:430px;background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden;box-shadow:var(--shadow)}
+  .modal-head{padding:15px 18px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;justify-content:space-between}
+  .modal-head .mt{font-size:14px;font-weight:600}
+  .modal-head .ms{font-size:12px;color:var(--faint);margin-top:2px}
+  .modal-body{padding:16px 18px;display:flex;flex-direction:column;gap:13px}
+  .field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+  .field .inp{display:flex;align-items:center;gap:8px;background:rgba(44,49,58,.5);border:1px solid var(--border-soft);border-radius:var(--r-md);height:32px;padding:0 10px}
+  .field .inp:focus-within{border-color:var(--accent-line)}
+  .field input{background:none;border:none;outline:none;color:var(--text);font:13px var(--mono);width:100%}
+  .field input.normal{font-family:var(--ui)}
+  .field input::placeholder{color:var(--faint)}
+  .browse{font-size:12px;color:var(--muted);border:1px solid var(--border-soft);border-radius:var(--r-sm);padding:3px 8px;flex:0 0 auto}
+  .browse:hover{background:var(--hover);color:var(--text)}
+  .modal-foot{padding:13px 18px;border-top:1px solid var(--border-soft);display:flex;justify-content:flex-end;gap:8px}
+
+  /* ---------- menus ---------- */
+  .menu{position:fixed;z-index:200;background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-md);padding:5px;min-width:190px;box-shadow:var(--shadow)}
+  .menu-item{
+    display:flex;align-items:center;gap:9px;padding:7px 9px;border-radius:var(--r-sm);color:var(--text);
+    font-size:13px;cursor:pointer;white-space:nowrap;position:relative
+  }
+  .menu-item:hover{background:var(--hover)}
+  .menu-item.disabled{color:var(--faint);cursor:default}
+  .menu-item.disabled:hover{background:transparent}
+  .menu-item .mi{display:flex;color:var(--muted);width:14px;justify-content:center}
+  .menu-item .mi svg{width:14px;height:14px}
+  .menu-item .hint{margin-left:auto;color:var(--faint);font-size:11.5px;padding-left:16px;font-family:var(--mono)}
+  .menu-item .swatch{width:8px;height:8px;border-radius:50%;flex:0 0 auto}
+  /* 弱分组：不用通栏分隔线，用顶部留白 + 内缩细线 */
+  .menu-item.group-start{margin-top:5px}
+  .menu-item.group-start::before{content:"";position:absolute;left:7px;right:7px;top:-3px;height:1px;background:var(--border-soft)}
+  .menu-item.danger{color:var(--red)}
+  .menu-item.danger .mi{color:var(--red)}
+  .menu-item.danger:hover{background:rgba(255,97,110,.14)}
+  .menu-sep{height:1px;background:var(--border-soft);margin:5px 6px}
+
+  /* ---------- notification toast ---------- */
+  .toasts{position:fixed;right:14px;bottom:14px;z-index:260;display:flex;flex-direction:column;gap:8px;width:326px}
+  .toast{
+    display:flex;gap:10px;padding:11px 12px;background:var(--elevated);border:1px solid var(--border);
+    border-radius:var(--r-md);box-shadow:var(--shadow);animation:toastIn .18s ease-out
+  }
+  @keyframes toastIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .toast .tbar{width:3px;border-radius:3px;flex:0 0 auto;background:var(--accent)}
+  .toast.waiting .tbar{background:var(--yellow)}
+  .toast.done .tbar{background:var(--ansi-green)}
+  .toast.error .tbar{background:var(--red)}
+  .toast .tbody{flex:1 1 auto;min-width:0}
+  .toast .ttitle{font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px}
+  .toast .tdesc{font-size:12px;color:var(--muted);margin-top:2px}
+  .toast .tmeta{font-size:11.5px;color:var(--faint);margin-top:4px;font-family:var(--mono)}
+  .toast .tact{display:flex;align-items:center;gap:8px;margin-top:8px}
+  .toast .tbtn{font-size:12px;color:var(--accent);padding:2px 4px;border-radius:var(--r-sm)}
+  .toast .tbtn:hover{background:var(--accent-dim)}
+  .toast .tclose{color:var(--faint);align-self:flex-start}
+  .toast .tclose:hover{color:var(--text)}
+
+  /* ---------- resize hint ---------- */
+  .resize-hint{position:absolute;z-index:250;background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-md);padding:7px 10px;font-size:12.5px;color:var(--muted);box-shadow:var(--shadow);pointer-events:none}
+  .handle.pulse::after{background:var(--accent);animation:pulse 1s infinite}
+
+  /* ---------- mock nav ---------- */
+  .mocknav{position:fixed;left:14px;bottom:14px;z-index:300;font-size:13px}
+  .mocknav-toggle{
+    display:flex;align-items:center;gap:8px;background:var(--elevated);border:1px solid var(--border);
+    border-radius:var(--r-md);padding:7px 12px;color:var(--muted);box-shadow:var(--shadow)
+  }
+  .mocknav-toggle:hover{color:var(--text);border-color:var(--border)}
+  .mocknav-toggle .dot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  .mocknav-panel{position:absolute;left:0;bottom:42px;width:224px;background:var(--elevated);border:1px solid var(--border);border-radius:var(--r-lg);padding:6px;box-shadow:var(--shadow)}
+  .mocknav-panel .mn-title{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--faint);padding:6px 10px}
+  .mocknav-panel .mn-item{padding:7px 10px;border-radius:var(--r-md);color:var(--text);cursor:pointer;display:flex;gap:8px;align-items:center}
+  .mocknav-panel .mn-item:hover{background:var(--hover)}
+  .mocknav-panel .mn-item span.k{font-family:var(--mono);font-size:11px;color:var(--faint);margin-left:auto}
+  .mocknav-panel .mn-sep{height:1px;background:var(--border-soft);margin:5px 6px}
+</style>
+</head>
+<body>
+<div class="wallpaper"></div>
+<div class="app" id="app">
+
+  <!-- ============ left project rail ============ -->
+  <aside class="pane pane-left" id="paneLeft">
+    <div class="pane-head">
+      <span class="brand">Ageminal</span>
+      <div class="pane-head-actions">
+        <button class="icon-btn" id="addProjectBtn" title="添加项目">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5v9M3.5 8h9"/></svg>
+        </button>
+        <button class="icon-btn" id="collapseLeft" title="折叠项目栏">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.5 4L5.5 8l4 4"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="pane-scroll" id="projectTree"></div>
+  </aside>
+  <button class="rail hidden" id="railLeft" title="展开项目栏">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px"><path d="M6.5 4l4 4-4 4"/></svg>
+    <span class="rail-label">项目</span>
+  </button>
+  <div class="handle" id="handleLeft" title="拖拽调整宽度"></div>
+
+  <div class="right-region">
+    <!-- ============ title bar ============ -->
+    <header class="titlebar" id="titlebar">
+      <div class="tabs">
+        <div class="tabs-scroll" id="tabs"></div>
+        <button class="tab-new" id="newTabBtn" title="新建页签">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:15px;height:15px"><path d="M8 3.5v9M3.5 8h9"/></svg>
+        </button>
+      </div>
+      <div class="titlebar-actions">
+        <button class="tb-btn" id="settingsBtn" title="设置">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        </button>
+        <div class="win-ctrls">
+          <button class="win-btn" title="最小化"><svg viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.2"><path d="M0 5h10"/></svg></button>
+          <button class="win-btn" title="最大化"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="0.6" y="0.6" width="8.8" height="8.8" rx="1"/></svg></button>
+          <button class="win-btn close" title="关闭到托盘"><svg viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.2"><path d="M1 1l8 8M9 1l-8 8"/></svg></button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ============ workspace ============ -->
+    <div class="workspace">
+      <main class="pane pane-main" id="mainArea"></main>
+
+      <div class="handle" id="handleRight" title="拖拽调整宽度"></div>
+      <aside class="pane pane-right" id="paneRight">
+        <div class="pane-head">
+          <span>文件</span>
+          <div class="pane-head-actions">
+            <button class="icon-btn" id="toggleIgnored" title="显示/隐藏忽略文件">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8s-2.5 4.5-6.5 4.5S1.5 8 1.5 8z"/><circle cx="8" cy="8" r="1.8"/></svg>
+            </button>
+            <button class="icon-btn" id="collapseRight" title="折叠文件树">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6.5 4l4 4-4 4"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="filetree-head">
+          <div class="root" id="fileRoot"></div>
+          <div class="search">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+            <input id="fileSearch" placeholder="搜索文件">
+          </div>
+        </div>
+        <div class="pane-scroll" id="fileTree"></div>
+      </aside>
+      <button class="rail right hidden" id="railRight" title="展开文件树">
+        <span class="rail-label">文件</span>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" style="width:14px;height:14px"><path d="M9.5 4L5.5 8l4 4"/></svg>
+      </button>
+    </div>
+  </div><!-- /right-region -->
+
+  <!-- settings overlay -->
+  <div class="overlay hidden" id="settingsOverlay"></div>
+</div>
+
+<!-- ============ floating layers ============ -->
+<div class="menu hidden" id="newTabMenu"></div>
+<div class="menu hidden" id="agentMenu"></div>
+<div class="menu hidden" id="ctxMenu"></div>
+<div class="toasts" id="toasts"></div>
+
+<!-- add project modal -->
+<div class="modal-wrap hidden" id="addProjectModal">
+  <div class="modal">
+    <div class="modal-head">
+      <div>
+        <div class="mt">添加项目</div>
+        <div class="ms">选择一个本地仓库，自动发现其 git worktree</div>
+      </div>
+      <button class="icon-btn" id="addProjectClose">
+        <svg viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.3" fill="none"><path d="M1 1l8 8M9 1l-8 8"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>项目路径</label>
+        <div class="inp">
+          <input class="normal" id="projPathInput" value="D:\workspace\new-project" spellcheck="false">
+          <button class="browse">浏览…</button>
+        </div>
+      </div>
+      <div class="field">
+        <label>显示名称（可选）</label>
+        <div class="inp"><input id="projNameInput" placeholder="默认取仓库目录名" spellcheck="false"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="addProjectCancel">取消</button>
+      <button class="btn primary" id="addProjectConfirm">添加项目</button>
+    </div>
+  </div>
+</div>
+
+<!-- mock nav -->
+<div class="mocknav" id="mockNav">
+  <div class="mocknav-panel hidden" id="mockNavPanel">
+    <div class="mn-title">原型导航</div>
+    <div class="mn-item" data-screen="main">主界面 <span class="k">1</span></div>
+    <div class="mn-item" data-screen="empty">空状态 <span class="k">2</span></div>
+    <div class="mn-sep"></div>
+    <div class="mn-item" data-screen="settings-project">设置 · 项目 <span class="k">3</span></div>
+    <div class="mn-item" data-screen="settings-general">设置 · 通用 / 外观 <span class="k">4</span></div>
+    <div class="mn-item" data-screen="add-project">添加项目对话框 <span class="k">5</span></div>
+    <div class="mn-item" data-screen="new-tab">新建页签菜单 <span class="k">6</span></div>
+    <div class="mn-item" data-screen="ctx-menu">文件树右键菜单 <span class="k">7</span></div>
+    <div class="mn-sep"></div>
+    <div class="mn-item" data-screen="agent-start">Agent 启动入口 <span class="k">8</span></div>
+    <div class="mn-item" data-screen="notify">Agent 状态 / 通知 <span class="k">9</span></div>
+    <div class="mn-item" data-screen="reconnect">会话恢复提示 <span class="k">10</span></div>
+    <div class="mn-item" data-screen="resize">三栏拖拽 / 折叠 <span class="k">11</span></div>
+  </div>
+  <button class="mocknav-toggle" id="mockNavToggle">
+    <span class="dot"></span> 原型导航
+    <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3" style="width:11px;height:11px"><path d="M2 7.5L6 3.5l4 4"/></svg>
+  </button>
+</div>
+
+<script>
+"use strict";
+
+/* ==================================================================
+   数据（原型：全部内联，无持久化）
+   ================================================================== */
+const AGENT_TEMPLATES = [
+  { id:"claude",   name:"Claude Code",      cmd:"claude",   color:"#e05561" },
+  { id:"codex",    name:"Codex",            cmd:"codex",    color:"#8cc265" },
+  { id:"opencode", name:"opencode",         cmd:"opencode", color:"#61afef" },
+  { id:"pi",       name:"pi",               cmd:"pi",       color:"#c162de" },
+  { id:"dsh",      name:"DeepSeek Harness", cmd:"dsh",      color:"#42b3c2" },
+];
+const agentColor = id => (AGENT_TEMPLATES.find(a => a.id === id) || {}).color || "#a9afbc";
+const agentName  = id => (AGENT_TEMPLATES.find(a => a.id === id) || {}).name  || id;
+
+/* agentState: running | waiting | done | error | null */
+const projects = [
+  {
+    id:"default", name:"用户工作区", path:"~", home:true,
+    worktrees:[
+      { id:"wt-home", name:"用户工作区", branch:null, dir:"C:\\Users\\boyPBW", pinned:true, agent:null, agentState:null,
+        tabs:[ { id:"th1", type:"terminal", title:"bash" } ] },
+    ],
+  },
+  {
+    id:"p1", name:"项目1", path:"D:\\workspace\\proj-1",
+    worktrees:[
+      { id:"p1-w1", name:"feat-agent-ui", branch:"feat/agent-ui", dir:"D:\\workspace\\proj-1\\feat-agent-ui", pinned:true, agent:"claude", agentState:"running",
+        tabs:[
+          { id:"t1", type:"terminal", title:"Claude Code", agent:"claude", agentState:"running" },
+          { id:"t2", type:"terminal", title:"npm run dev" },
+          { id:"t3", type:"file-preview", title:"main.ts", file:"main.ts" },
+        ] },
+      { id:"p1-w2", name:"fix-api-timeout", branch:"fix/api-timeout", dir:"D:\\workspace\\proj-1\\fix-api-timeout", pinned:true, agent:"codex", agentState:"waiting",
+        tabs:[
+          { id:"t4", type:"terminal", title:"Codex", agent:"codex", agentState:"waiting" },
+          { id:"t5", type:"browser", title:"localhost:3000", url:"http://localhost:3000" },
+        ] },
+      { id:"p1-w3", name:"proj-1", branch:"main", dir:"D:\\workspace\\proj-1", pinned:false, agent:null, agentState:null,
+        tabs:[ { id:"t6", type:"terminal", title:"bash" } ] },
+    ],
+  },
+  {
+    id:"p2", name:"项目2", path:"D:\\workspace\\proj-2",
+    worktrees:[
+      { id:"p2-w1", name:"main", branch:"main", dir:"D:\\workspace\\proj-2", pinned:true, agent:"opencode", agentState:"done",
+        tabs:[
+          { id:"t7", type:"terminal", title:"opencode", agent:"opencode", agentState:"done" },
+          { id:"t8", type:"file-preview", title:"README.md", file:"README.md" },
+        ] },
+      { id:"p2-w2", name:"dev", branch:"dev", dir:"D:\\workspace\\proj-2\\dev", pinned:false, agent:null, agentState:null,
+        tabs:[ { id:"t9", type:"terminal", title:"bash" } ] },
+      { id:"p2-w3", name:"experiment", branch:"experiment", dir:"D:\\workspace\\proj-2\\experiment", pinned:false, agent:null, agentState:null,
+        tabs:[ { id:"t10", type:"terminal", title:"bash" } ] },
+    ],
+  },
+];
+
+const FILE_TREE = [
+  { name:"src", type:"dir", children:[
+    { name:"components", type:"dir", children:[
+      { name:"Terminal.tsx", type:"file" },
+      { name:"FileTree.tsx", type:"file" },
+      { name:"TabBar.tsx", type:"file" },
+    ] },
+    { name:"main.ts", type:"file" },
+    { name:"styles.css", type:"file" },
+  ] },
+  { name:"tests", type:"dir", children:[ { name:"app.test.ts", type:"file" } ] },
+  { name:"node_modules", type:"dir", ignored:true, children:[ { name:"…", type:"file" } ] },
+  { name:"package.json", type:"file" },
+  { name:"tauri.conf.json", type:"file" },
+  { name:"README.md", type:"file" },
+  { name:".gitignore", type:"file" },
+];
+
+const state = {
+  activeWt:"p1-w1",
+  activeTab:{},
+  collapsed:{},
+  openDirs:{ "":true, "src":true, "src/components":false, "tests":false },
+  fileFilter:"",
+  selFile:null,
+  showIgnored:false,
+  leftWidth:252, rightWidth:260,
+  leftCollapsed:false, rightCollapsed:false,
+  settingsOpen:false, settingsSection:"project", settingsProject:"p1",
+  addProjectOpen:false,
+  ctx:null, newTabOpen:false, agentMenuWt:null,
+  empty:false, mockOpen:false,
+  reconnected:null,   // { lines:N, done:bool }
+  toasts:[],          // { id, kind, agent, wt, desc }
+};
+projects.forEach(p => p.worktrees.forEach(w => { state.activeTab[w.id] = w.tabs[0] && w.tabs[0].id; }));
+
+/* ==================================================================
+   工具
+   ================================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c]));
+const findWt = id => { for (const p of projects) { const w = p.worktrees.find(w => w.id === id); if (w) return { p, w }; } return null; };
+const findProj = id => projects.find(p => p.id === id);
+const curWt = () => findWt(state.activeWt);
+const curTab = () => { const f = curWt(); if (!f) return null; return f.w.tabs.find(t => t.id === state.activeTab[f.w.id]) || null; };
+const statusColor = s => ({ running:"var(--ansi-green)", waiting:"var(--ansi-yellow)", done:"var(--ansi-green)", error:"var(--red)" }[s] || "var(--faint)");
+const statusText = s => ({ running:"运行中", waiting:"等待输入", done:"已完成", error:"出错" }[s] || "");
+
+const ICON = {
+  terminal:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2.5 5l3 3-3 3"/><path d="M8 11.5h5.5"/></svg>',
+  file:    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3"/></svg>',
+  browser: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2.2 2 9.8 0 12M8 2c-2 2.2-2 9.8 0 12"/></svg>',
+  other:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="2.5" width="11" height="11" rx="2"/><path d="M5.5 8h5"/></svg>',
+  branch:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="4.5" cy="4" r="1.8"/><circle cx="4.5" cy="12" r="1.8"/><circle cx="11.5" cy="7" r="1.8"/><path d="M4.5 5.8v4.4M6.3 7h3.4"/></svg>',
+  folder:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3.2h4l1.3 1.6H14v8H2z"/></svg>',
+  folderOpen:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3.2h4l1.3 1.6H14v1.4H5.2L3 12.8H2z"/><path d="M5.4 6.2H14l-2 6.6H2.2"/></svg>',
+  chevron: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M5 3.5L9.5 8 5 12.5"/></svg>',
+  chevDown:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3.5 6L8 10.5 12.5 6"/></svg>',
+  finder:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.2h12v8H2z"/><path d="M2 7h12"/></svg>',
+  copy:    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="5.5" y="5.5" width="8" height="8" rx="1.3"/><path d="M10.5 5.5v-2h-8v8h2"/></svg>',
+  rename:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M11 2.5l2.5 2.5L6 12.5l-3 .5.5-3z"/></svg>',
+  newfile: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M4 1.8h5l3 3v9.4H4z"/><path d="M9 1.8v3h3M6.5 9h3M8 7.5v3"/></svg>',
+  newfolder:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3.2h4l1.3 1.6H14v8H2z"/><path d="M8 7.5v3M6.5 9h3"/></svg>',
+  trash:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 9h5.8l.6-9"/></svg>',
+  relpath: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 8h10M9 4.5L12.5 8 9 11.5"/></svg>',
+  run:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M5 3.5l8 4.5-8 4.5z"/></svg>',
+  agent:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 2.2l1.6 3.4 3.4 1.6-3.4 1.6L8 12.2 6.4 8.8 3 7.2l3.4-1.6z"/></svg>',
+  slider:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M3 5h10M3 11h10"/><circle cx="6" cy="5" r="1.7" fill="#080909"/><circle cx="10" cy="11" r="1.7" fill="#080909"/></svg>',
+  palette: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><circle cx="6" cy="6.5" r=".9" fill="currentColor"/><circle cx="10" cy="6.5" r=".9" fill="currentColor"/><circle cx="6" cy="10" r=".9" fill="currentColor"/></svg>',
+  keyboard:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.8" y="4.5" width="12.4" height="7" rx="1.4"/><path d="M4 7h.01M6 7h.01M8 7h.01M10 7h.01M6 9.3h4"/></svg>',
+  plug:    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M6 2v4M10 2v4M4.5 6h7v1.5a3.5 3.5 0 01-7 0zM8 11v3"/></svg>',
+  project: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 3.2h4l1.3 1.6H14v8H2z"/></svg>',
+  close:   '<svg viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.3" fill="none"><path d="M1 1l8 8M9 1l-8 8"/></svg>',
+  check:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3.5 8.5L6.5 11.5 12.5 5"/></svg>',
+};
+
+/* ==================================================================
+   渲染：页签栏
+   ================================================================== */
+function renderTabs() {
+  const box = $("#tabs");
+  if (state.empty) { box.innerHTML = ""; return; }
+  const f = curWt();
+  if (!f) { box.innerHTML = ""; return; }
+  box.innerHTML = f.w.tabs.map(t => {
+    const active = state.activeTab[f.w.id] === t.id;
+    const ag = t.agent ? agentColor(t.agent) : null;
+    const dot = t.agentState ? `<span class="t-dot" style="background:${statusColor(t.agentState)}"></span>` : "";
+    return `<div class="tab ${active ? "active" : ""}" data-tab="${t.id}">
+      <span class="t-icon">${ICON[t.type] || ICON.other}</span>
+      <span class="t-title">${esc(t.title)}</span>
+      ${dot}
+      <button class="t-close" data-close="${t.id}" title="关闭页签">${ICON.close}</button>
+    </div>`;
+  }).join("");
+}
+
+/* ==================================================================
+   渲染：左侧项目树
+   ================================================================== */
+function renderLeft() {
+  const box = $("#projectTree");
+  if (state.empty) { box.innerHTML = ""; return; }
+  box.innerHTML = projects.map(p => {
+    const visible = p.worktrees.filter(w => w.pinned || p.home);
+    if (!visible.length) return "";
+    const collapsed = state.collapsed[p.id] ? "collapsed" : "";
+    const rows = visible.map(w => {
+      const active = state.activeWt === w.id;
+      const dot = w.agentState ? `<span class="agent-dot ${w.agentState === "waiting" ? "waiting" : w.agentState === "running" ? "running" : ""}" style="background:${statusColor(w.agentState)}" title="${statusText(w.agentState)}"></span>` : "";
+      const branch = w.branch
+        ? `<span class="wt-branch"><span class="branch-ico">${ICON.branch}</span>${esc(w.branch)}</span>`
+        : `<span class="wt-branch">非 git 工作区</span>`;
+      const runBtn = `<button class="wt-run" data-agent-start="${w.id}" title="启动 Agent / 新建终端">${ICON.agent}</button>`;
+      return `<div class="wt-row ${active ? "active" : ""}" data-wt="${w.id}">
+        <span class="wt-main">
+          <span class="wt-name">${esc(w.name)}</span>
+          ${branch}
+        </span>
+        <span class="wt-agent">${dot}</span>
+        ${runBtn}
+      </div>`;
+    }).join("");
+    return `<div class="proj ${collapsed}" data-proj="${p.id}">
+      <div class="proj-row" data-proj-toggle="${p.id}">
+        <span class="chev">${ICON.chevDown}</span>
+        <span class="proj-name">${esc(p.name)}</span>
+        <span class="proj-path">${esc(p.path)}</span>
+      </div>
+      <div class="wt-list">${rows}</div>
+    </div>`;
+  }).join("");
+}
+
+/* ==================================================================
+   渲染：右侧文件树
+   ================================================================== */
+function fileMatches(name) {
+  const q = state.fileFilter.trim().toLowerCase();
+  return !q || name.toLowerCase().includes(q);
+}
+function renderNode(node, path, depth) {
+  const full = path ? path + "/" + node.name : node.name;
+  const pad = 10 + depth * 13;
+  if (node.type === "dir") {
+    if (node.ignored && !state.showIgnored) return "";
+    const open = !!state.openDirs[full] || !!state.fileFilter;
+    const kids = open ? (node.children || []).filter(k => fileMatches(k.name) || k.type === "dir").map(k => renderNode(k, full, depth + 1)).join("") : "";
+    const dim = node.ignored ? ' style="opacity:.55"' : "";
+    return `<div class="ft-row dir ${open ? "open" : ""}" data-dir="${esc(full)}" style="padding-left:${pad}px${dim}">
+        <span class="tw">${open ? ICON.chevDown : ICON.chevron}</span>
+        <span class="fi">${open ? ICON.folderOpen : ICON.folder}</span>
+        <span class="fname">${esc(node.name)}</span>
+      </div>${kids}`;
+  }
+  if (node.ignored && !state.showIgnored) return "";
+  if (!fileMatches(node.name)) return "";
+  const sel = state.selFile === node.name ? "sel" : "";
+  return `<div class="ft-row file ${sel}" data-file="${esc(node.name)}" style="padding-left:${pad}px">
+      <span class="tw"></span>
+      <span class="fi">${ICON.file}</span>
+      <span class="fname">${esc(node.name)}</span>
+    </div>`;
+}
+function renderRight() {
+  const f = curWt();
+  if (state.empty || !f) { $("#fileRoot").innerHTML = ""; $("#fileTree").innerHTML = ""; return; }
+  $("#fileRoot").innerHTML = `<span class="branch-ico">${ICON.branch}</span>${esc(f.w.dir)}`;
+  const html = FILE_TREE.filter(n => fileMatches(n.name) || n.type === "dir").map(n => renderNode(n, "", 0)).join("");
+  $("#fileTree").innerHTML = html || `<div class="ft-empty">未找到匹配的文件</div>`;
+}
+
+/* ==================================================================
+   渲染：主区
+   ================================================================== */
+function terminalHTML(f, t) {
+  const p = f.w.dir.replace(/\\/g, "/");
+  const ag = t.agent;
+  const lines = [];
+  lines.push(`<div class="p-line"><span class="t-user">boyPBW@DESKTOP</span> <span class="t-muted">MINGW64</span> <span class="t-path">${esc(p)}</span>${f.w.branch ? ` <span class="t-branch">(${esc(f.w.branch)})</span>` : ""}</div>`);
+  lines.push(`<div class="p-line"><span class="t-dim">$</span> <span class="t-cmd">${esc(t.title)}</span></div>`);
+  if (state.reconnected) {
+    lines.push(`<div class="reconnect-divider">已重新连接 · 回放 ${state.reconnected.lines.toLocaleString()} 行</div>`);
+  }
+  if (ag === "claude") {
+    lines.push(`<div class="p-line"><span class="t-accent">╭──────────────────────────────────────────────╮</span></div>`);
+    lines.push(`<div class="p-line"><span class="t-accent">│</span>  <span style="color:var(--claude)">Claude Code</span> <span class="t-muted">· 已连接 · worktree</span> <span class="t-path">${esc(f.w.name)}</span></div>`);
+    lines.push(`<div class="p-line"><span class="t-accent">╰──────────────────────────────────────────────╯</span></div>`);
+    lines.push(`<div class="p-line t-dim">  正在读取 src/components/Terminal.tsx …</div>`);
+    lines.push(`<div class="p-line"><span class="t-warn">●</span> 修改了 <span class="t-path">src/main.ts</span>（+12 −3）</div>`);
+    lines.push(`<div class="p-line t-dim">  运行 <span class="t-accent">git status --short</span> 查看改动</div>`);
+  } else if (ag === "codex") {
+    lines.push(`<div class="p-line"><span style="color:var(--codex)">Codex</span> <span class="t-muted">session started · model gpt-5-codex</span></div>`);
+    lines.push(`<div class="p-line t-dim">  分析 fix/api-timeout 分支的失败用例…</div>`);
+    lines.push(`<div class="p-line"><span class="t-warn">⚠</span> tests/app.test.ts <span class="t-err">1 failed</span> · timeout 5000ms</div>`);
+    lines.push(`<div class="p-line t-dim">  建议提升 <span class="t-path">requestTimeout</span> 并重试</div>`);
+    lines.push(`<div class="p-line"><span class="t-warn">?</span> <span class="t-cmd">允许 Codex 运行 \`npm test\` 吗？</span> <span class="t-dim">(y/n)</span></div>`);
+  } else if (ag === "opencode") {
+    lines.push(`<div class="p-line"><span style="color:var(--accent)">opencode</span> <span class="t-muted">session · 已完成</span></div>`);
+    lines.push(`<div class="p-line t-dim">  ✓ 3 个任务已完成，2 个文件变更</div>`);
+  } else if (t.title === "npm run dev") {
+    lines.push(`<div class="p-line"><span class="t-accent">VITE</span> v5.4.2  <span class="t-muted">ready in 412 ms</span></div>`);
+    lines.push(`<div class="p-line">  <span class="t-accent">➜</span>  Local:   <span class="t-path">http://localhost:5173/</span></div>`);
+    lines.push(`<div class="p-line t-dim">  press <span class="t-warn">h</span> + enter to show help</div>`);
+  } else {
+    lines.push(`<div class="p-line t-dim">Git Bash · 工作树 ${esc(f.w.name)}${f.w.branch ? " · " + esc(f.w.branch) : ""}</div>`);
+    lines.push(`<div class="p-line"><span class="t-dim">$</span> <span class="caret"></span></div>`);
+  }
+  if (ag) lines.push(`<div class="p-line"><span class="t-dim">$</span> <span class="caret"></span></div>`);
+  const banner = state.reconnected && !state.reconnected.done
+    ? `<div class="reconnect-banner"><span class="spin"></span>正在重新连接会话…</div>`
+    : state.reconnected && state.reconnected.done
+      ? `<div class="reconnect-banner"><span class="ok">${ICON.check}</span>会话已恢复 · 守护进程会话 <span style="font-family:var(--mono)">p1-w1:1</span></div>`
+      : "";
+  return `${banner}<div class="term">${lines.join("")}</div>`;
+}
+
+const SNIPPETS = {
+  "main.ts": 'import { mount } from "./bootstrap";\nimport { createStore } from "./store/app-store";\nimport { registerTerminals } from "./features/terminal";\n\nconst store = createStore();\nregisterTerminals(store);\n\nmount("#app", store);\n\n// worktree 切换时，整组页签随上下文替换\nstore.subscribe(state => console.log("worktree:", state.activeWt));\n',
+  "README.md": "# Ageminal\n\n多工作区管理的 ADE（Agent Development Environment）。\n\n- 左侧：项目 / 已加入侧栏的 worktree\n- 主区：终端 · 文件预览 · 浏览器\n- 右侧：当前 worktree 文件树\n- 设置：通用 / 外观 / 快捷键 / Agent / 项目\n\n> 本文件为原型布局稿，交互为模拟实现。\n",
+};
+function previewHTML(t) {
+  const src = SNIPPETS[t.file] || `// ${t.file}\n// 文件内容预览（原型占位）\n`;
+  const lines = esc(src).replace(/\n$/, "").split("\n").map(l => `<div class="cl">${l || " "}</div>`).join("");
+  return `<div class="preview">
+      <div class="preview-head">
+        <span style="display:flex;color:var(--faint)">${ICON.file}</span>
+        <span class="ph-name">${esc(t.file)}</span>
+        <span class="ph-tag">只读预览 · 用外部编辑器打开</span>
+      </div>
+      <pre class="code">${lines}</pre>
+    </div>`;
+}
+function browserHTML(t) {
+  const url = t.url || "http://localhost:3000";
+  return `<div class="browser">
+      <div class="browser-bar">
+        <div class="browser-dots"><i></i><i></i><i></i></div>
+        <div class="url">${ICON.browser}${esc(url)}</div>
+      </div>
+      <div class="browser-body">
+        <div class="ph-box"><strong>内嵌浏览器（延后）</strong>${esc(url)}</div>
+      </div>
+    </div>`;
+}
+function renderMain() {
+  const box = $("#mainArea");
+  if (state.empty) {
+    box.innerHTML = `<div class="empty">
+        <div class="ring">${ICON.project}</div>
+        <h3>还没有添加任何项目</h3>
+        <p>添加一个本地 git 仓库，Ageminal 会自动发现它的 worktree，你可以选择要加入左侧栏的工作树。</p>
+        <button class="btn primary" data-open-add>${ICON.run} 添加项目</button>
+      </div>`;
+    return;
+  }
+  const f = curWt(), t = curTab();
+  if (!f || !t) { box.innerHTML = `<div class="other-pane">${ICON.other}<span>没有打开的页签</span></div>`; return; }
+  if (t.type === "terminal") box.innerHTML = terminalHTML(f, t);
+  else if (t.type === "file-preview") box.innerHTML = previewHTML(t);
+  else if (t.type === "browser") box.innerHTML = browserHTML(t);
+  else box.innerHTML = `<div class="other-pane">${ICON.other}<span>「${esc(t.title)}」页签（原型占位）</span></div>`;
+}
+
+/* ==================================================================
+   渲染：设置页
+   ================================================================== */
+function renderSettings() {
+  const nav = [
+    { id:"general", label:"通用", icon:ICON.slider },
+    { id:"appearance", label:"外观", icon:ICON.palette },
+    { id:"keymap", label:"快捷键", icon:ICON.keyboard },
+    { id:"agent", label:"Agent", icon:ICON.plug },
+  ];
+  const projNav = projects.filter(p => !p.home).map(p =>
+    `<span class="snav-sub ${state.settingsSection === "project" && state.settingsProject === p.id ? "active" : ""}" data-sp="${p.id}">${esc(p.name)}</span>`
+  ).join("");
+
+  let body = "";
+  if (state.settingsSection === "general") {
+    body = `<h2>通用</h2><div class="settings-sub">启动、终端与诊断</div>
+      <div class="block">
+        <div class="set-row"><div><div class="sl">默认终端</div><div class="sd">无 Git Bash 时自动回退 PowerShell</div></div><div class="select">Git Bash ${ICON.chevDown}</div></div>
+        <div class="set-row"><div><div class="sl">启动时恢复上次工作区</div><div class="sd">项目、侧栏、激活 worktree 与页签骨架</div></div><div class="toggle on"></div></div>
+        <div class="set-row"><div><div class="sl">关闭运行中的终端前确认</div><div class="sd"></div></div><div class="toggle on"></div></div>
+        <div class="set-row"><div><div class="sl">语言</div><div class="sd">i18n 已接入，首发 zh-CN，en-US 结构同步</div></div><div class="select">简体中文 ${ICON.chevDown}</div></div>
+        <div class="set-row"><div><div class="sl">导出诊断</div><div class="sd">日志位于 %APPDATA%\\Ageminal\\logs\\</div></div><button class="btn">导出</button></div>
+      </div>`;
+  } else if (state.settingsSection === "appearance") {
+    body = `<h2>外观</h2><div class="settings-sub">主题为 Zed One Dark；浅色延后</div>
+      <div class="block">
+        <div class="set-row"><div><div class="sl">主题</div><div class="sd">深色（One Dark）</div></div><div class="select">One Dark ${ICON.chevDown}</div></div>
+        <div class="set-row"><div><div class="sl">终端字号</div><div class="sd">13 px</div></div><div class="select">13 ${ICON.chevDown}</div></div>
+        <div class="set-row"><div><div class="sl">界面密度</div><div class="sd">紧凑</div></div><div class="select">紧凑 ${ICON.chevDown}</div></div>
+        <div class="set-row"><div><div class="sl">光标样式</div><div class="sd">块状</div></div><div class="select">块 ${ICON.chevDown}</div></div>
+      </div>`;
+  } else if (state.settingsSection === "keymap") {
+    const keys = [["新建终端页签","Ctrl+Shift+T"],["关闭当前页签","Ctrl+W"],["下一个页签","Ctrl+Tab"],["切换 worktree","Ctrl+Alt+↑ / ↓"],["折叠左栏","Ctrl+B"],["打开设置","Ctrl+,"],["终端内搜索","Ctrl+F"]];
+    body = `<h2>快捷键</h2><div class="settings-sub">MVP 只读展示，自定义延后</div>
+      <div class="block">${keys.map(([k,v]) => `<div class="set-row"><div class="sl">${k}</div><span style="font-family:var(--mono);font-size:12px;color:var(--muted)">${v}</span></div>`).join("")}</div>`;
+  } else if (state.settingsSection === "agent") {
+    body = `<h2>Agent</h2><div class="settings-sub">一等启动入口；命令与事件接入可配置</div>
+      <div class="block">
+        ${AGENT_TEMPLATES.map(a => `<div class="wt-set-row" style="padding-left:16px;padding-right:16px">
+            <span class="swatch" style="width:8px;height:8px;border-radius:50%;background:${a.color}"></span>
+            <span class="wt-set-name">${esc(a.name)}</span>
+            <span class="wt-set-branch">${esc(a.cmd)}</span>
+            <span style="margin-left:auto;font-size:12px;color:var(--ansi-green);display:flex;align-items:center;gap:5px">${ICON.check}已接入</span>
+          </div>`).join("")}
+      </div>`;
+  } else {
+    const p = findProj(state.settingsProject) || projects.find(x => !x.home);
+    const rows = p.worktrees.map(w => `<div class="wt-set-row" style="padding-left:16px;padding-right:16px">
+        <span class="tree-elbow"><svg viewBox="0 0 12 10" fill="none" stroke="currentColor" stroke-width="1.2"><path d="M0 0.5v9h3M9 5h3"/></svg></span>
+        <span class="branch-ico" style="display:flex;color:var(--faint)">${ICON.branch}</span>
+        <span class="wt-set-name">${esc(w.name)}</span>
+        <span class="wt-set-branch">${w.branch ? esc(w.branch) : "非 git"}</span>
+        <div class="toggle ${w.pinned ? "on" : ""}" data-pin="${w.id}" title="加入左侧栏"></div>
+      </div>`).join("");
+    body = `<h2>项目</h2><div class="settings-sub">管理已添加的项目及其工作树</div>
+      <div class="block">
+        <div class="block-head">
+          <div><div class="bt">${esc(p.name)}</div><div class="proj-meta">${esc(p.path)}</div></div>
+          <div style="display:flex;gap:8px"><button class="btn" data-open-add>${ICON.run} 添加项目</button><button class="btn" style="color:var(--red)">移除项目</button></div>
+        </div>
+        <div style="padding:12px 16px 2px;color:var(--faint);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase">工作树列表</div>
+        <div class="wt-set">${rows}</div>
+      </div>`;
+  }
+
+  $("#settingsOverlay").innerHTML = `
+    <div class="settings-wincontrols">
+      <button class="btn" id="settingsClose" style="height:28px;padding:0 11px">← 返回</button>
+      <div class="win-ctrls" style="border-left:none">
+        <button class="win-btn" title="最小化"><svg viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.2"><path d="M0 5h10"/></svg></button>
+        <button class="win-btn" title="最大化"><svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="0.6" y="0.6" width="8.8" height="8.8" rx="1"/></svg></button>
+        <button class="win-btn close" title="关闭到托盘"><svg viewBox="0 0 10 10" stroke="currentColor" stroke-width="1.2"><path d="M1 1l8 8M9 1l-8 8"/></svg></button>
+      </div>
+    </div>
+    <div style="display:flex;flex:1;min-height:0">
+      <aside class="settings-nav">
+        <div class="snav-title">设置</div>
+        ${nav.map(n => `<div class="snav-item ${state.settingsSection === n.id ? "active" : ""}" data-sec="${n.id}"><span class="sico">${n.icon}</span>${n.label}</div>`).join("")}
+        <div class="snav-item ${state.settingsSection === "project" ? "active" : ""}" data-sec="project"><span class="sico">${ICON.project}</span>项目</div>
+        ${projNav}
+      </aside>
+      <div class="settings-body">${body}</div>
+    </div>`;
+}
+
+/* ==================================================================
+   渲染：通知
+   ================================================================== */
+function renderToasts() {
+  $("#toasts").innerHTML = state.toasts.map(t => `
+    <div class="toast ${t.kind}">
+      <span class="tbar"></span>
+      <div class="tbody">
+        <div class="ttitle"><span class="agent-dot" style="background:${agentColor(t.agent)};width:7px;height:7px;border-radius:50%"></span>${esc(agentName(t.agent))}</div>
+        <div class="tdesc">${esc(t.desc)}</div>
+        <div class="tmeta">${esc(t.wt)}</div>
+        <div class="tact"><span class="tbtn" data-goto-wt="${t.wt}">前往终端</span><span class="tbtn">忽略</span></div>
+      </div>
+      <button class="tclose" data-toast-close="${t.id}">${ICON.close}</button>
+    </div>`).join("");
+}
+
+/* ==================================================================
+   总渲染
+   ================================================================== */
+function applyLayout() {
+  $("#paneLeft").classList.toggle("hidden", state.leftCollapsed);
+  $("#railLeft").classList.toggle("hidden", !state.leftCollapsed);
+  $("#handleLeft").classList.toggle("hidden", state.leftCollapsed);
+  $("#paneRight").classList.toggle("hidden", state.rightCollapsed);
+  $("#railRight").classList.toggle("hidden", !state.rightCollapsed);
+  $("#handleRight").classList.toggle("hidden", state.rightCollapsed);
+  if (!state.leftCollapsed) { $("#paneLeft").style.width = state.leftWidth + "px"; $("#paneLeft").style.flexBasis = state.leftWidth + "px"; }
+  if (!state.rightCollapsed) { $("#paneRight").style.width = state.rightWidth + "px"; $("#paneRight").style.flexBasis = state.rightWidth + "px"; }
+}
+function renderAll() {
+  applyLayout();
+  renderTabs();
+  renderLeft();
+  renderMain();
+  renderRight();
+  renderToasts();
+  if (state.settingsOpen) renderSettings();
+}
+
+/* ==================================================================
+   菜单
+   ================================================================== */
+function closeMenus() {
+  state.newTabOpen = false; state.ctx = null; state.agentMenuWt = null;
+  $("#newTabMenu").classList.add("hidden");
+  $("#agentMenu").classList.add("hidden");
+  $("#ctxMenu").classList.add("hidden");
+}
+function placeMenu(el, x, y) {
+  el.classList.remove("hidden");
+  const r = el.getBoundingClientRect();
+  el.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + "px";
+  el.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + "px";
+}
+function openNewTabMenu() {
+  closeMenus(); state.newTabOpen = true;
+  const m = $("#newTabMenu");
+  const agents = AGENT_TEMPLATES.map(a => `<div class="menu-item" data-newtab="agent" data-agent="${a.id}"><span class="mi"><span class="swatch" style="background:${a.color}"></span></span>${esc(a.name)}<span class="hint">${esc(a.cmd)}</span></div>`).join("");
+  m.innerHTML = `${agents}
+    <div class="menu-item group-start" data-newtab="terminal"><span class="mi">${ICON.terminal}</span>终端<span class="hint">Git Bash</span></div>
+    <div class="menu-item group-start" data-newtab="file-preview"><span class="mi">${ICON.file}</span>文件预览</div>
+    <div class="menu-item disabled"><span class="mi">${ICON.browser}</span>浏览器<span class="hint">延后</span></div>
+    <div class="menu-item" data-newtab="other"><span class="mi">${ICON.other}</span>其他…</div>`;
+  const r = $("#newTabBtn").getBoundingClientRect();
+  placeMenu(m, r.left, r.bottom + 4);
+}
+function openAgentMenu(wtId) {
+  closeMenus(); state.agentMenuWt = wtId;
+  const m = $("#agentMenu");
+  m.innerHTML = AGENT_TEMPLATES.map(a => `<div class="menu-item" data-start-agent="${a.id}"><span class="mi"><span class="swatch" style="background:${a.color}"></span></span>启动 ${esc(a.name)}<span class="hint">${esc(a.cmd)}</span></div>`).join("")
+    + `<div class="menu-item group-start" data-start-agent=""><span class="mi">${ICON.terminal}</span>新建终端</div>`;
+  const row = $(`[data-wt="${wtId}"] .wt-run`);
+  const r = (row || $("#projectTree")).getBoundingClientRect();
+  placeMenu(m, r.right - 190, r.bottom + 2);
+}
+function openCtxMenu(x, y, file) {
+  closeMenus(); state.ctx = { x, y, file };
+  const m = $("#ctxMenu");
+  m.innerHTML = `
+    <div class="menu-item" data-ctx="newfile"><span class="mi">${ICON.newfile}</span>新建文件</div>
+    <div class="menu-item" data-ctx="newfolder"><span class="mi">${ICON.newfolder}</span>新建文件夹</div>
+    <div class="menu-item group-start" data-ctx="rename"><span class="mi">${ICON.rename}</span>重命名</div>
+    <div class="menu-item" data-ctx="finder"><span class="mi">${ICON.finder}</span>在文件资源管理器中显示</div>
+    <div class="menu-item" data-ctx="terminal"><span class="mi">${ICON.terminal}</span>在终端中打开</div>
+    <div class="menu-item group-start" data-ctx="copyfile"><span class="mi">${ICON.copy}</span>复制文件</div>
+    <div class="menu-item" data-ctx="copypath"><span class="mi">${ICON.copy}</span>复制路径</div>
+    <div class="menu-item" data-ctx="copyrel"><span class="mi">${ICON.relpath}</span>复制相对路径</div>
+    <div class="menu-item group-start danger" data-ctx="delete"><span class="mi">${ICON.trash}</span>删除</div>`;
+  placeMenu(m, x, y);
+}
+
+/* ==================================================================
+   事件
+   ================================================================== */
+/* 页签 */
+$("#tabs").addEventListener("click", e => {
+  const close = e.target.closest("[data-close]");
+  if (close) {
+    e.stopPropagation();
+    const f = curWt(); if (!f) return;
+    const id = close.dataset.close;
+    const i = f.w.tabs.findIndex(t => t.id === id);
+    f.w.tabs.splice(i, 1);
+    if (state.activeTab[f.w.id] === id) state.activeTab[f.w.id] = (f.w.tabs[Math.max(0, i - 1)] || {}).id;
+    renderAll(); return;
+  }
+  const tab = e.target.closest("[data-tab]");
+  if (tab) { state.activeTab[state.activeWt] = tab.dataset.tab; renderTabs(); renderMain(); }
+});
+
+/* 左树 */
+$("#projectTree").addEventListener("click", e => {
+  const run = e.target.closest("[data-agent-start]");
+  if (run) { e.stopPropagation(); openAgentMenu(run.dataset.agentStart); return; }
+  const wt = e.target.closest("[data-wt]");
+  if (wt) { state.activeWt = wt.dataset.wt; state.selFile = null; renderAll(); return; }
+  const pt = e.target.closest("[data-proj-toggle]");
+  if (pt) { const id = pt.dataset.projToggle; state.collapsed[id] = !state.collapsed[id]; renderLeft(); }
+});
+
+/* 文件树 */
+$("#fileTree").addEventListener("click", e => {
+  const dir = e.target.closest("[data-dir]");
+  if (dir) { const p = dir.dataset.dir; state.openDirs[p] = !state.openDirs[p]; renderRight(); return; }
+  const file = e.target.closest("[data-file]");
+  if (file) openFile(file.dataset.file);
+});
+$("#fileTree").addEventListener("contextmenu", e => {
+  const file = e.target.closest("[data-file]");
+  if (!file) return;
+  e.preventDefault();
+  openCtxMenu(e.clientX, e.clientY, file.dataset.file);
+});
+$("#fileSearch").addEventListener("input", e => { state.fileFilter = e.target.value; renderRight(); });
+$("#toggleIgnored").addEventListener("click", () => { state.showIgnored = !state.showIgnored; renderRight(); });
+
+function openFile(name) {
+  const f = curWt(); if (!f) return;
+  state.selFile = name;
+  let tab = f.w.tabs.find(t => t.type === "file-preview" && t.file === name);
+  if (!tab) { tab = { id:"tab-" + name + "-" + Date.now(), type:"file-preview", title:name, file:name }; f.w.tabs.push(tab); }
+  state.activeTab[f.w.id] = tab.id;
+  renderAll();
+}
+
+/* 新建页签 / Agent */
+$("#newTabBtn").addEventListener("click", e => { e.stopPropagation(); state.newTabOpen ? closeMenus() : openNewTabMenu(); });
+$("#newTabMenu").addEventListener("click", e => {
+  const it = e.target.closest("[data-newtab]"); if (!it) return;
+  const f = curWt(); if (!f) return;
+  const type = it.dataset.newtab;
+  const id = "nt-" + Date.now();
+  if (type === "agent") {
+    const aid = it.dataset.agent;
+    f.w.tabs.push({ id, type:"terminal", title:agentName(aid), agent:aid, agentState:"running" });
+    f.w.agent = aid; f.w.agentState = "running";
+  } else {
+    const base = { id, type, title: type === "terminal" ? "bash" : type === "browser" ? "localhost:3000" : "其他" };
+    if (type === "browser") base.url = "http://localhost:3000";
+    if (type === "file-preview") base.file = "README.md";
+    if (type === "file-preview") base.title = "README.md";
+    f.w.tabs.push(base);
+  }
+  state.activeTab[f.w.id] = id; closeMenus(); renderAll();
+});
+$("#agentMenu").addEventListener("click", e => {
+  const it = e.target.closest("[data-start-agent]"); if (!it) return;
+  const wtId = state.agentMenuWt, f = findWt(wtId); if (!f) { closeMenus(); return; }
+  const id = "nt-" + Date.now();
+  const aid = it.dataset.startAgent;
+  if (aid) {
+    f.w.tabs.push({ id, type:"terminal", title:agentName(aid), agent:aid, agentState:"running" });
+    f.w.agent = aid; f.w.agentState = "running";
+  } else {
+    f.w.tabs.push({ id, type:"terminal", title:"bash" });
+  }
+  state.activeWt = wtId; state.activeTab[f.w.id] = id; closeMenus(); renderAll();
+});
+
+/* 右键菜单（原型：仅关闭） */
+$("#ctxMenu").addEventListener("click", e => { if (e.target.closest("[data-ctx]")) closeMenus(); });
+
+/* 通知 */
+$("#toasts").addEventListener("click", e => {
+  const close = e.target.closest("[data-toast-close]");
+  if (close) { state.toasts = state.toasts.filter(t => String(t.id) !== close.dataset.toastClose); renderToasts(); return; }
+  const go = e.target.closest("[data-goto-wt]");
+  if (go) {
+    const f = findWt(go.dataset.gotoWt);
+    if (f) { state.activeWt = f.w.id; renderAll(); }
+  }
+});
+
+/* 设置入口 */
+$("#settingsBtn").addEventListener("click", () => {
+  state.settingsOpen = !state.settingsOpen;
+  $("#settingsOverlay").classList.toggle("hidden", !state.settingsOpen);
+  if (state.settingsOpen) renderSettings();
+});
+$("#settingsOverlay").addEventListener("click", e => {
+  if (e.target.closest("#settingsClose")) { state.settingsOpen = false; $("#settingsOverlay").classList.add("hidden"); return; }
+  const sec = e.target.closest("[data-sec]");
+  if (sec) { state.settingsSection = sec.dataset.sec; renderSettings(); return; }
+  const sp = e.target.closest("[data-sp]");
+  if (sp) { state.settingsSection = "project"; state.settingsProject = sp.dataset.sp; renderSettings(); return; }
+  const pin = e.target.closest("[data-pin]");
+  if (pin) { const f = findWt(pin.dataset.pin); if (!f) return; f.w.pinned = !f.w.pinned; renderSettings(); renderLeft(); return; }
+  if (e.target.closest("[data-open-add]")) openAddProject();
+});
+
+/* 添加项目 */
+function openAddProject() { state.addProjectOpen = true; $("#addProjectModal").classList.remove("hidden"); }
+function closeAddProject() { state.addProjectOpen = false; $("#addProjectModal").classList.add("hidden"); }
+$("#addProjectBtn").addEventListener("click", openAddProject);
+document.addEventListener("click", e => { if (e.target.closest("[data-open-add]")) openAddProject(); });
+$("#addProjectClose").addEventListener("click", closeAddProject);
+$("#addProjectCancel").addEventListener("click", closeAddProject);
+$("#addProjectModal").addEventListener("click", e => { if (e.target.id === "addProjectModal") closeAddProject(); });
+$("#addProjectConfirm").addEventListener("click", () => {
+  const path = $("#projPathInput").value.trim() || "D:\\workspace\\new-project";
+  const name = $("#projNameInput").value.trim() || path.split("\\").pop();
+  const id = "p" + Date.now();
+  projects.push({ id, name, path, worktrees:[ { id:id + "-w1", name, branch:"main", dir:path, pinned:true, agent:null, agentState:null, tabs:[ { id:id + "-t1", type:"terminal", title:"bash" } ] } ] });
+  state.activeWt = id + "-w1"; state.empty = false;
+  closeAddProject(); renderAll();
+});
+
+/* 折叠 / 拖拽 */
+$("#collapseLeft").addEventListener("click", () => { state.leftCollapsed = true; renderAll(); });
+$("#railLeft").addEventListener("click", () => { state.leftCollapsed = false; renderAll(); });
+$("#collapseRight").addEventListener("click", () => { state.rightCollapsed = true; renderAll(); });
+$("#railRight").addEventListener("click", () => { state.rightCollapsed = false; renderAll(); });
+
+function bindDrag(handleId, side) {
+  const h = $(handleId);
+  h.addEventListener("mousedown", e => {
+    e.preventDefault();
+    h.classList.add("dragging"); document.body.classList.add("dragging");
+    const startX = e.clientX;
+    const startW = side === "left" ? state.leftWidth : state.rightWidth;
+    const onMove = ev => {
+      const dx = ev.clientX - startX;
+      let w = side === "left" ? startW + dx : startW - dx;
+      w = Math.max(180, Math.min(w, 560));
+      if (side === "left") { state.leftWidth = w; $("#paneLeft").style.width = w + "px"; $("#paneLeft").style.flexBasis = w + "px"; }
+      else { state.rightWidth = w; $("#paneRight").style.width = w + "px"; $("#paneRight").style.flexBasis = w + "px"; }
+    };
+    const onUp = () => { h.classList.remove("dragging"); document.body.classList.remove("dragging"); document.removeEventListener("mousemove", onMove); document.removeEventListener("mouseup", onUp); };
+    document.addEventListener("mousemove", onMove); document.addEventListener("mouseup", onUp);
+  });
+}
+bindDrag("#handleLeft", "left");
+bindDrag("#handleRight", "right");
+
+/* 关闭菜单：点空白处 */
+document.addEventListener("mousedown", e => {
+  if (!e.target.closest("#newTabMenu") && !e.target.closest("#newTabBtn")) { if (state.newTabOpen) { state.newTabOpen = false; $("#newTabMenu").classList.add("hidden"); } }
+  if (!e.target.closest("#agentMenu") && !e.target.closest("[data-agent-start]")) { if (state.agentMenuWt) { state.agentMenuWt = null; $("#agentMenu").classList.add("hidden"); } }
+  if (!e.target.closest("#ctxMenu")) { if (state.ctx) { state.ctx = null; $("#ctxMenu").classList.add("hidden"); } }
+});
+
+/* 原型导航 */
+$("#mockNavToggle").addEventListener("click", () => {
+  state.mockOpen = !state.mockOpen;
+  $("#mockNavPanel").classList.toggle("hidden", !state.mockOpen);
+});
+function pushToast(kind, agent, wt, desc, life) {
+  const id = Date.now() + Math.random();
+  state.toasts.push({ id, kind, agent, wt, desc });
+  renderToasts();
+  if (life) setTimeout(() => { state.toasts = state.toasts.filter(t => t.id !== id); renderToasts(); }, life);
+}
+$("#mockNavPanel").addEventListener("click", e => {
+  const it = e.target.closest("[data-screen]"); if (!it) return;
+  const s = it.dataset.screen;
+  state.mockOpen = false; $("#mockNavPanel").classList.add("hidden");
+  state.settingsOpen = false; $("#settingsOverlay").classList.add("hidden");
+  state.empty = false; state.reconnected = null; state.toasts = [];
+  state.leftCollapsed = false; state.rightCollapsed = false;
+  state.leftWidth = 252; state.rightWidth = 260;
+  closeMenus(); $("#addProjectModal").classList.add("hidden");
+
+  if (s === "main" || s === "new-tab" || s === "ctx-menu" || s === "agent-start") {
+    state.activeWt = "p1-w1"; state.activeTab["p1-w1"] = "t1"; renderAll();
+    if (s === "new-tab") openNewTabMenu();
+    if (s === "ctx-menu") openCtxMenu(innerWidth - 300, innerHeight - 300, "main.ts");
+    if (s === "agent-start") openAgentMenu("p1-w1");
+  }
+  else if (s === "empty") { state.empty = true; renderAll(); }
+  else if (s === "settings-project") { state.settingsOpen = true; state.settingsSection = "project"; state.settingsProject = "p1"; $("#settingsOverlay").classList.remove("hidden"); renderAll(); }
+  else if (s === "settings-general") { state.settingsOpen = true; state.settingsSection = "general"; $("#settingsOverlay").classList.remove("hidden"); renderAll(); }
+  else if (s === "add-project") { renderAll(); openAddProject(); }
+  else if (s === "notify") {
+    state.activeWt = "p1-w2"; state.activeTab["p1-w2"] = "t4"; renderAll();
+    pushToast("waiting", "codex", "项目1 / fix-api-timeout", "Codex 需要你确认：允许运行 npm test 吗？", 0);
+    pushToast("done", "opencode", "项目2 / main", "opencode 已完成 3 个任务（2 个文件变更）", 0);
+    pushToast("error", "claude", "项目1 / feat-agent-ui", "Claude Code 运行出错：上下文超限", 0);
+  }
+  else if (s === "reconnect") {
+    state.activeWt = "p1-w1"; state.activeTab["p1-w1"] = "t1";
+    state.reconnected = { lines: 1204, done: false }; renderAll();
+    setTimeout(() => { state.reconnected = { lines: 1204, done: true }; renderMain(); }, 1600);
+  }
+  else if (s === "resize") {
+    state.activeWt = "p1-w1"; state.activeTab["p1-w1"] = "t1";
+    state.leftWidth = 300; state.rightWidth = 200;
+    renderAll();
+    $("#handleLeft").classList.add("pulse"); $("#handleRight").classList.add("pulse");
+    const hint = document.createElement("div");
+    hint.className = "resize-hint";
+    hint.style.left = (state.leftWidth + 8) + "px"; hint.style.top = "70px";
+    hint.textContent = "拖拽分隔条调整宽度 · 点击 ⊟ 折叠侧栏";
+    document.body.appendChild(hint);
+    setTimeout(() => { hint.remove(); $("#handleLeft").classList.remove("pulse"); $("#handleRight").classList.remove("pulse"); }, 3200);
+  }
+});
+
+/* 启动 */
+renderAll();
+</script>
+</body>
+</html>
