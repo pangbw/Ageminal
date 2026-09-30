@@ -1,53 +1,36 @@
 /**
  * 界面语言的**归一化与择优**（REQUIREMENTS.md §11，issue #54）。
  *
- * 检测链是 `插件 os.locale()` → `navigator.language` → 回退 `zh-CN`；
+ * 启动语言 = 用户选过的 → `插件 os.locale()` → `navigator.language` → 回退 `zh-CN`；
  * 本模块只管其中不需要副作用的纯函数，取系统 locale 的活儿在 `index.ts`。
  */
 
-/** 有内容的语言（`locales/<locale>/` 下有对应 JSON）。 */
-export const SUPPORTED_LOCALES = ["zh-CN", "en-US"] as const;
+/**
+ * **有内容**的语言：`locales/<locale>/` 下有 JSON，key 结构必须与 zh-CN 对齐。
+ * 它比「可被选中」宽——en-US 先按 §11 对齐结构、内容补齐后再入列。
+ */
+export const LOCALES = ["zh-CN", "en-US"] as const;
 
-export type AppLocale = (typeof SUPPORTED_LOCALES)[number];
+export type Locale = (typeof LOCALES)[number];
 
-/** 所有候选都不认识时的回退。 */
+/** MVP 允许**被检测到 / 被选中**的语言（REQUIREMENTS.md §11：语言列表只列 zh-CN）。 */
+export const SELECTABLE_LOCALES = ["zh-CN"] as const satisfies readonly Locale[];
+
+export type AppLocale = (typeof SELECTABLE_LOCALES)[number];
+
+/** 所有候选都归不了时的回退。 */
 export const FALLBACK_LOCALE: AppLocale = "zh-CN";
 
 /**
- * 把一个 BCP-47 标签归一到有内容的语言；不认识则返回 `null`，交给下一个候选。
+ * 把一个 BCP-47 标签归一到**可入列**的语言；归不了则返回 `null`，交给下一个候选。
  *
- * - `zh` / `zh-CN` / `zh-Hans*` / `zh-SG` → `zh-CN`（简体）
- * - `zh-TW` / `zh-HK` / `zh-MO` / `zh-Hant*` → `null`（繁体还没有内容，往下落）
- * - `en` / `en-US` / `en-GB` / `en-*` → `en-US`（英文只有这一份内容）
- * - `de-DE` 之类 → `null`
+ * - `zh` / `zh-CN` / `zh-Hans*` / `zh-SG` → `zh-CN`
+ * - `en-*` / `de-DE` 之类 → `null`（en-US 还没入列，见 `SELECTABLE_LOCALES`）
  */
 export function normalizeLocale(tag: string | null | undefined): AppLocale | null {
   const normalized = tag?.trim().replace(/_/g, "-").toLowerCase();
   if (!normalized) return null;
 
-  if (normalized === "en" || normalized.startsWith("en-")) return "en-US";
-  if (normalized === "zh" || normalized.startsWith("zh-")) {
-    return isTraditionalChinese(normalized) ? null : "zh-CN";
-  }
+  if (normalized === "zh" || normalized.startsWith("zh-")) return "zh-CN";
   return null;
-}
-
-/**
- * 按优先级取第一个能归一的候选；全都归不了才回退。
- *
- * `pickLocale([stored, osLocale, navigatorLanguage])` —— 未知标签（如 `de-DE`）
- * 不会拦路，而是继续看下一跳。
- */
-export function pickLocale(candidates: readonly (string | null | undefined)[]): AppLocale {
-  for (const candidate of candidates) {
-    const locale = normalizeLocale(candidate);
-    if (locale) return locale;
-  }
-  return FALLBACK_LOCALE;
-}
-
-function isTraditionalChinese(tag: string): boolean {
-  return (
-    tag.startsWith("zh-hant") || tag === "zh-tw" || tag === "zh-hk" || tag === "zh-mo"
-  );
 }

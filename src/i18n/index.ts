@@ -2,13 +2,13 @@
  * i18n 装配（REQUIREMENTS.md §11，issue #54）。
  *
  * - locale 文件按**域命名空间**分 JSON，由 `@intlify/unplugin-vue-i18n` **预编译**（见 `vite.config.ts`）；
- * - **zh-CN 是类型源**：key 拼错在 `vue-tsc` 阶段报错（文件末尾的模块增强）；
+ * - **zh-CN 是类型源**：key 拼错在 `vue-tsc` 阶段报错（走 `./translate` 的 `t()`）；
  * - 语言的持久化走 **Rust 设置**（`getLanguage` / `setLanguage`），**不用 localStorage**。
  */
 import { createI18n } from "vue-i18n";
 
 import { commands } from "../bindings";
-import { FALLBACK_LOCALE, pickLocale, type AppLocale } from "./detect";
+import { FALLBACK_LOCALE, normalizeLocale, type AppLocale, type Locale } from "./detect";
 import type { Namespace } from "./namespaces";
 
 import zhCommon from "./locales/zh-CN/common.json";
@@ -61,7 +61,7 @@ export type MessageSchema = typeof zhCN;
 const messages = {
   "zh-CN": zhCN,
   "en-US": enUS,
-} satisfies Record<AppLocale, MessageTree>;
+} satisfies Record<Locale, MessageTree>;
 
 export const i18n = createI18n({
   legacy: false,
@@ -74,7 +74,7 @@ export const i18n = createI18n({
 export type LocaleProbe = {
   /** Rust 设置里已保存的语言；`null` = 未设置（跟随系统）。 */
   stored: () => Promise<string | null>;
-  /** 插件 `os.locale()`（由 Rust 侧调用，前端不拿 `os:*` 权限）。 */
+  /** 系统 locale：Rust 的 `system_locale` 命令转出来的 `os.locale()`（前端不拿 `os:*` 权限）。 */
   system: () => Promise<string | null>;
   /** `navigator.language`。 */
   browser: () => string | null;
@@ -100,16 +100,24 @@ const defaultProbe: LocaleProbe = {
 };
 
 /**
- * 定出启动语言：**Rust 设置 → 插件 `os.locale()` → `navigator.language` → 回退 `zh-CN`**。
+ * 定出启动语言：**用户选过的 → 插件 `os.locale()` → `navigator.language` → 回退 `zh-CN`**
+ * （`REQUIREMENTS.md` §11 的检测链，前面加上「用户选过就用它」——否则持久化没意义）。
  *
- * 已保存的值优先；值不认识（或被删掉的旧语言）就继续往下一跳，不拦路。
+ * 逐跳短路的（不是先全部问完）：已经问到答案就不再付下一次 IPC；
+ * 归不了的值（`de-DE`、已删除的旧语言）不算答案，继续往下一跳。
  */
 export async function resolveInitialLocale(probe: LocaleProbe = defaultProbe): Promise<AppLocale> {
-  return pickLocale([await probe.stored(), await probe.system(), probe.browser()]);
+  const stored = normalizeLocale(await probe.stored());
+  if (stored) return stored;
+
+  const system = normalizeLocale(await probe.system());
+  if (system) return system;
+
+  return normalizeLocale(probe.browser()) ?? FALLBACK_LOCALE;
 }
 
-/** 切到某个语言：同步 i18n 与 `<html lang>`。 */
-export function applyLocale(locale: AppLocale): void {
+/** 切到某个语言：同步 i18n 与 `<html lang>`。能渲染的语言比能入列的宽（见 `detect.ts`）。 */
+export function applyLocale(locale: Locale): void {
   i18n.global.locale.value = locale;
   if (typeof document !== "undefined") {
     document.documentElement.lang = locale;

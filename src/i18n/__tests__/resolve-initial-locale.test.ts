@@ -23,31 +23,41 @@ describe("resolveInitialLocale", () => {
   beforeEach(() => {
     mocks.getLanguage.mockResolvedValue(null);
     mocks.systemLocale.mockResolvedValue(null);
-    stubBrowserLanguage("en-US");
+    stubBrowserLanguage("zh-CN");
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("prefers the language persisted in Rust settings", async () => {
+  it("uses the language persisted in Rust settings", async () => {
     mocks.getLanguage.mockResolvedValue("zh-CN");
-    mocks.systemLocale.mockResolvedValue("en-US");
-
-    await expect(resolveInitialLocale()).resolves.toBe("zh-CN");
-  });
-
-  it("falls back to the plugin OS locale when nothing is stored", async () => {
     mocks.systemLocale.mockResolvedValue("zh-CN");
 
     await expect(resolveInitialLocale()).resolves.toBe("zh-CN");
   });
 
-  it("falls back to navigator.language when the OS locale is unusable", async () => {
-    mocks.systemLocale.mockResolvedValue("zh-TW");
-    stubBrowserLanguage("en-GB");
+  it("stops asking other probes once Rust settings answer", async () => {
+    mocks.getLanguage.mockResolvedValue("zh-CN");
 
-    await expect(resolveInitialLocale()).resolves.toBe("en-US");
+    await resolveInitialLocale();
+
+    expect(mocks.systemLocale).not.toHaveBeenCalled();
+  });
+
+  it("keeps asking when the stored value is not usable", async () => {
+    mocks.getLanguage.mockResolvedValue("de-DE");
+    mocks.systemLocale.mockResolvedValue("zh-CN");
+
+    await expect(resolveInitialLocale()).resolves.toBe("zh-CN");
+    expect(mocks.systemLocale).toHaveBeenCalled();
+  });
+
+  it("falls back to navigator.language when the OS locale is unusable", async () => {
+    mocks.systemLocale.mockResolvedValue("de-DE");
+    stubBrowserLanguage("zh-Hans-CN");
+
+    await expect(resolveInitialLocale()).resolves.toBe("zh-CN");
   });
 
   it("keeps going when there is no Tauri host at all", async () => {
@@ -65,13 +75,13 @@ describe("resolveInitialLocale", () => {
     await expect(resolveInitialLocale()).resolves.toBe(FALLBACK_LOCALE);
   });
 
-  it("lets a test drive the probe directly", async () => {
+  it("does not select a locale that is not open for selection yet", async () => {
     const probe = {
       stored: async () => "en-US",
       system: async () => "zh-CN",
       browser: () => "zh-CN",
     };
 
-    await expect(resolveInitialLocale(probe)).resolves.toBe("en-US");
+    await expect(resolveInitialLocale(probe)).resolves.toBe("zh-CN");
   });
 });

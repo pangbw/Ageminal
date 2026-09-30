@@ -6,7 +6,10 @@ use serde_json::{Map, Value};
 use super::doc::{Document, Migration};
 
 /// 当前代码能写出的设置版本。
-pub(crate) const CURRENT_SETTINGS_VERSION: u32 = 1;
+///
+/// 2：`general.language` 由 `String` 改成 `Option<String>`（「未设置」≠「用户选了 zh-CN」）。
+/// 首个公开发布前按 `Settings::migrations` 的约定走「备份 + 重置」，不写迁移。
+pub(crate) const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 /// 应用设置文档。
 ///

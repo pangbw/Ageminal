@@ -40,7 +40,8 @@
 ```bash
 pnpm install          # 安装前端依赖
 pnpm dev              # 开发运行：先构建 sidecar，再 tauri dev（需 Windows）
-pnpm check            # 本地全量检查：fmt / clippy / test / lint / tsc / 绑定无 diff
+pnpm check            # 本地全量检查：fmt / clippy / test / lint / tsc / vitest / 绑定无 diff
+pnpm test:unit        # 前端单元测试（vitest，含 i18n 两道门禁）
 pnpm build            # 前端构建（tauri.conf.json 的 beforeBuildCommand）
 pnpm sidecars         # 构建 daemon / notify 并复制为 Tauri sidecar 命名
 pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts

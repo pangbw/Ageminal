@@ -100,6 +100,7 @@
 `worktree` · `agent` · `daemon` · `commit` · `checkpoint` · `scrollback` · `pane` · `Acrylic` · `Mica` · `VT` · `ConPTY` · `SGR` · `alt-screen` · `pipe` · `attach` / `detach` · `token`
 
 > 其余 UI 文案以 **zh-CN 为类型来源**；键结构须与其它语言一致（CI 两道检查：CJK 字面量 + 键结构 parity）。
+> 英文化的落笔（不译词补集 + 中英对照）见 `docs/i18n-glossary.md`。
 
 ## 8. 待补
 

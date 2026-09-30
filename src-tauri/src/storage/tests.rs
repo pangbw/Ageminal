@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::doc::{self, Document, Migration};
-use super::{atomic, Notice, Store, WindowState};
+use super::{atomic, settings, Notice, Store, WindowState};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -312,7 +312,7 @@ fn corrupt_file_is_backed_up_and_rebuilt() {
     // 重建后的文件是合法文档
     assert_eq!(
         read_json(&dir.path().join("settings.json"))["schemaVersion"],
-        1
+        settings::CURRENT_SETTINGS_VERSION
     );
 }
 
@@ -400,7 +400,7 @@ fn newer_schema_version_is_writable_and_keeps_unknown_fields() {
         store.notices(),
         [Notice::WrittenByNewerVersion {
             found: 9,
-            current: 1,
+            current: settings::CURRENT_SETTINGS_VERSION,
             ..
         }]
     ));

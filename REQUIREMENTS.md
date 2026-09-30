@@ -376,7 +376,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - **i18n** ✅（C6 #14）：**vue-i18n 11**（`legacy: false`）+ `@intlify/unplugin-vue-i18n`（**消息预编译**）；按功能域命名空间分 JSON（`common` / `shell` / `terminal` / `tabs` / `files` / `agents` / `settings` / `errors`）；以 **zh-CN 为类型源**（key 拼错编译期报错）
   - **两道 CI 强制**：① 扫 `src/**` 的**中文字面量**（白名单：注释、`i18n/locales/`）；② 校验 **en-US 与 zh-CN 的 key 集合完全一致**（值可空）
   - **库内建文案纳入范围**：CodeMirror 搜索面板 **17 条**（Find / Replace / next / previous / all / match case / regexp / by word / replace / replace all / close / go / …）+ `@codemirror/language` 3 条 + autocomplete 1 条 + commands 1 条；xterm **2 条**（`promptLabel` / `tooMuchOutput`）
-  - **语言列表**：MVP **只列 `zh-CN`**（en-US 先对齐 key 结构，内容补齐后再入下拉）；检测走 `plugin-os.locale()`（BCP-47）→ `navigator.language` → 回退 `zh-CN`
+  - **语言列表**：MVP **只列 `zh-CN`**（en-US 先对齐 key 结构，内容补齐后再入下拉）；检测链 = **已保存的语言**（§14，用户选过就用它）→ `plugin-os.locale()`（BCP-47，由 Rust 侧调用）→ `navigator.language` → 回退 `zh-CN`（#54 实现时明确：已保存值必须排在检测之前，否则持久化没有意义）
   - **术语不译**：worktree / agent / commit / rebase / stash / Claude Code / Codex / opencode…（`docs/i18n-glossary.md`）
   - 语言选择的持久化走 **Rust 侧应用设置**（§14），**不用 localStorage**
 

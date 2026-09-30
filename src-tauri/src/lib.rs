@@ -45,7 +45,8 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
 
 /// 系统 locale（BCP-47）。
 ///
-/// 由 **Rust 侧**调用 os 插件，前端不拿 `os:*` 权限（capabilities 保持最小）。
+/// 直接调 `tauri_plugin_os` 的 Rust 函数，**不注册插件**：前端不拿 `os:*` 权限，
+/// 也就不需要插件那层 JS 命令面（capabilities 保持最小）。
 /// 语言检测链的第一跳；`None` 交给 `navigator.language` 兜底（见 issue #54）。
 #[tauri::command]
 #[specta::specta]
@@ -116,7 +117,6 @@ fn spawn_state_flusher(handle: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_os::init())
         .invoke_handler(builder().invoke_handler())
         .setup(|app| {
             match storage::Store::open_default() {

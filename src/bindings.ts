@@ -9,7 +9,8 @@ export const commands = {
 	/**
 	 *  系统 locale（BCP-47）。
 	 * 
-	 *  由 **Rust 侧**调用 os 插件，前端不拿 `os:*` 权限（capabilities 保持最小）。
+	 *  直接调 `tauri_plugin_os` 的 Rust 函数，**不注册插件**：前端不拿 `os:*` 权限，
+	 *  也就不需要插件那层 JS 命令面（capabilities 保持最小）。
 	 *  语言检测链的第一跳；`None` 交给 `navigator.language` 兜底（见 issue #54）。
 	 */
 	systemLocale: () => __TAURI_INVOKE<string | null>("system_locale"),
