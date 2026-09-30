@@ -1,0 +1,55 @@
+name: release
+
+# 打 tag（v*）出 NSIS 安装器 + SHA256SUMS。MVP 不签名，见 README「分发」。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.4.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          cache-on-failure: true
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build sidecars
+        run: pnpm sidecars
+
+      - name: Build installer
+        run: pnpm tauri build
+
+      - name: Write SHA256SUMS
+        shell: pwsh
+        run: |
+          Get-ChildItem target/release/bundle/nsis/*.exe | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            target/release/bundle/nsis/*.exe
+            SHA256SUMS

@@ -25,6 +25,8 @@ const steps = [
     [
       "clippy",
       ...(isWindows ? ["--all-targets"] : [...coreCrates, "--all-targets"]),
+      // 打开全部 feature，让 codegen bin（bindgen）也进入 lint 范围。
+      "--all-features",
       "--",
       "-D",
       "warnings",

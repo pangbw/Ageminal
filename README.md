@@ -39,13 +39,23 @@
 
 ```bash
 pnpm install          # 安装前端依赖
-pnpm tauri dev        # 开发运行（需在 Windows；Linux 需 GTK/WebKit 系统库）
-pnpm check            # 本地全量检查：fmt / clippy / test / lint / tsc
+pnpm dev              # 开发运行：先构建 sidecar，再 tauri dev（需 Windows）
+pnpm check            # 本地全量检查：fmt / clippy / test / lint / tsc / 绑定无 diff
 pnpm build            # 前端构建（tauri.conf.json 的 beforeBuildCommand）
+pnpm sidecars         # 构建 daemon / notify 并复制为 Tauri sidecar 命名
+pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts
 ```
 
-`pnpm check` 是**平台感知**的：Windows 上检查整个 workspace；其他平台跳过 `src-tauri`
-（它需要 GTK / WebKit 系统库），只检查三个核心 crate。
+`pnpm check` 是**平台感知**的：Windows 上检查整个 workspace 与绑定一致性；
+其他平台跳过 `src-tauri`（它需要 GTK / WebKit 系统库），只检查三个核心 crate。
+
+## 分发
+
+安装器为 **NSIS**，**未签名**（MVP 不签名）——首次运行 Windows SmartScreen 会提示
+「未知发布者」，选择「仍要运行」即可。正式发布后计划申请 SignPath Foundation。
+
+打 `v*` tag 触发 release 工作流：构建 sidecar → `tauri build` → 上传 NSIS 安装器与
+`SHA256SUMS`。
 
 ## 状态
 

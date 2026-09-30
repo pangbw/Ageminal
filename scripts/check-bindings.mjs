@@ -24,7 +24,7 @@ function run(cmd, args) {
   return result.status ?? 1;
 }
 
-if (run("cargo", ["run", "-p", "ageminal-desktop", "--bin", "export_bindings"]) !== 0) {
+if (run("cargo", ["run", "-p", "ageminal-desktop", "--features", "bindgen", "--bin", "export_bindings"]) !== 0) {
   process.exit(1);
 }
 
