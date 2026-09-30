@@ -6,6 +6,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+# 本 crate 还有 export_bindings（绑定生成）；指定 tauri dev 默认跑主的那个。
+default-run = "ageminal-desktop"
 
 [lib]
 name = "ageminal_desktop_lib"
