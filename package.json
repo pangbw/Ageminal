@@ -14,7 +14,8 @@
     "tauri": "tauri",
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",
-    "check": "node scripts/check.mjs"
+    "check": "pnpm check:rust && pnpm lint && pnpm typecheck",
+    "check:rust": "node scripts/check-rust.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0",
