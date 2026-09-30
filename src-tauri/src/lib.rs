@@ -3,9 +3,14 @@
 //! Rust → TS 的类型边界由 tauri-specta 唯一产出：生成物 `src/bindings.ts`
 //! 入版本控制，由 `pnpm check:bindings` 校验它与源码之间无 diff。
 
+use std::sync::Mutex;
+
 use serde::Serialize;
 use specta::Type;
+use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
+
+pub mod storage;
 
 /// 生成绑定的落点。基于 crate 根定位，不依赖运行时的 cwd。
 pub fn bindings_path() -> std::path::PathBuf {
@@ -51,6 +56,30 @@ pub fn export_bindings() {
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(builder().invoke_handler())
-        .run(tauri::generate_context!())
-        .expect("failed to run Ageminal");
+        .setup(|app| {
+            match storage::Store::open_default() {
+                Ok(store) => {
+                    // 损坏 / 迁移失败 / 高版本写入等提示，先落到日志（#88 接管日志）。
+                    for notice in store.notices() {
+                        eprintln!("[storage] {notice:?}");
+                    }
+                    app.manage(Mutex::new(store));
+                }
+                Err(error) => eprintln!("[storage] 初始化失败：{error}"),
+            }
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to build Ageminal")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(store) = app.try_state::<Mutex<storage::Store>>() {
+                    if let Ok(mut store) = store.lock() {
+                        if let Err(error) = store.flush() {
+                            eprintln!("[storage] 退出前 flush 失败：{error}");
+                        }
+                    }
+                }
+            }
+        });
 }

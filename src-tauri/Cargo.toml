@@ -28,6 +28,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 # Rust ↔ TS 类型边界。specta 生态尚在 beta，必须用 `=` 钉死版本。
 specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "0.0.12"

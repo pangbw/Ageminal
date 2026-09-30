@@ -26,11 +26,13 @@ name = "ageminal-desktop"
 version = "0.0.0"
 dependencies = [
  "serde",
+ "serde_json",
  "specta",
  "specta-typescript",
  "tauri",
  "tauri-build",
  "tauri-specta",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
