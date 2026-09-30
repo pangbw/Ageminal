@@ -4,6 +4,8 @@
 
 Issues and specs live as GitHub issues, operated via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
+**写操作纪律**（防滥用检测封号）：串行、写间隔 ≥1s、按 `retry-after` / `x-ratelimit-reset` 退避、单次 ≤20 写且每小时 ≤60 写、遇 `suspended` 立即停。读随便用 `gh`。
+
 ### Triage labels
 
 Five canonical triage roles map to the default labels `needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`. See `docs/agents/triage-labels.md`.

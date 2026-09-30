@@ -3,3 +3,18 @@
 
 # Agent Tools
 .codegraph/
+
+# Scratch (ticket drafts, publish scripts)
+.scratch/
+
+# Node / frontend
+node_modules/
+dist/
+*.local
+
+# Rust
+target/
+
+# Tauri
+src-tauri/gen/
+src-tauri/binaries/
