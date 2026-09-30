@@ -1,0 +1,11 @@
+[package]
+name = "ageminal-daemon"
+version.workspace = true
+description = "Ageminal 会话守护进程（持有 ConPTY 与服务端 VT 内核）"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ageminal-protocol = { path = "../protocol" }

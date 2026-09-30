@@ -1,0 +1,11 @@
+[package]
+name = "ageminal-notify"
+version.workspace = true
+description = "Ageminal agent 事件 hook shim（ageminal notify）"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ageminal-protocol = { path = "../protocol" }

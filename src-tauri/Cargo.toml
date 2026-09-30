@@ -1,0 +1,18 @@
+[package]
+name = "ageminal-desktop"
+version.workspace = true
+description = "Ageminal 桌面应用（Tauri 2 壳 + app-core）"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ageminal_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }

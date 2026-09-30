@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["src-tauri", "crates/protocol", "crates/daemon", "crates/notify"]
+
+# 版本：app 版本以根 package.json 为单一来源（tauri.conf.json 指向它）。
+# 这里的 version 供 workspace 内其它 crate 继承，避免多处硬编码；
+# 协议版本与 app 版本解耦，由 ageminal-protocol 自带。
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/pangbw/Ageminal"
+rust-version = "1.77"

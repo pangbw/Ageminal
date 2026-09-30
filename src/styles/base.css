@@ -1,0 +1,35 @@
+/* One Dark Pro Glass 的基础色（见 REQUIREMENTS.md §11）。仅深色。 */
+:root {
+  color-scheme: dark;
+
+  --bg: #080909;
+  --border: #212121;
+  --surface: #2c313a;
+  --fg: #e6e9f0;
+  --fg-muted: #b8bfcc;
+  --fg-faint: #949cab;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    "Microsoft YaHei",
+    sans-serif;
+  font-size: 14px;
+  overflow: hidden;
+}

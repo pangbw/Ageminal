@@ -7,7 +7,7 @@
 - **运行环境**：纯 Windows（默认 Git Bash，回退 PowerShell）；WSL 延后
 - **形态**：Tauri 2 桌面应用（待开发）
 - **许可**：完全开源，**Apache-2.0**
-- **当前阶段**：布局原型（已完成）
+- **当前阶段**：实现起步（issue #50 骨架已就位）
 
 ## 目录
 
@@ -34,6 +34,18 @@
 9. Agent 状态 / 通知
 10. 会话恢复提示
 11. 三栏拖拽 / 折叠
+
+## 开发
+
+```bash
+pnpm install          # 安装前端依赖
+pnpm tauri dev        # 开发运行（需在 Windows；Linux 需 GTK/WebKit 系统库）
+pnpm check            # 本地全量检查：fmt / clippy / test / lint / tsc
+pnpm build            # 前端构建（tauri.conf.json 的 beforeBuildCommand）
+```
+
+`pnpm check` 是**平台感知**的：Windows 上检查整个 workspace；其他平台跳过 `src-tauri`
+（它需要 GTK / WebKit 系统库），只检查三个核心 crate。
 
 ## 状态
 

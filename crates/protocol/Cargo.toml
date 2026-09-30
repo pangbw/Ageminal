@@ -1,0 +1,11 @@
+[package]
+name = "ageminal-protocol"
+# 协议版本与 app 版本解耦（见 REQUIREMENTS.md §19）。
+version = "0.1.0"
+description = "app-core ↔ daemon 的帧协议（Rust 单一来源）"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
