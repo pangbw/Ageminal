@@ -6,6 +6,17 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 export const commands = {
 	/**  首个贯通 Rust → TS 的命令。 */
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**
+	 *  系统 locale（BCP-47）。
+	 * 
+	 *  由 **Rust 侧**调用 os 插件，前端不拿 `os:*` 权限（capabilities 保持最小）。
+	 *  语言检测链的第一跳；`None` 交给 `navigator.language` 兜底（见 issue #54）。
+	 */
+	systemLocale: () => __TAURI_INVOKE<string | null>("system_locale"),
+	/**  已持久化的界面语言；`None` = 未设置，前端按系统检测决定（issue #54）。 */
+	getLanguage: () => __TAURI_INVOKE<string | null>("get_language"),
+	/**  写入界面语言并**立即落盘**；`None` = 恢复「跟随系统」。 */
+	setLanguage: (language: string | null) => typedError<null, string>(__TAURI_INVOKE("set_language", { language })),
 };
 
 /* Types */
@@ -18,4 +29,14 @@ export type AppInfo = {
 	/**  运行平台（`std::env::consts::OS`）。 */
 	os: string,
 };
+
+/* Tauri Specta runtime */
+async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
+    try {
+        return { status: "ok", data: await result };
+    } catch (e) {
+        if (e instanceof Error) throw e;
+        return { status: "error", error: e as any };
+    }
+}
 

@@ -16,24 +16,29 @@
     "bindings": "cargo run -p ageminal-desktop --features bindgen --bin export_bindings",
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",
-    "check": "pnpm check:rust && pnpm lint && pnpm typecheck && pnpm check:bindings",
+    "test:unit": "vitest run",
+    "check": "pnpm check:rust && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm check:bindings",
     "check:rust": "node scripts/check-rust.mjs",
     "check:bindings": "node scripts/check-bindings.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0",
-    "vue": "^3.5.43"
+    "vue": "^3.5.43",
+    "vue-i18n": "^11.4.12"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@intlify/unplugin-vue-i18n": "^11.2.5",
     "@tauri-apps/cli": "^2.12.0",
     "@vitejs/plugin-vue": "^6.0.9",
     "eslint": "^10.11.0",
     "eslint-plugin-vue": "^10.11.1",
     "globals": "^17.12.0",
+    "happy-dom": "^20.14.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.71.0",
     "vite": "^8.3.1",
+    "vitest": "^5.0.2",
     "vue-tsc": "^3.3.11"
   }
 }

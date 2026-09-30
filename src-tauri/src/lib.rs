@@ -43,9 +43,44 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
     }
 }
 
+/// 系统 locale（BCP-47）。
+///
+/// 由 **Rust 侧**调用 os 插件，前端不拿 `os:*` 权限（capabilities 保持最小）。
+/// 语言检测链的第一跳；`None` 交给 `navigator.language` 兜底（见 issue #54）。
+#[tauri::command]
+#[specta::specta]
+fn system_locale() -> Option<String> {
+    tauri_plugin_os::locale()
+}
+
+/// 已持久化的界面语言；`None` = 未设置，前端按系统检测决定（issue #54）。
+#[tauri::command]
+#[specta::specta]
+fn get_language(store: tauri::State<'_, Mutex<storage::Store>>) -> Option<String> {
+    store.lock().ok()?.settings().general.language.clone()
+}
+
+/// 写入界面语言并**立即落盘**；`None` = 恢复「跟随系统」。
+#[tauri::command]
+#[specta::specta]
+fn set_language(
+    store: tauri::State<'_, Mutex<storage::Store>>,
+    language: Option<String>,
+) -> Result<(), String> {
+    let mut guard = store.lock().map_err(|_| "设置锁已被污染".to_owned())?;
+    guard
+        .update_settings(|settings| settings.general.language = language)
+        .map_err(|error| error.to_string())
+}
+
 /// 命令注册的单一来源：运行与导出绑定共用。
 pub fn builder() -> Builder<tauri::Wry> {
-    Builder::new().commands(collect_commands![app_info])
+    Builder::new().commands(collect_commands![
+        app_info,
+        system_locale,
+        get_language,
+        set_language
+    ])
 }
 
 /// 导出 TypeScript 绑定到 `src/bindings.ts`。
@@ -81,6 +116,7 @@ fn spawn_state_flusher(handle: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .invoke_handler(builder().invoke_handler())
         .setup(|app| {
             match storage::Store::open_default() {

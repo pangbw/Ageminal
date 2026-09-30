@@ -205,13 +205,22 @@ fn settings_survive_restart() {
     {
         let mut store = Store::open(dir.path()).unwrap();
         store
-            .update_settings(|settings| settings.general.language = "en-US".to_owned())
+            .update_settings(|settings| settings.general.language = Some("en-US".to_owned()))
             .unwrap();
     }
 
     let store = Store::open(dir.path()).unwrap();
-    assert_eq!(store.settings().general.language, "en-US");
+    assert_eq!(store.settings().general.language.as_deref(), Some("en-US"));
     assert!(store.notices().is_empty());
+}
+
+#[test]
+fn fresh_settings_have_no_language() {
+    // 「未设置」必须是一个**可区分**的状态：语言检测（#54）靠它决定是否走系统 locale。
+    let dir = TempDir::new("fresh-lang");
+    let store = Store::open(dir.path()).unwrap();
+
+    assert_eq!(store.settings().general.language, None);
 }
 
 #[test]
@@ -296,7 +305,7 @@ fn corrupt_file_is_backed_up_and_rebuilt() {
         store.notices(),
         [Notice::CorruptRecovered { backup }] if backup.path.exists()
     ));
-    assert_eq!(store.settings().general.language, "zh-CN");
+    assert_eq!(store.settings().general.language, None);
     assert!(backup_names(dir.path())
         .iter()
         .any(|name| name.starts_with("settings.json.corrupt-")));
@@ -397,7 +406,7 @@ fn newer_schema_version_is_writable_and_keeps_unknown_fields() {
     ));
 
     store
-        .update_settings(|settings| settings.general.language = "ja-JP".to_owned())
+        .update_settings(|settings| settings.general.language = Some("ja-JP".to_owned()))
         .unwrap();
 
     let raw = read_json(&path);

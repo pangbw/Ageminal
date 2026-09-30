@@ -1,0 +1,9 @@
+{
+  "appInfo": {
+    "loading": "Reading AppInfo…",
+    "error": "Failed to read AppInfo: {message}"
+  },
+  "next": {
+    "hint": "Next up: app shell and three-column layout (#55)."
+  }
+}

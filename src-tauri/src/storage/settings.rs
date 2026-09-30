@@ -43,8 +43,12 @@ pub struct General {
     #[serde(default = "yes")]
     pub confirm_close: bool,
     /// 界面语言（BCP-47）。
-    #[serde(default = "default_language")]
-    pub language: String,
+    ///
+    /// `None` 表示**未设置**：语言检测按
+    /// `插件 os.locale()` → `navigator.language` → 回退 `zh-CN` 走（见 issue #54）。
+    /// 若在这里塞一个具体默认值，「未设置」与「用户选了默认值」就再也分不开。
+    #[serde(default)]
+    pub language: Option<String>,
     /// 未知字段原样保留：前向兼容在**嵌套层**同样成立。
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -55,7 +59,7 @@ impl Default for General {
         Self {
             default_shell: None,
             confirm_close: true,
-            language: default_language(),
+            language: None,
             extra: Map::new(),
         }
     }
@@ -81,8 +85,4 @@ fn current_version() -> u32 {
 
 fn yes() -> bool {
     true
-}
-
-fn default_language() -> String {
-    "zh-CN".to_owned()
 }

@@ -2,6 +2,7 @@
 import { onMounted, ref } from "vue";
 
 import { commands, type AppInfo } from "./bindings";
+import { translate as t } from "./i18n/translate";
 
 const info = ref<AppInfo | null>(null);
 const failure = ref<string | null>(null);
@@ -18,13 +19,13 @@ onMounted(async () => {
 <template>
   <main class="shell">
     <h1 class="shell__title">
-      Ageminal
+      {{ t("common.appName") }}
     </h1>
     <p
       v-if="failure"
       class="shell__error"
     >
-      AppInfo 读取失败：{{ failure }}
+      {{ t("shell.appInfo.error", { message: failure }) }}
     </p>
     <p
       v-else-if="info"
@@ -36,10 +37,10 @@ onMounted(async () => {
       v-else
       class="shell__lead"
     >
-      正在读取 AppInfo…
+      {{ t("shell.appInfo.loading") }}
     </p>
     <p class="shell__hint">
-      下一步：应用外壳与三栏布局（#55）。
+      {{ t("shell.next.hint") }}
     </p>
   </main>
 </template>

@@ -1,0 +1,9 @@
+{
+  "appInfo": {
+    "loading": "正在读取 AppInfo…",
+    "error": "AppInfo 读取失败：{message}"
+  },
+  "next": {
+    "hint": "下一步：应用外壳与三栏布局（#55）。"
+  }
+}

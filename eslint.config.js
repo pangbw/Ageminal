@@ -14,6 +14,8 @@ export default tseslint.config(
       "prototype/**",
       "docs/**",
       ".scratch/**",
+      // 生成物：由 `pnpm check:bindings` 保证与 Rust 源码一致，不 lint。
+      "src/bindings.ts",
     ],
   },
   js.configs.recommended,
