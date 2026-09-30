@@ -10,8 +10,8 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::atomic;
-use super::{Notice, StoreError};
+use super::atomic::{self, BackupKind};
+use super::{BackupInfo, Notice, StoreError};
 
 /// 缺失 `schemaVersion` 时视为 1。
 pub(crate) const DEFAULT_SCHEMA_VERSION: u32 = 1;
@@ -44,9 +44,9 @@ fn backup_dir(root: &Path) -> PathBuf {
     root.join("backups")
 }
 
-/// 读取文档；缺失则写入默认值，损坏 / 迁移失败则备份并重建。
+/// 读取文档；缺失则写入默认值，损坏 / 不可读 / 迁移失败则备份并重建。
 ///
-/// 返回文档与加载期间产生的提示（由上层决定是否一次性告知用户）。
+/// 返回文档与加载期间产生的提示（由上层决定何时告知用户）。
 pub(crate) fn load<T: Document>(root: &Path) -> Result<(T, Vec<Notice>), StoreError> {
     let path = path_for::<T>(root);
     let file = T::FILE.to_owned();
@@ -58,24 +58,22 @@ pub(crate) fn load<T: Document>(root: &Path) -> Result<(T, Vec<Notice>), StoreEr
         return Ok((default, notices));
     }
 
-    let text = fs::read_to_string(&path).map_err(|source| StoreError::io(&file, source))?;
-    let mut value: Value = match serde_json::from_str(&text) {
-        Ok(value @ Value::Object(_)) => value,
-        _ => {
-            let backup = atomic::move_to_backup(&path, &backup_dir(root), "corrupt")
-                .map_err(|source| StoreError::io(&file, source))?;
-            notices.push(Notice::CorruptRecovered {
-                file: file.clone(),
-                backup,
-            });
-            return rebuild::<T>(root, notices);
-        }
+    // 读失败、非 UTF-8、非法 JSON、根不是对象 —— 一律按「损坏」处理。
+    let parsed = fs::read(&path)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .filter(Value::is_object);
+
+    let Some(mut value) = parsed else {
+        notices.push(quarantine::<T>(root, &path, &file)?);
+        return rebuild::<T>(root, notices);
     };
 
     let found = value
         .get(SCHEMA_VERSION_KEY)
         .and_then(Value::as_u64)
-        .map(|raw| raw as u32)
+        .map(|raw| u32::try_from(raw).unwrap_or(u32::MAX))
         .unwrap_or(DEFAULT_SCHEMA_VERSION);
 
     if found > T::CURRENT_VERSION {
@@ -87,14 +85,16 @@ pub(crate) fn load<T: Document>(root: &Path) -> Result<(T, Vec<Notice>), StoreEr
         });
     } else if found < T::CURRENT_VERSION {
         // 先备份，再逐步迁移，成功后原子写回。
-        let backup = atomic::copy_to_backup(&path, &backup_dir(root), "migrate")
+        let backup = atomic::copy_to_backup(&path, &backup_dir(root), BackupKind::Migrate)
             .map_err(|source| StoreError::io(&file, source))?;
         if let Err(reason) = run_chain::<T>(&mut value, found) {
-            let failed = atomic::rename_backup(&backup, "migrate-failed")
+            let failed = atomic::rename_backup(&backup, BackupKind::MigrateFailed)
                 .map_err(|source| StoreError::io(&file, source))?;
             notices.push(Notice::MigrationFailed {
-                file: file.clone(),
-                backup: failed,
+                backup: BackupInfo {
+                    file: file.clone(),
+                    path: failed,
+                },
                 reason,
             });
             return rebuild::<T>(root, notices);
@@ -102,18 +102,17 @@ pub(crate) fn load<T: Document>(root: &Path) -> Result<(T, Vec<Notice>), StoreEr
         write_value(&path, &value, &file)?;
     }
 
-    match serde_json::from_value::<T>(value) {
-        Ok(document) => Ok((document, notices)),
+    let document = match serde_json::from_value::<T>(value) {
+        Ok(document) => document,
         Err(_) => {
-            let backup = atomic::move_to_backup(&path, &backup_dir(root), "corrupt")
-                .map_err(|source| StoreError::io(&file, source))?;
-            notices.push(Notice::CorruptRecovered {
-                file: file.clone(),
-                backup,
-            });
-            rebuild::<T>(root, notices)
+            notices.push(quarantine::<T>(root, &path, &file)?);
+            return rebuild::<T>(root, notices);
         }
-    }
+    };
+
+    // 本轮可能新增了迁移前的安全备份，统一收口。
+    let _ = atomic::gc_backups(&backup_dir(root));
+    Ok((document, notices))
 }
 
 /// 原子写回文档，并把 `schemaVersion` 归到文档自身的版本。
@@ -137,6 +136,19 @@ fn write_value(path: &Path, value: &Value, file: &str) -> Result<(), StoreError>
     atomic::write_atomic(path, &bytes).map_err(|source| StoreError::io(file, source))
 }
 
+/// 把损坏 / 不可读的文档挪进备份目录。
+fn quarantine<T: Document>(root: &Path, path: &Path, file: &str) -> Result<Notice, StoreError> {
+    let path = atomic::move_to_backup(path, &backup_dir(root), BackupKind::Corrupt)
+        .map_err(|source| StoreError::io(file, source))?;
+    Ok(Notice::CorruptRecovered {
+        backup: BackupInfo {
+            file: file.to_owned(),
+            path,
+        },
+    })
+}
+
+/// 用默认文档重建，并收口备份数量。
 fn rebuild<T: Document>(root: &Path, notices: Vec<Notice>) -> Result<(T, Vec<Notice>), StoreError> {
     let default = T::default();
     save(root, &default)?;

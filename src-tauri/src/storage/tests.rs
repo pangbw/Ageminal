@@ -1,4 +1,7 @@
-//! 持久化内核的行为测试。只验外部行为：文件内容、备份、跨「重启」的读取。
+//! 持久化内核的行为测试：断言落盘的文件内容、备份文件名，以及跨「重启」的读取。
+//!
+//! 多数用例走公开的 [`Store`]；迁移链与备份 GC 属于内核机制，由 `doc::load` /
+//! `atomic::gc_backups` 直接驱动（REQUIREMENTS.md §20 的夹具约定）。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -238,7 +241,7 @@ fn state_flush_is_debounced() {
                     height: 700.0,
                     x: Some(10.0),
                     y: Some(20.0),
-                    maximized: false,
+                    ..Default::default()
                 })
             },
             start,
@@ -269,9 +272,8 @@ fn flush_writes_pending_state_before_exit() {
                 state.window = Some(WindowState {
                     width: 800.0,
                     height: 600.0,
-                    x: None,
-                    y: None,
                     maximized: true,
+                    ..Default::default()
                 })
             },
             Instant::now(),
@@ -292,7 +294,7 @@ fn corrupt_file_is_backed_up_and_rebuilt() {
 
     assert!(matches!(
         store.notices(),
-        [Notice::CorruptRecovered { backup, .. }] if backup.exists()
+        [Notice::CorruptRecovered { backup }] if backup.path.exists()
     ));
     assert_eq!(store.settings().general.language, "zh-CN");
     assert!(backup_names(dir.path())
@@ -336,6 +338,24 @@ fn migration_chain_runs_in_order_and_is_idempotent() {
 }
 
 #[test]
+fn successful_migration_also_collects_backups() {
+    let dir = TempDir::new("migrate-gc");
+    let backups = dir.path().join("backups");
+    fs::create_dir_all(&backups).unwrap();
+    for index in 0..(atomic::MAX_BACKUPS + 5) {
+        fs::write(backups.join(format!("demo.json.corrupt-{index}")), b"x").unwrap();
+    }
+    fs::copy(fixture("demo-v1.json"), dir.path().join("demo.json")).unwrap();
+
+    doc::load::<Demo>(dir.path()).unwrap();
+
+    assert!(
+        fs::read_dir(&backups).unwrap().count() <= atomic::MAX_BACKUPS,
+        "迁移成功这条路径也要收口备份数量"
+    );
+}
+
+#[test]
 fn failed_migration_is_backed_up_and_rebuilt() {
     let dir = TempDir::new("migrate-fail");
     fs::write(dir.path().join("fail.json"), r#"{"schemaVersion":1}"#).unwrap();
@@ -345,8 +365,8 @@ fn failed_migration_is_backed_up_and_rebuilt() {
     assert_eq!(document, FailDemo::default());
     assert!(matches!(
         notices.as_slice(),
-        [Notice::MigrationFailed { backup, reason, .. }]
-            if backup.exists() && reason.contains("故意失败")
+        [Notice::MigrationFailed { backup, reason }]
+            if backup.path.exists() && reason.contains("故意失败")
     ));
     assert!(backup_names(dir.path())
         .iter()
@@ -361,7 +381,7 @@ fn newer_schema_version_is_writable_and_keeps_unknown_fields() {
     let path = dir.path().join("settings.json");
     fs::write(
         &path,
-        r#"{"schemaVersion":9,"general":{"language":"en-US"},"futureKey":{"nested":1}}"#,
+        r#"{"schemaVersion":9,"general":{"language":"en-US","unknownInner":true},"futureKey":{"nested":1}}"#,
     )
     .unwrap();
 
@@ -383,6 +403,10 @@ fn newer_schema_version_is_writable_and_keeps_unknown_fields() {
     let raw = read_json(&path);
     assert_eq!(raw["schemaVersion"], 9, "不得降级高版本写入的文档");
     assert_eq!(raw["general"]["language"], "ja-JP");
+    assert_eq!(
+        raw["general"]["unknownInner"], true,
+        "嵌套未知字段也必须保留"
+    );
     assert_eq!(raw["futureKey"]["nested"], 1, "未知字段必须原样保留");
 }
 

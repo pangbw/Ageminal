@@ -4,6 +4,7 @@
 //! 入版本控制，由 `pnpm check:bindings` 校验它与源码之间无 diff。
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use specta::Type;
@@ -11,6 +12,9 @@ use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
 
 pub mod storage;
+
+/// 状态类文档的巡检间隔（去抖窗口是 500 ms，巡检比它更密）。
+const STORAGE_TICK: Duration = Duration::from_millis(250);
 
 /// 生成绑定的落点。基于 crate 根定位，不依赖运行时的 cwd。
 pub fn bindings_path() -> std::path::PathBuf {
@@ -51,6 +55,28 @@ pub fn export_bindings() {
         .expect("failed to export TypeScript bindings");
 }
 
+/// 状态类文档去抖落盘：后台线程按 tick 巡检，去抖窗口到了才写。
+fn spawn_state_flusher(handle: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(STORAGE_TICK);
+        let Some(store) = handle.try_state::<Mutex<storage::Store>>() else {
+            break;
+        };
+        let guarded = store.lock();
+        match guarded {
+            Ok(mut guard) => {
+                if let Err(error) = guard.flush_state_if_due(Instant::now()) {
+                    eprintln!("[storage] 状态落盘失败：{error}");
+                }
+            }
+            Err(_) => {
+                eprintln!("[storage] 状态锁已被污染，停止巡检");
+                break;
+            }
+        }
+    });
+}
+
 /// 启动 Tauri 应用。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -58,12 +84,13 @@ pub fn run() {
         .invoke_handler(builder().invoke_handler())
         .setup(|app| {
             match storage::Store::open_default() {
-                Ok(store) => {
-                    // 损坏 / 迁移失败 / 高版本写入等提示，先落到日志（#88 接管日志）。
-                    for notice in store.notices() {
+                Ok(mut store) => {
+                    // 损坏 / 迁移失败 / 高版本写入等提示，取走并只报一次（#88 接管日志）。
+                    for notice in store.take_notices() {
                         eprintln!("[storage] {notice:?}");
                     }
                     app.manage(Mutex::new(store));
+                    spawn_state_flusher(app.handle().clone());
                 }
                 Err(error) => eprintln!("[storage] 初始化失败：{error}"),
             }

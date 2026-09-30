@@ -26,7 +26,16 @@ pub const APP_DIR: &str = "Ageminal";
 /// 状态类文档的去抖窗口。
 const STATE_DEBOUNCE: Duration = Duration::from_millis(500);
 
-/// 加载期间产生的提示，由上层决定是否一次性告知用户。
+/// 一个备份的落点。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupInfo {
+    /// 出问题的文档文件名。
+    pub file: String,
+    /// 备份文件路径。
+    pub path: PathBuf,
+}
+
+/// 加载期间产生的提示，由上层决定何时告知用户。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
     /// 文档由更高版本写入：可写，未知字段原样保留。
@@ -35,14 +44,10 @@ pub enum Notice {
         found: u32,
         current: u32,
     },
-    /// 文档损坏，已备份并重建。
-    CorruptRecovered { file: String, backup: PathBuf },
+    /// 文档损坏或不可读，已备份并重建。
+    CorruptRecovered { backup: BackupInfo },
     /// 迁移失败，已备份并重建。
-    MigrationFailed {
-        file: String,
-        backup: PathBuf,
-        reason: String,
-    },
+    MigrationFailed { backup: BackupInfo, reason: String },
 }
 
 /// 持久化错误。
@@ -110,12 +115,13 @@ impl Store {
 
     /// 打开 `%LOCALAPPDATA%\Ageminal\`。
     pub fn open_default() -> Result<Self, StoreError> {
-        Self::open(default_root()?)
+        Self::open(Self::default_root()?)
     }
 
     /// `%LOCALAPPDATA%\Ageminal\`。
     pub fn default_root() -> Result<PathBuf, StoreError> {
-        default_root()
+        let base = std::env::var_os("LOCALAPPDATA").ok_or(StoreError::NoLocalAppData)?;
+        Ok(PathBuf::from(base).join(APP_DIR))
     }
 
     pub fn root(&self) -> &Path {
@@ -179,9 +185,4 @@ impl Store {
         }
         Ok(())
     }
-}
-
-fn default_root() -> Result<PathBuf, StoreError> {
-    let base = std::env::var_os("LOCALAPPDATA").ok_or(StoreError::NoLocalAppData)?;
-    Ok(PathBuf::from(base).join(APP_DIR))
 }

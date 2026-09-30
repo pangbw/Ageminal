@@ -32,7 +32,7 @@ impl Default for AppState {
 }
 
 /// 窗口几何。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WindowState {
     pub width: f64,
@@ -43,6 +43,9 @@ pub struct WindowState {
     pub y: Option<f64>,
     #[serde(default)]
     pub maximized: bool,
+    /// 未知字段原样保留：前向兼容在**嵌套层**同样成立。
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl Document for AppState {

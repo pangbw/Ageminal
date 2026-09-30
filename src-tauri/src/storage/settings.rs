@@ -45,6 +45,9 @@ pub struct General {
     /// 界面语言（BCP-47）。
     #[serde(default = "default_language")]
     pub language: String,
+    /// 未知字段原样保留：前向兼容在**嵌套层**同样成立。
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
 }
 
 impl Default for General {
@@ -53,6 +56,7 @@ impl Default for General {
             default_shell: None,
             confirm_close: true,
             language: default_language(),
+            extra: Map::new(),
         }
     }
 }
