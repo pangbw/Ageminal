@@ -12,10 +12,12 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "bindings": "cargo run -p ageminal-desktop --bin export_bindings",
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",
-    "check": "pnpm check:rust && pnpm lint && pnpm typecheck",
-    "check:rust": "node scripts/check-rust.mjs"
+    "check": "pnpm check:rust && pnpm lint && pnpm typecheck && pnpm check:bindings",
+    "check:rust": "node scripts/check-rust.mjs",
+    "check:bindings": "node scripts/check-bindings.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0",
