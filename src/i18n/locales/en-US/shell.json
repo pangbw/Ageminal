@@ -1,9 +1,18 @@
 {
-  "appInfo": {
-    "loading": "Reading AppInfo…",
-    "error": "Failed to read AppInfo: {message}"
+  "windowTitle": {
+    "active": "{app} — {worktree} ({branch})"
   },
-  "next": {
-    "hint": "Next up: app shell and three-column layout (#55)."
-  }
+  "windowControls": {
+    "minimize": "Minimize",
+    "maximize": "Maximize / restore",
+    "close": "Close window"
+  },
+  "settings": "Settings",
+  "projectPanel": {
+    "addProject": "Add project",
+    "collapse": "Collapse project panel",
+    "expand": "Expand project panel",
+    "railLabel": "Projects"
+  },
+  "panelResizer": "Drag or use arrow keys to resize"
 }

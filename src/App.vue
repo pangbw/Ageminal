@@ -1,80 +1,31 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+/**
+ * 组合根：外壳 + 当前主区内容。
+ *
+ * #55 只有空态（§8：最后一个页签关闭后主区显示「没有打开的页签」）。
+ * 左栏（#57）、页签（#69）、右栏（#58/#59）落地后各自填进对应插槽。
+ */
+import IconEmptyWindow from "~icons/codicon/empty-window";
 
-import { commands, type AppInfo } from "./bindings";
+import AppShell from "./features/shell/AppShell.vue";
+import EmptyState from "./features/shell/EmptyState.vue";
+import { useWindowTitle } from "./features/shell/useWindowTitle";
 import { translate as t } from "./i18n/translate";
 
-const info = ref<AppInfo | null>(null);
-const failure = ref<string | null>(null);
-
-onMounted(async () => {
-  try {
-    info.value = await commands.appInfo();
-  } catch (error) {
-    failure.value = error instanceof Error ? error.message : String(error);
-  }
-});
+// 窗口标题跟着激活 worktree 走（§6）。
+useWindowTitle();
 </script>
 
 <template>
-  <main class="shell">
-    <h1 class="shell__title">
-      {{ t("common.appName") }}
-    </h1>
-    <p
-      v-if="failure"
-      class="shell__error"
-    >
-      {{ t("shell.appInfo.error", { message: failure }) }}
-    </p>
-    <p
-      v-else-if="info"
-      class="shell__lead"
-    >
-      {{ info.name }} {{ info.version }} · {{ info.os }}
-    </p>
-    <p
-      v-else
-      class="shell__lead"
-    >
-      {{ t("shell.appInfo.loading") }}
-    </p>
-    <p class="shell__hint">
-      {{ t("shell.next.hint") }}
-    </p>
-  </main>
+  <AppShell>
+    <!-- 左栏内容：项目 / worktree 树（#57）。 -->
+    <!-- 页签：暂无，页签模型见 #69。 -->
+    <template #main>
+      <EmptyState
+        :icon="IconEmptyWindow"
+        :label="t('tabs.empty')"
+      />
+    </template>
+    <!-- 右栏内容：文件树（#58 / #59）。 -->
+  </AppShell>
 </template>
-
-<style scoped>
-.shell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  gap: 8px;
-}
-
-.shell__title {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.shell__lead {
-  margin: 0;
-  color: var(--fg);
-}
-
-.shell__error {
-  margin: 0;
-  color: #e06c75;
-}
-
-.shell__hint {
-  margin: 0;
-  color: var(--fg-muted);
-  font-size: 13px;
-}
-</style>

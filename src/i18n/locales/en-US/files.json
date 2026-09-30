@@ -1,1 +1,7 @@
-{}
+{
+  "panel": {
+    "title": "File tree",
+    "collapse": "Collapse file tree",
+    "expand": "Expand file tree"
+  }
+}

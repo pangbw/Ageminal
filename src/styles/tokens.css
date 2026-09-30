@@ -1,0 +1,71 @@
+/*
+ * 设计令牌：Zed「One Dark Pro Glass」（REQUIREMENTS.md §11；C5 #13 D2/D3）。
+ *
+ * CSS 变量是**唯一**主题机制（不引 JS 主题引擎）；组件样式一律引用这里的令牌，
+ * 不写魔法值（D7）。仅深色（浅色 / 跟随系统 🕓）。
+ */
+:root {
+  color-scheme: dark;
+
+  /* ---- 颜色 ---- */
+  --color-bg: #080909;
+  --color-elevated: #080909;
+  --color-border: #212121;
+  --color-border-soft: #1c1c1c;
+  --color-element: #2c313a;
+  --color-hover: #2c313a;
+  --color-active: #2c313a;
+
+  --color-text: #e6e9f0;
+  --color-muted: #b8bfcc;
+  --color-faint: #949cab;
+
+  --color-accent: #61afef;
+  --color-accent-dim: rgba(97, 175, 239, 0.15);
+  --color-accent-line: #3d6b96;
+
+  --color-green: #a5e075;
+  --color-red: #ff616e;
+  --color-yellow: #e5c07b;
+  --color-orange: #d19a66;
+  --color-purple: #c678dd;
+  --color-cyan: #56b6c2;
+
+  /* 窗口按钮：关闭态用 Windows 惯例的危险色。 */
+  --color-close-hover: #c42b1c;
+  --color-on-danger: #fff;
+
+  /* 滚动条 */
+  --color-scrollbar-thumb: rgba(78, 86, 102, 0.5);
+  --color-scrollbar-thumb-hover: rgba(90, 99, 117, 0.8);
+
+  /* ---- 字体 ---- */
+  --font-ui:
+    "Zed Sans", "Segoe UI Variable Text", "Segoe UI", system-ui, "Microsoft YaHei UI",
+    "Microsoft YaHei", sans-serif;
+  --font-mono:
+    "Ageminal Mono", "Zed Mono", "JetBrains Mono", "Cascadia Code", "Consolas", ui-monospace,
+    monospace;
+
+  --font-size-ui: 13.5px;
+  --font-size-sm: 12.5px;
+  --font-size-xs: 11.5px;
+
+  /* ---- 间距 / 圆角 ---- */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 12px;
+  --space-6: 16px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  /* ---- 外壳骨架尺寸（§6 三栏布局） ---- */
+  --titlebar-height: 38px;
+  --pane-head-height: 34px;
+  --rail-width: 30px;
+  --resizer-width: 4px;
+}

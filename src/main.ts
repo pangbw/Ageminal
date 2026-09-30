@@ -1,3 +1,4 @@
+import { createPinia } from "pinia";
 import { createApp } from "vue";
 
 import App from "./App.vue";
@@ -8,7 +9,7 @@ async function bootstrap() {
   // 语言定下来之前先别挂载：否则会闪一屏别的语言。
   applyLocale(await resolveInitialLocale());
 
-  createApp(App).use(i18n).mount("#app");
+  createApp(App).use(createPinia()).use(i18n).mount("#app");
 }
 
 void bootstrap();

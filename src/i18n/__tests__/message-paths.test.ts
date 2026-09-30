@@ -9,15 +9,15 @@ import type { MessagePath } from "../translate";
 describe("MessagePath", () => {
   it("accepts the paths that exist in the zh-CN tree", () => {
     expectTypeOf<"common.appName">().toExtend<MessagePath>();
-    expectTypeOf<"shell.appInfo.loading">().toExtend<MessagePath>();
-    expectTypeOf<"shell.appInfo.error">().toExtend<MessagePath>();
-    expectTypeOf<"shell.next.hint">().toExtend<MessagePath>();
+    expectTypeOf<"shell.windowTitle.active">().toExtend<MessagePath>();
+    expectTypeOf<"shell.projectPanel.addProject">().toExtend<MessagePath>();
+    expectTypeOf<"tabs.empty">().toExtend<MessagePath>();
   });
 
   it("rejects typos, unknown namespaces and intermediate nodes", () => {
     expectTypeOf<"common.appNamX">().not.toExtend<MessagePath>();
     expectTypeOf<"nope.key">().not.toExtend<MessagePath>();
-    expectTypeOf<"shell.appInfo">().not.toExtend<MessagePath>();
+    expectTypeOf<"shell.projectPanel">().not.toExtend<MessagePath>();
     expectTypeOf<"">().not.toExtend<MessagePath>();
   });
 });

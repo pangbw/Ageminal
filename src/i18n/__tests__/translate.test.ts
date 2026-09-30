@@ -17,24 +17,28 @@ describe("translate", () => {
     applyLocale("zh-CN");
 
     expect(t("common.appName")).toBe("Ageminal");
-    expect(t("shell.appInfo.loading")).toBe(localeString("zh-CN", "shell", ["appInfo", "loading"]));
+    expect(t("shell.projectPanel.addProject")).toBe(
+      localeString("zh-CN", "shell", ["projectPanel", "addProject"]),
+    );
   });
 
   it("interpolates named values", () => {
     applyLocale("zh-CN");
 
-    expect(t("shell.appInfo.error", { message: "boom" })).toContain("boom");
+    expect(
+      t("shell.windowTitle.active", { app: "boom", worktree: "wt", branch: "main" }),
+    ).toContain("boom");
   });
 
   it("switches locale without a reload", () => {
-    const zh = localeString("zh-CN", "shell", ["appInfo", "loading"]);
-    const en = localeString("en-US", "shell", ["appInfo", "loading"]);
+    const zh = localeString("zh-CN", "shell", ["projectPanel", "addProject"]);
+    const en = localeString("en-US", "shell", ["projectPanel", "addProject"]);
 
     applyLocale("zh-CN");
-    expect(t("shell.appInfo.loading")).toBe(zh);
+    expect(t("shell.projectPanel.addProject")).toBe(zh);
 
     applyLocale("en-US");
-    expect(t("shell.appInfo.loading")).toBe(en);
-    expect(t("shell.appInfo.loading")).not.toBe(zh);
+    expect(t("shell.projectPanel.addProject")).toBe(en);
+    expect(t("shell.projectPanel.addProject")).not.toBe(zh);
   });
 });

@@ -1,14 +1,5 @@
-/* One Dark Pro Glass 的基础色（见 REQUIREMENTS.md §11）。仅深色。 */
-:root {
-  color-scheme: dark;
-
-  --bg: #080909;
-  --border: #212121;
-  --surface: #2c313a;
-  --fg: #e6e9f0;
-  --fg-muted: #b8bfcc;
-  --fg-faint: #949cab;
-}
+/* 全局基线：令牌（One Dark Pro Glass）+ 元素重置 + 外壳按钮基类 + 滚动条。见 REQUIREMENTS.md §11。 */
+@import "./tokens.css";
 
 * {
   box-sizing: border-box;
@@ -22,14 +13,71 @@ body,
 }
 
 body {
-  background: var(--bg);
-  color: var(--fg);
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    "Microsoft YaHei",
-    sans-serif;
-  font-size: 14px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  line-height: 1.62;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+/*
+ * 外壳图标按钮：只共享真正重复的部分（居中、弱化色、hover 反白 + 默认 24×24 方块）。
+ * 标题栏 / 页签栏 / 窗口按钮是通栏方块，就地覆盖尺寸（`height: auto` 交给 stretch）。
+ */
+.icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--color-faint);
+  font-size: 14px;
+  transition:
+    background 0.1s,
+    color 0.1s;
+}
+
+.icon-button:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+/* 拖拽分隔条时：全局变形光标 + 不选中文本。 */
+body.is-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background: var(--color-scrollbar-thumb);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
 }

@@ -1,3 +1,8 @@
 # pnpm 12 起，构建脚本默认不跑；这里显式放行 esbuild（vitest 转译 TS 用）。
 allowBuilds:
   esbuild: true
+
+# 本仓在两个平台上跑：Windows 上构建 / 打包，WSL 上跑检查。pnpm 12 对
+# `virtual-store-dir-max-length` 的**平台默认值不同**（Windows 60 / Linux 120），
+# 不钉死的话，换一侧装包就会撞上 ERR_PNPM_VIRTUAL_STORE_DIR_MAX_LENGTH_DIFF。
+virtualStoreDirMaxLength: 60
