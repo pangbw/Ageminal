@@ -114,6 +114,8 @@ export class PreviewController {
         entry.state = editor.state;
         editor.requestMeasure();
         editor.scrollDOM.scrollTop = scroll;
+        // 回写缓存的滚动：否则随后的 `refresh()` 会拿旧值把它冲掉。
+        entry.scroll = scroll;
       } else {
         entry.state = createTextState(text, await languageFor(path));
       }

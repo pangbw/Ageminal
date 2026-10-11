@@ -42,7 +42,7 @@ const error = ref<string | null>(null);
 const actionError = ref<string | null>(null);
 const loading = ref(false);
 /** 「文件已更新」轻提示是否可见（#61）。 */
-const updated = ref(false);
+const updatedHint = ref(false);
 /** 丢弃过期加载（快速切页签）。 */
 let loadToken = 0;
 let updatedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -68,9 +68,7 @@ async function load(root: string, path: string): Promise<void> {
     const entry = await controller.activate(root, path, { force: stale });
     if (token !== loadToken) return;
     tabs.clearStale(root, path);
-    content.value = entry.content;
-    await nextTick();
-    controller.refresh();
+    await present(entry.content);
   } catch (failure) {
     if (token !== loadToken) return;
     content.value = null;
@@ -80,6 +78,13 @@ async function load(root: string, path: string): Promise<void> {
   }
 }
 
+/** 把一份内容上屏并重新测量 / 恢复滚动。 */
+async function present(next: PreviewContent): Promise<void> {
+  content.value = next;
+  await nextTick();
+  controller.refresh();
+}
+
 /** 正可见页签的文件变了：就地重读，保留滚动，出轻提示（#61）。 */
 async function refreshActive(): Promise<void> {
   const path = props.tab.path;
@@ -87,10 +92,8 @@ async function refreshActive(): Promise<void> {
   try {
     const entry = await controller.reload(props.root, path);
     if (token !== loadToken || entry === null) return;
-    content.value = entry.content;
     tabs.clearStale(props.root, path);
-    await nextTick();
-    controller.refresh();
+    await present(entry.content);
     flashUpdated();
   } catch (failure) {
     if (token !== loadToken) return;
@@ -101,24 +104,18 @@ async function refreshActive(): Promise<void> {
 /** 命中变更：正可见的立即刷新，其余的标 stale 等激活（#61）。 */
 function onFsChange(payload: FsChange): void {
   const changed = new Set(payload.paths);
-  const affected = tabs
-    .tabsFor(props.root)
-    .map((tab) => tab.path)
-    .filter((path) => changed.has(path));
-  if (affected.length === 0) return;
-
-  if (affected.includes(props.tab.path)) void refreshActive();
-  for (const path of affected) {
-    if (path !== props.tab.path) tabs.markStale(props.root, path);
+  if (changed.has(props.tab.path)) void refreshActive();
+  for (const path of changed) {
+    if (path !== props.tab.path) tabs.markStaleByPath(path);
   }
 }
 
 /** 角落轻提示：出现后自行消失，不打断阅读。 */
 function flashUpdated(): void {
-  updated.value = true;
+  updatedHint.value = true;
   clearTimeout(updatedTimer);
   updatedTimer = setTimeout(() => {
-    updated.value = false;
+    updatedHint.value = false;
   }, UPDATED_HINT_MS);
 }
 
@@ -133,7 +130,7 @@ function openExternal(): void {
 
 // 打开的预览文件集合一变，就把新的集合交给 Rust 监听（#61 只监听已打开的文件）。
 watch(
-  () => tabs.tabsFor(props.root).map((tab) => tab.path),
+  () => tabs.allPaths(),
   (paths) => {
     // 监听是尽力而为的旁路：失配不该打断预览。
     void commands
@@ -268,7 +265,7 @@ watch(
 
     <Transition name="preview__updated-fade">
       <div
-        v-if="updated"
+        v-if="updatedHint"
         class="preview__updated"
         role="status"
       >

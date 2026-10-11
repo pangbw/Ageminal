@@ -60,6 +60,22 @@ export const useTabsStore = defineStore("tabs", () => {
     return findTab(root, path)?.stale === true;
   }
 
+  /** 所有 worktree 上打开的预览文件路径（交给 Rust 监听，#61）。 */
+  function allPaths(): string[] {
+    return Object.values(tabsByRoot.value).flatMap((tabs) => tabs.map((tab) => tab.path));
+  }
+
+  /** 按路径标 stale（不关心落在哪个 worktree）——后台变更可能属于非激活的 worktree。 */
+  function markStaleByPath(path: string): void {
+    for (const tabs of Object.values(tabsByRoot.value)) {
+      const tab = tabs.find((candidate) => candidate.path === path);
+      if (tab) {
+        tab.stale = true;
+        return;
+      }
+    }
+  }
+
   /** 关闭一个预览页签；关掉的是激活项时，挑一个邻居顶上。 */
   function closeFile(root: string, path: string): void {
     const tabs = tabsByRoot.value[root];
@@ -83,5 +99,7 @@ export const useTabsStore = defineStore("tabs", () => {
     markStale,
     clearStale,
     isStale,
+    allPaths,
+    markStaleByPath,
   };
 });

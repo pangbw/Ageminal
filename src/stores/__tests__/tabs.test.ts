@@ -76,4 +76,17 @@ describe("useTabsStore", () => {
     tabs.clearStale(A, `${A}/one.ts`);
     expect(tabs.isStale(A, `${A}/one.ts`)).toBe(false);
   });
+
+  it("marks a tab stale by path across worktrees and lists every open path", () => {
+    const tabs = useTabsStore();
+    tabs.openFile(A, `${A}/a.ts`, "a.ts");
+    tabs.openFile(B, `${B}/b.ts`, "b.ts");
+
+    expect(tabs.allPaths()).toEqual(expect.arrayContaining([`${A}/a.ts`, `${B}/b.ts`]));
+
+    tabs.markStaleByPath(`${B}/b.ts`);
+
+    expect(tabs.isStale(B, `${B}/b.ts`)).toBe(true);
+    expect(tabs.isStale(A, `${A}/a.ts`)).toBe(false);
+  });
 });

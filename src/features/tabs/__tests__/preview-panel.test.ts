@@ -192,6 +192,20 @@ describe("PreviewPanel", () => {
     wrapper.unmount();
   });
 
+  it("marks a stale tab that belongs to another worktree", async () => {
+    const wrapper = await mountPanel();
+    const tabs = useTabsStore();
+    const otherRoot = "/ws/b";
+    const otherPath = `${otherRoot}/c.txt`;
+    tabs.openFile(otherRoot, otherPath, "c.txt");
+
+    bus.emit("fs-change", { paths: [otherPath] });
+
+    await vi.waitFor(() => expect(tabs.isStale(otherRoot, otherPath)).toBe(true));
+    expect(commands.readPreview).toHaveBeenCalledTimes(1); // 未重读非激活 worktree
+    wrapper.unmount();
+  });
+
   it("ignores changes to files that are not open", async () => {
     const wrapper = await mountPanel();
 

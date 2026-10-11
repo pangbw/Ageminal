@@ -148,7 +148,9 @@ describe("PreviewController", () => {
 
     expect(entry?.content.kind).toBe("text");
     expect(controller.state?.doc.toString()).toBe("ONE\nTWO\nTHREE");
-    expect(view.scrollDOM.scrollTop).toBe(40); // 事务替换，滚动保留
+    // 面板随后会调 `refresh()`（重测尺寸 + 恢复缓存滚动）；滚动须一路保留。
+    controller.refresh();
+    expect(view.scrollDOM.scrollTop).toBe(40);
     controller.unmount();
   });
 });
