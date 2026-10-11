@@ -53,7 +53,7 @@ export const commands = {
 	 *  在阻塞线程池上跑（遍历可能耗时）；新查询会让旧的一停手（`SearchEpoch`）。`~2 s` 预算
 	 *  用尽返回部分结果，`timedOut` 置位。
 	 */
-	searchFiles: (root: string, query: string, showHidden: boolean, showIgnored: boolean) => __TAURI_INVOKE<SearchResultView>("search_files", { root, query, showHidden, showIgnored }),
+	searchFiles: (root: string, query: string, showHidden: boolean, showIgnored: boolean) => typedError<SearchResultView, string>(__TAURI_INVOKE("search_files", { root, query, showHidden, showIgnored })),
 };
 
 /* Types */

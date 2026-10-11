@@ -145,6 +145,8 @@ pub fn read_dir(root: String, dir: String) -> Result<DirListingView, String> {
 ///
 /// 在阻塞线程池上跑（遍历可能耗时）；新查询会让旧的一停手（`SearchEpoch`）。`~2 s` 预算
 /// 用尽返回部分结果，`timedOut` 置位。
+///
+/// 返回 `Result`：async 命令带引用入参时 Tauri 要求如此（`State` 就是引用）。
 #[tauri::command]
 #[specta::specta]
 pub async fn search_files(
@@ -153,7 +155,7 @@ pub async fn search_files(
     show_hidden: bool,
     show_ignored: bool,
     epoch: tauri::State<'_, Arc<SearchEpoch>>,
-) -> SearchResultView {
+) -> Result<SearchResultView, String> {
     let mine = epoch.next();
     let shared = epoch.inner().clone();
     let root = PathBuf::from(root);
@@ -171,7 +173,7 @@ pub async fn search_files(
         )
     })
     .await
-    .unwrap_or_default();
+    .map_err(|error| format!("搜索任务失败：{error}"))?;
 
-    SearchResultView::from(outcome)
+    Ok(SearchResultView::from(outcome))
 }

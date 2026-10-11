@@ -145,7 +145,9 @@ export const useFilesStore = defineStore("files", () => {
     const ticket = searchGeneration;
     searching.value = true;
     try {
-      const result = await commands.searchFiles(current, needle, ui.showHidden, ui.showIgnored);
+      const result = unwrap(
+        await commands.searchFiles(current, needle, ui.showHidden, ui.showIgnored),
+      );
       // 期间又发了新查询 / 输入变了 → 丢弃。
       if (searchGeneration !== ticket || query.value.trim() !== needle) return;
       results.value = result.hits;

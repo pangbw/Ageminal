@@ -137,7 +137,7 @@ describe("useFilesStore", () => {
   it("searches through the Rust command after a debounce", async () => {
     const files = useFilesStore();
     vi.mocked(commands.readDir).mockReturnValue(ok(listing([])));
-    vi.mocked(commands.searchFiles).mockResolvedValue(searchResult([hit(`${ROOT}/src/main.ts`)]));
+    vi.mocked(commands.searchFiles).mockReturnValue(ok(searchResult([hit(`${ROOT}/src/main.ts`)])));
 
     files.setRoot(ROOT);
     files.setQuery("main");
@@ -152,7 +152,7 @@ describe("useFilesStore", () => {
     const files = useFilesStore();
     const ui = useUiStore();
     vi.mocked(commands.readDir).mockReturnValue(ok(listing([])));
-    vi.mocked(commands.searchFiles).mockResolvedValue(searchResult([]));
+    vi.mocked(commands.searchFiles).mockReturnValue(ok(searchResult([])));
 
     files.setRoot(ROOT);
     files.setQuery("main");
@@ -177,7 +177,7 @@ describe("useFilesStore", () => {
   it("leaves search mode when the query is cleared", async () => {
     const files = useFilesStore();
     vi.mocked(commands.readDir).mockReturnValue(ok(listing([])));
-    vi.mocked(commands.searchFiles).mockResolvedValue(searchResult([hit(`${ROOT}/a.txt`)]));
+    vi.mocked(commands.searchFiles).mockReturnValue(ok(searchResult([hit(`${ROOT}/a.txt`)])));
 
     files.setRoot(ROOT);
     files.setQuery("a");

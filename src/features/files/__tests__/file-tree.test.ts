@@ -146,7 +146,7 @@ describe("FileTree", () => {
     vi.mocked(commands.readDir).mockImplementation((_root, dir) =>
       dir === ROOT ? ok(listing([entry("src", { isDir: true })])) : ok(listing([entry("src/main.ts")])),
     );
-    vi.mocked(commands.searchFiles).mockResolvedValue(result);
+    vi.mocked(commands.searchFiles).mockReturnValue(ok(result));
 
     files.setRoot(ROOT);
     await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
@@ -183,7 +183,7 @@ describe("FileTree", () => {
     vi.mocked(commands.readDir).mockImplementation((_root, dir) =>
       dir === ROOT ? ok(listing([entry("src", { isDir: true })])) : ok(listing([entry("src/main.ts")])),
     );
-    vi.mocked(commands.searchFiles).mockResolvedValue(result);
+    vi.mocked(commands.searchFiles).mockReturnValue(ok(result));
 
     files.setRoot(ROOT);
     await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
