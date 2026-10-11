@@ -60,11 +60,6 @@ impl Git {
         }
     }
 
-    /// 已定位的 git 可执行文件路径。
-    pub fn exe(&self) -> &Path {
-        &self.exe
-    }
-
     /// 已校验的 git 版本。
     pub fn version(&self) -> GitVersion {
         self.version
@@ -96,17 +91,15 @@ impl Git {
 
     /// 以 `git -C <cwd> <args>` 执行并捕获 stdout（短超时 + kill）。
     ///
-    /// `label` 只用于错误信息；建议用稳定的英文命令名（如 `"worktree list"`）。
+    /// `command` 只用于错误信息；建议用稳定的英文命令名（如 `"worktree list"`）。
     /// 供本模块与后续 git 调用（如 #58 的 `check-ignore`）复用。
-    pub fn run(&self, cwd: &Path, args: &[&str], label: &'static str) -> Result<Vec<u8>, GitError> {
-        let mut command = command_for(&self.exe);
-        command.arg("-C").arg(cwd).args(args);
-
-        let child = command.spawn().map_err(|source| GitError::Spawn {
-            command: label,
-            source,
-        })?;
-        let (status, stdout, stderr) = wait_with_timeout(child, label, COMMAND_TIMEOUT)?;
+    pub fn run(
+        &self,
+        cwd: &Path,
+        args: &[&str],
+        command: &'static str,
+    ) -> Result<Vec<u8>, GitError> {
+        let (status, stdout, stderr) = run_raw(&self.exe, Some(cwd), args, command)?;
 
         if status.success() {
             return Ok(stdout);
@@ -120,7 +113,7 @@ impl Git {
             })
         } else {
             Err(GitError::Failed {
-                command: label,
+                command,
                 code: status.code(),
                 stderr,
             })
@@ -142,47 +135,59 @@ impl Git {
 ///
 /// 从资源管理器启动时进程可能没有 PATH，故显式列出标准位置（#17 D4）。
 fn auto_candidates() -> Vec<PathBuf> {
+    let relative = Path::new("Git").join("cmd").join("git.exe");
     let mut candidates = vec![PathBuf::from(if cfg!(windows) { "git.exe" } else { "git" })];
     for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Some(base) = std::env::var_os(variable) {
-            candidates.push(PathBuf::from(base).join("Git").join("cmd").join("git.exe"));
+            candidates.push(PathBuf::from(base).join(&relative));
         }
     }
     if let Some(base) = std::env::var_os("LOCALAPPDATA") {
-        candidates.push(
-            PathBuf::from(base)
-                .join("Programs")
-                .join("Git")
-                .join("cmd")
-                .join("git.exe"),
-        );
+        candidates.push(PathBuf::from(base).join("Programs").join(&relative));
     }
     candidates
 }
 
 /// 探测一个可执行文件的 `--version`。
 fn probe_version(exe: &Path) -> Result<GitVersion, GitError> {
-    let mut command = command_for(exe);
-    command.arg("--version");
-
-    let child = command.spawn().map_err(|source| GitError::Spawn {
-        command: "version",
-        source,
-    })?;
-    let (status, stdout, stderr) = wait_with_timeout(child, "version", COMMAND_TIMEOUT)?;
+    let (status, stdout, stderr) = run_raw(exe, None, &["--version"], "version")?;
 
     if !status.success() {
-        return Err(GitError::Failed {
-            command: "version",
-            code: status.code(),
-            stderr: String::from_utf8_lossy(&stderr).trim().to_owned(),
-        });
+        return Err(failed("version", status, &stderr));
     }
 
     let text = String::from_utf8_lossy(&stdout);
     GitVersion::parse(text.trim()).ok_or_else(|| GitError::MalformedOutput {
         reason: format!("无法解析 git --version 输出：{}", text.trim()),
     })
+}
+
+/// 统一的「起进程 → 等（带超时）→ 收三个出口」：版本探测与业务命令共用。
+fn run_raw(
+    exe: &Path,
+    cwd: Option<&Path>,
+    args: &[&str],
+    command: &'static str,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), GitError> {
+    let mut process = command_for(exe);
+    if let Some(cwd) = cwd {
+        process.arg("-C").arg(cwd);
+    }
+    process.args(args);
+
+    let child = process
+        .spawn()
+        .map_err(|source| GitError::Spawn { command, source })?;
+    wait_with_timeout(child, command, COMMAND_TIMEOUT)
+}
+
+/// 非零退出的统一映射。
+fn failed(command: &'static str, status: ExitStatus, stderr: &[u8]) -> GitError {
+    GitError::Failed {
+        command,
+        code: status.code(),
+        stderr: String::from_utf8_lossy(stderr).trim().to_owned(),
+    }
 }
 
 /// 统一的子进程配置：管道化输出、关掉交互提示、固定诊断语言。
@@ -210,7 +215,7 @@ fn command_for(exe: &Path) -> Command {
 /// 等待子进程退出，超时则 kill；stdout / stderr 边跑边读，避免管道写满死锁。
 fn wait_with_timeout(
     mut child: Child,
-    label: &'static str,
+    command: &'static str,
     timeout: Duration,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), GitError> {
     let stdout = child.stdout.take().expect("stdout 已被管道化");
@@ -228,19 +233,13 @@ fn wait_with_timeout(
                 // 让读线程收尾，避免游离句柄。
                 let _ = read_stdout.join();
                 let _ = read_stderr.join();
-                return Err(GitError::Timeout {
-                    command: label,
-                    timeout,
-                });
+                return Err(GitError::Timeout { command, timeout });
             }
             Ok(None) => std::thread::sleep(POLL_INTERVAL),
             Err(source) => {
                 let _ = read_stdout.join();
                 let _ = read_stderr.join();
-                return Err(GitError::Spawn {
-                    command: label,
-                    source,
-                });
+                return Err(GitError::Spawn { command, source });
             }
         }
     };

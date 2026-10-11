@@ -20,6 +20,7 @@
 | **worktree（工作树）** | `git worktree` 语义下的一个工作树（含主工作树）。左侧栏按项目分组列出。 | ≠ 项目；≠ 页签 |
 | **主工作树** | `git worktree list` 的第一条。**bare 仓库单独标注**。 | — |
 | **locked / prunable / detached** | worktree 的标注状态；**只标注，绝不自动 prune**。 | — |
+| **已失效（stale）** | worktree 被标 `prunable`，或其目录已不存在；UI 标「已失效」，**仍列出**。 | ≠ 自动 prune |
 
 ## 2. 会话与进程
 

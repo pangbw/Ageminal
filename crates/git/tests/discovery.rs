@@ -188,6 +188,27 @@ fn discovers_worktrees_live_from_git() {
     assert_eq!(found[1].branch_label.as_deref(), Some("feat"));
     assert!(!found[1].stale);
 
+    // 链式 worktree：从**另一个 linked worktree** 里再派生一个
+    let chained = dir.path().join("chained");
+    run_git(
+        &linked,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "chained-branch",
+            chained.to_str().unwrap(),
+        ],
+    );
+    let found = git.discover(&repo, "myproject").unwrap();
+    assert_eq!(found.len(), 3);
+    // 无论从哪个 cwd 派生，主工作树恒第一，项目名仍落在它头上
+    assert_eq!(found[0].name, "myproject");
+    assert!(found[0].is_main);
+    let chained_tree = found.iter().find(|tree| tree.path == chained).unwrap();
+    assert_eq!(chained_tree.name, "chained");
+    assert_eq!(chained_tree.branch.as_deref(), Some("chained-branch"));
+
     // 不缓存 / 不落盘：新加的 worktree 下一次发现立刻可见
     let second = dir.path().join("linked-two");
     run_git(
@@ -195,7 +216,7 @@ fn discovers_worktrees_live_from_git() {
         &["worktree", "add", "--detach", second.to_str().unwrap()],
     );
     let found = git.discover(&repo, "myproject").unwrap();
-    assert_eq!(found.len(), 3);
+    assert_eq!(found.len(), 4);
     let detached = found.iter().find(|tree| tree.path == second).unwrap();
     assert!(detached.detached);
     assert_eq!(detached.branch_label.as_deref().map(str::len), Some(7));

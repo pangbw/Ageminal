@@ -11,6 +11,14 @@
 //! - 值**原样**给出，路径含空格 / 中文 / 引号都不转义 —— 所以解析器只按第一个空格切键，
 //!   **不自行去引号**；
 //! - `locked` / `prunable` 可带原因，且原因与键**同一 token**（`locked hold for review`）。
+//!
+//! ## 两个刻意的取舍
+//!
+//! - **按 UTF-8 解读字段**：本项目的唯一目标是 Windows（REQUIREMENTS.md §2），Git for
+//!   Windows 输出的路径是 UTF-8；非 UTF-8 一律视为输出损坏。这样就不必为「非目标平台
+//!   的合法非 UTF-8 路径」引入 `OsString` 的平台分支。
+//! - **短 SHA 固定 7 位**：这是 git 默认的最短缩写；模型同时保留完整 `head`，
+//!   将来若要严格对齐 git 的 `core.abbrev`，由消费方按需再算。
 
 use std::path::{Path, PathBuf};
 
@@ -153,7 +161,10 @@ pub fn parse_porcelain_z(raw: &[u8]) -> Result<Vec<RawWorktree>, GitError> {
 /// 把 git 的原始记录映射成面向 UI 的模型。
 ///
 /// 纯函数：目录存在性由 `exists` 注入，便于测试「已失效」判定。
-/// `is_main` 取列表顺序 —— git 恒把主工作树放在第一条（与 cwd 无关，真机实测）。
+///
+/// `is_main` 取列表顺序：git 的契约是**主工作树恒排第一条**（它就是仓库根，与 cwd
+/// 无关，真机实测）——所以这里不需要拿路径去比仓库根；那样做反而在 Windows 上会
+/// 被大小写 / 正反斜杠 / 前缀形式坑到。
 pub fn to_worktrees(
     raws: &[RawWorktree],
     project_name: &str,
