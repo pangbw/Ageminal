@@ -9,6 +9,10 @@ use serde_json::{Map, Value};
 use super::doc::{Document, Migration};
 
 /// 当前代码能写出的状态版本。
+///
+/// **加字段不改版本**：新字段都带 `#[serde(default)]`，旧文档照读、未知字段靠 `extra`
+/// 原样保留（#53 的约定）。只有**既有字段的类型或语义变化**才 +1（如 `settings` 里
+/// `general.language` 的 1 → 2）——那才需要迁移链或「备份 + 重置」。
 pub(crate) const CURRENT_STATE_VERSION: u32 = 1;
 
 /// 应用状态文档。

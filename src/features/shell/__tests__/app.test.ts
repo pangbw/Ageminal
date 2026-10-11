@@ -18,7 +18,7 @@ vi.mock("../window", () => ({
 }));
 
 import App from "../../../App.vue";
-import { ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixtures";
+import { ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
 import { commands } from "../../../bindings";
 import { applyLocale } from "../../../i18n";
 import { localeString } from "../../../i18n/__tests__/locale-files";
@@ -29,7 +29,7 @@ import { expectedWindowTitle } from "./window-title-fixture";
 
 vi.mock(
   "../../../bindings",
-  async () => (await import("../../../__tests__/workspace-fixtures")).createBindingsMock(),
+  async () => (await import("../../../__tests__/workspace-fixture")).createBindingsMock(),
 );
 
 function zh(namespace: "common" | "shell" | "tabs" | "files", path: string[]): string {

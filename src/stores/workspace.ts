@@ -39,10 +39,15 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     return error instanceof Error ? error.message : String(error);
   }
 
-  /** 跑一条返回新快照的命令；失败记进 `lastError`，组件不必层层 try。 */
-  async function apply(pending: Promise<CommandResult<WorkspaceSnapshot>>): Promise<boolean> {
+  /** 跑一条命令并把返回的快照整体换上；失败记进 `lastError`，组件不必层层 try。 */
+  async function applyCommand(
+    pending: Promise<CommandResult<WorkspaceSnapshot | null>>,
+  ): Promise<boolean> {
     try {
-      hydrate(unwrap(await pending));
+      const snapshot = unwrap(await pending);
+      // `null`（如「添加项目」被取消）不是错误，也不该动投影。
+      if (snapshot === null) return false;
+      hydrate(snapshot);
       lastError.value = null;
       return true;
     } catch (error) {
@@ -54,33 +59,20 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   /** 拉一次完整快照。`pnpm dev:web` 没有 Tauri 宿主，安静跳过（同 `shell/window.ts`）。 */
   async function refresh(): Promise<void> {
     if (!isTauri()) return;
-    await apply(commands.workspaceSnapshot());
+    await applyCommand(commands.workspaceSnapshot());
   }
 
   /** 添加项目（Rust 侧弹目录选择器）。返回 `false` = 用户取消或失败。 */
-  async function addProject(): Promise<boolean> {
-    try {
-      const snapshot = unwrap(await commands.addProject());
-      if (snapshot === null) return false;
-      hydrate(snapshot);
-      lastError.value = null;
-      return true;
-    } catch (error) {
-      lastError.value = messageOf(error);
-      return false;
-    }
+  function addProject(): Promise<boolean> {
+    return applyCommand(commands.addProject());
   }
 
   function removeProject(path: string): Promise<boolean> {
-    return apply(commands.removeProject(path));
-  }
-
-  function setProjectCollapsed(projectPath: string, collapsed: boolean): Promise<boolean> {
-    return apply(commands.setProjectCollapsed(projectPath, collapsed));
+    return applyCommand(commands.removeProject(path));
   }
 
   function toggleProject(project: ProjectView): Promise<boolean> {
-    return setProjectCollapsed(project.path, !project.collapsed);
+    return applyCommand(commands.setProjectCollapsed(project.path, !project.collapsed));
   }
 
   function setWorktreePinned(
@@ -88,7 +80,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     worktreePath: string,
     pinned: boolean,
   ): Promise<boolean> {
-    return apply(commands.setWorktreePinned(projectPath, worktreePath, pinned));
+    return applyCommand(commands.setWorktreePinned(projectPath, worktreePath, pinned));
   }
 
   /** 改显示名；`name` 为 `null` = 回到默认名。 */
@@ -97,11 +89,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     worktreePath: string,
     name: string | null,
   ): Promise<boolean> {
-    return apply(commands.renameWorktree(projectPath, worktreePath, name));
+    return applyCommand(commands.renameWorktree(projectPath, worktreePath, name));
   }
 
   function setActive(worktreePath: string | null): Promise<boolean> {
-    return apply(commands.setActiveWorktree(worktreePath));
+    return applyCommand(commands.setActiveWorktree(worktreePath));
   }
 
   /** 路径 → worktree 的路由表：跨栏查找都走它（D6）。 */
@@ -119,7 +111,11 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     return worktree ? { name: worktree.name, branch: worktree.branchLabel } : null;
   });
 
-  /** 侧栏只渲染**已加入左侧栏**的 worktree；一个都没加入的项目整组不出现（§6）。 */
+  /**
+   * 侧栏要渲染的项目：`worktrees` 只留**已加入左侧栏**的那些；一个都没加入的项目
+   * 整组不出现（§6「仅渲染已加入侧栏的 worktree」，与原型 `filter(w => w.pinned)` +
+   * 空组不渲染一致）。设置页拿的是 `projects`（全量），两个视图同源不同投影（#16 D6）。
+   */
   const sidebarProjects = computed<ProjectView[]>(() =>
     projects.value
       .map((project) => ({
@@ -144,7 +140,6 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     refresh,
     addProject,
     removeProject,
-    setProjectCollapsed,
     toggleProject,
     setWorktreePinned,
     renameWorktree,

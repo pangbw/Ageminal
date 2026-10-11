@@ -46,6 +46,9 @@ function startRename(path: string, name: string): void {
 
 /** 提交重命名；空白 = 回到默认名（Rust 侧同样这么处理）。 */
 async function commitRename(projectPath: string, worktreePath: string): Promise<void> {
+  // Esc 已先把编辑态清掉；若浏览器随后仍派发 blur，不该再把草稿提交上去。
+  if (editing.value !== worktreePath) return;
+
   const name = draft.value.trim();
   await workspace.renameWorktree(projectPath, worktreePath, name === "" ? null : name);
   editing.value = null;

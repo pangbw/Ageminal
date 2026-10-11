@@ -599,7 +599,7 @@ Ageminal/
 - **运行时落点**：daemon → `%LOCALAPPDATA%\Ageminal\daemon-host\<app 版本>\`（B4 #7，躲安装器清扫）；**shim → 稳定路径 `%LOCALAPPDATA%\Ageminal\bin\`**，使注入的 hook 配置**跨应用更新无需重写**。
 - **版本**：单一来源 = 根 `package.json`（`tauri.conf.json` 用 `"version": "../package.json"`）；**app 版本与协议版本分离**。
 - **构建编排**：根 `package.json` 的 `sidecars` → `tauri build`；`tauri.conf.json` 的 `beforeBuildCommand` 只负责前端构建。
-- **前端目录**：`features/{shell,terminal,tabs,files,agents,settings}/`、`stores/`、`i18n/`、`styles/`、`lib/`、`assets/fonts/`（`shell` = 外壳：标题栏、三栏布局、面板分隔，#55）。
+- **前端目录**：`features/{shell,terminal,tabs,files,agents,settings,projects}/`、`stores/`、`i18n/`、`styles/`、`lib/`、`assets/fonts/`（`shell` = 外壳：标题栏、三栏布局、面板分隔，#55；`projects` = 左侧项目树，#57）。
 
 ---
 

@@ -2,7 +2,7 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixtures";
+import { ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
 import { commands } from "../../../bindings";
 import { localeString } from "../../../i18n/__tests__/locale-files";
 import { useWorkspaceStore } from "../../../stores/workspace";
@@ -10,7 +10,7 @@ import SettingsView from "../SettingsView.vue";
 
 vi.mock(
   "../../../bindings",
-  async () => (await import("../../../__tests__/workspace-fixtures")).createBindingsMock(),
+  async () => (await import("../../../__tests__/workspace-fixture")).createBindingsMock(),
 );
 
 /** 一个项目、两个 worktree（其中一个还没加入侧栏）。 */
@@ -97,6 +97,22 @@ describe("SettingsView", () => {
     await input.trigger("keyup.enter");
 
     expect(commands.renameWorktree).toHaveBeenCalledWith("/ws/a", "/ws/a/dev", null);
+  });
+
+  it("cancels the rename on Escape instead of committing the draft", async () => {
+    const { wrapper } = mountSettings();
+
+    await wrapper.findAll(".wt__rename")[1].trigger("click");
+    const input = wrapper.find(".wt__input");
+    await input.setValue("nope");
+    await input.trigger("keyup.esc");
+
+    expect(commands.renameWorktree).not.toHaveBeenCalled();
+    expect(wrapper.find(".wt__input").exists()).toBe(false);
+
+    // Esc 之后即使浏览器仍派发 blur，也不该把草稿提交上去。
+    await input.trigger("blur");
+    expect(commands.renameWorktree).not.toHaveBeenCalled();
   });
 
   it("shows a placeholder for the sections still owned by #86", async () => {

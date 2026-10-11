@@ -74,6 +74,14 @@ impl Project {
     pub fn is_pinned(&self, worktree: &Path) -> bool {
         self.pinned.iter().any(|path| path == worktree)
     }
+
+    /// 该 worktree 是否属于本项目。
+    ///
+    /// 按**路径分量**比较（`Path::starts_with` 的语义），所以 `/a/proj-2` 不属于
+    /// `/a/proj`——不是字符串前缀。
+    pub fn owns(&self, worktree: &Path) -> bool {
+        worktree.starts_with(&self.path)
+    }
 }
 
 /// `settings.json` 里的**项目级设置**表项（§14；#57 只填 worktree 显示名）。
@@ -100,10 +108,15 @@ impl ProjectSettings {
         }
     }
 
+    /// 规范化显示名：`None` 或只有空白 → `None`（= 回到默认名）。
+    pub fn normalize_name(name: Option<&str>) -> Option<&str> {
+        name.map(str::trim).filter(|name| !name.is_empty())
+    }
+
     /// 设置显示名；`name` 为 `None`（或只有空白）时**清除覆盖、回到默认名**。
     pub fn rename(&mut self, worktree: &Path, name: Option<&str>) {
         self.worktree_names.retain(|entry| entry.path != worktree);
-        let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+        let Some(name) = Self::normalize_name(name) else {
             return;
         };
         self.worktree_names.push(WorktreeName {
@@ -119,6 +132,11 @@ impl ProjectSettings {
             .iter()
             .find(|entry| entry.path == worktree)
             .map(|entry| entry.name.as_str())
+    }
+
+    /// 没有显示名、也没有其它项目级设置的空条目（不值得留在 `settings.json` 里）。
+    pub fn is_empty(&self) -> bool {
+        self.worktree_names.is_empty() && self.extra.is_empty()
     }
 }
 

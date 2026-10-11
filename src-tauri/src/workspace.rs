@@ -4,7 +4,11 @@
 //! 回快照」，加上系统目录选择器（#32 D1：`dialog` 插件**只从 Rust 侧调用**）。
 //!
 //! 快照即「回推」：每个改动命令都返回**新的完整快照**，前端整体替换投影
-//! （§14 / #16 D5：单一事实来源 = Rust，前端不做乐观更新）。
+//! （§14 / #16 D5：单一事实来源 = Rust，前端不做乐观更新）。§14 写的是「回推事件」，
+//! 这里用命令返回值承担同一件事——少一条事件通道、也就少一处漂移；多窗口（🕓 延后）再论。
+//!
+//! 视图类型与 `ageminal-workspace` 的对应类型字段一一对应、由 [`From`] 机械转换：
+//! §19 把「app ↔ 前端」这条类型边界划归 app-core，核心 crate 因此不引 specta。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -17,7 +21,7 @@ use serde::Serialize;
 use specta::Type;
 use tauri_plugin_dialog::DialogExt;
 
-use crate::storage::{Settings, Store};
+use crate::storage::{AppState, Settings, Store};
 
 /// 启动时定位一次的 git。
 ///
@@ -163,16 +167,21 @@ pub fn remove_project(
     let target = PathBuf::from(&path);
     let mut store = lock(&store)?;
 
+    // 先判「激活项是否落在被移除的项目里」（按路径分量，见 `Project::owns`），
+    // 免得在闭包里同时借 `projects` 又改 `active_worktree`。
+    let clears_active = store
+        .state()
+        .projects
+        .iter()
+        .find(|project| project.path == target)
+        .zip(store.state().active_worktree.as_ref())
+        .is_some_and(|(project, active)| project.owns(active));
+
     store
         .update_state(
             |state| {
                 state.projects.retain(|project| project.path != target);
-                // 激活项若落在被移除的项目里，一并清掉。
-                if state
-                    .active_worktree
-                    .as_ref()
-                    .is_some_and(|active| active.starts_with(&target))
-                {
+                if clears_active {
                     state.active_worktree = None;
                 }
             },
@@ -197,24 +206,16 @@ pub fn set_project_collapsed(
     collapsed: bool,
 ) -> Result<WorkspaceSnapshot, String> {
     let target = PathBuf::from(&project_path);
-    let mut store = lock(&store)?;
 
-    store
-        .update_state(
-            |state| {
-                if let Some(project) = state
-                    .projects
-                    .iter_mut()
-                    .find(|project| project.path == target)
-                {
-                    project.collapsed = collapsed;
-                }
-            },
-            Instant::now(),
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(build_snapshot(&store, git.inner()))
+    commit_state(&store, git.inner(), |state| {
+        if let Some(project) = state
+            .projects
+            .iter_mut()
+            .find(|project| project.path == target)
+        {
+            project.collapsed = collapsed;
+        }
+    })
 }
 
 /// 把 worktree 加入 / 移出左侧栏。
@@ -229,24 +230,16 @@ pub fn set_worktree_pinned(
 ) -> Result<WorkspaceSnapshot, String> {
     let target = PathBuf::from(&project_path);
     let worktree = PathBuf::from(&worktree_path);
-    let mut store = lock(&store)?;
 
-    store
-        .update_state(
-            |state| {
-                if let Some(project) = state
-                    .projects
-                    .iter_mut()
-                    .find(|project| project.path == target)
-                {
-                    project.set_pinned(&worktree, pinned);
-                }
-            },
-            Instant::now(),
-        )
-        .map_err(|error| error.to_string())?;
-
-    Ok(build_snapshot(&store, git.inner()))
+    commit_state(&store, git.inner(), |state| {
+        if let Some(project) = state
+            .projects
+            .iter_mut()
+            .find(|project| project.path == target)
+        {
+            project.set_pinned(&worktree, pinned);
+        }
+    })
 }
 
 /// 改 worktree 的本地显示名；`name` 为 `None`（或只有空白）= 回到默认名。
@@ -266,18 +259,23 @@ pub fn rename_worktree(
     // 显示名是**设置类**（`settings.json`，§14）→ 立即落盘。
     store
         .update_settings(|settings| {
-            if !settings.projects.iter().any(|entry| entry.path == project) {
-                settings
-                    .projects
-                    .push(ProjectSettings::new(project.clone()));
-            }
-            if let Some(entry) = settings
+            let name = ProjectSettings::normalize_name(name.as_deref());
+            match settings
                 .projects
                 .iter_mut()
                 .find(|entry| entry.path == project)
             {
-                entry.rename(&worktree, name.as_deref());
+                Some(entry) => entry.rename(&worktree, name),
+                // 只是「恢复默认名」的话，不必凭空建一个表项。
+                None if name.is_some() => {
+                    let mut entry = ProjectSettings::new(project.clone());
+                    entry.rename(&worktree, name);
+                    settings.projects.push(entry);
+                }
+                None => {}
             }
+            // 空表项没有保留价值（#86 的项目级设置落进来之前）。
+            settings.projects.retain(|entry| !entry.is_empty());
         })
         .map_err(|error| error.to_string())?;
 
@@ -293,13 +291,21 @@ pub fn set_active_worktree(
     worktree_path: Option<String>,
 ) -> Result<WorkspaceSnapshot, String> {
     let target = worktree_path.map(PathBuf::from);
-    let mut store = lock(&store)?;
 
-    store
-        .update_state(|state| state.active_worktree = target, Instant::now())
+    commit_state(&store, git.inner(), |state| state.active_worktree = target)
+}
+
+/// 状态类改动的统一收尾：改完 `state.json`（去抖落盘）→ 回新快照。
+fn commit_state(
+    store: &Mutex<Store>,
+    tool: &GitTool,
+    apply: impl FnOnce(&mut AppState),
+) -> Result<WorkspaceSnapshot, String> {
+    let mut guard = lock(store)?;
+    guard
+        .update_state(apply, Instant::now())
         .map_err(|error| error.to_string())?;
-
-    Ok(build_snapshot(&store, git.inner()))
+    Ok(build_snapshot(&guard, tool))
 }
 
 fn lock(store: &Mutex<Store>) -> Result<MutexGuard<'_, Store>, String> {

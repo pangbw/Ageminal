@@ -1,13 +1,13 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fail, ok, project, snapshot, worktree } from "../../__tests__/workspace-fixtures";
+import { fail, ok, project, snapshot, worktree } from "../../__tests__/workspace-fixture";
 import { commands } from "../../bindings";
 import { useWorkspaceStore } from "../workspace";
 
 vi.mock(
   "../../bindings",
-  async () => (await import("../../__tests__/workspace-fixtures")).createBindingsMock(),
+  async () => (await import("../../__tests__/workspace-fixture")).createBindingsMock(),
 );
 
 describe("useWorkspaceStore", () => {
@@ -90,11 +90,13 @@ describe("useWorkspaceStore", () => {
     expect(store.lastError).toBe("lock poisoned");
   });
 
-  it("treats a cancelled add as a no-op rather than an error", async () => {
+  it("treats a cancelled add as a no-op, leaving the projection alone", async () => {
     const store = useWorkspaceStore();
+    store.hydrate(snapshot([project("/ws/a", [worktree("/ws/a")])]));
     vi.mocked(commands.addProject).mockReturnValue(ok(null));
 
     expect(await store.addProject()).toBe(false);
+    expect(store.projects).toHaveLength(1);
     expect(store.lastError).toBeNull();
   });
 

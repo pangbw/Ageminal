@@ -130,9 +130,50 @@ fn project_keeps_unknown_fields() {
     );
 }
 
+#[test]
+fn project_owns_worktrees_by_path_components() {
+    let project = Project::new(path("/ws/proj"), "proj".to_owned(), &[]);
+
+    assert!(project.owns(Path::new("/ws/proj")));
+    assert!(project.owns(Path::new("/ws/proj/feat")));
+    // **不是**字符串前缀：兄弟目录不算自家
+    assert!(!project.owns(Path::new("/ws/proj-2")));
+    assert!(!project.owns(Path::new("/ws/other")));
+}
+
 // ---------------------------------------------------------------------------
 // ProjectSettings / WorktreeName（settings.json 的项目级）
 // ---------------------------------------------------------------------------
+
+#[test]
+fn normalize_name_drops_blank_names() {
+    assert_eq!(
+        ProjectSettings::normalize_name(Some("  feat  ")),
+        Some("feat")
+    );
+    assert_eq!(ProjectSettings::normalize_name(Some("   ")), None);
+    assert_eq!(ProjectSettings::normalize_name(Some("")), None);
+    assert_eq!(ProjectSettings::normalize_name(None), None);
+}
+
+#[test]
+fn empty_settings_entry_is_detected() {
+    let mut settings = ProjectSettings::new(path("/ws/proj"));
+    assert!(settings.is_empty());
+
+    settings.rename(Path::new("/ws/proj/feat"), Some("feat"));
+    assert!(!settings.is_empty());
+
+    settings.rename(Path::new("/ws/proj/feat"), None);
+    assert!(settings.is_empty(), "清掉显示名后又空了");
+
+    // #86 会往 extra 里塞 shell 覆盖 / 环境变量等，那时它就不再是空条目
+    let mut with_extra = ProjectSettings::new(path("/ws/proj"));
+    with_extra
+        .extra
+        .insert("shellOverride".to_owned(), json!("bash"));
+    assert!(!with_extra.is_empty());
+}
 
 #[test]
 fn rename_sets_and_clears_override() {

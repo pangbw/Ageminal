@@ -2,14 +2,14 @@ import { mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fail, ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixtures";
+import { fail, ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
 import { commands } from "../../../bindings";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import ProjectTree from "../ProjectTree.vue";
 
 vi.mock(
   "../../../bindings",
-  async () => (await import("../../../__tests__/workspace-fixtures")).createBindingsMock(),
+  async () => (await import("../../../__tests__/workspace-fixture")).createBindingsMock(),
 );
 
 /** 两个项目：alpha 有 3 个 worktree（1 个未加入侧栏），beta 一个都没加入。 */

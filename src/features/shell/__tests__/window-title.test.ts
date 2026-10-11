@@ -11,7 +11,7 @@ vi.mock("../window", () => ({ setWindowTitle: mocks.setWindowTitle }));
 
 import { applyLocale } from "../../../i18n";
 import { localeString } from "../../../i18n/__tests__/locale-files";
-import { project, snapshot, worktree } from "../../../__tests__/workspace-fixtures";
+import { project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import { formatWindowTitle, useWindowTitle } from "../useWindowTitle";
 import { expectedWindowTitle, expectedWindowTitleNoBranch } from "./window-title-fixture";

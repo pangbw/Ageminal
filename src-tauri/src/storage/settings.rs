@@ -10,6 +10,8 @@ use super::doc::{Document, Migration};
 ///
 /// 2：`general.language` 由 `String` 改成 `Option<String>`（「未设置」≠「用户选了 zh-CN」）。
 /// 首个公开发布前按 `Settings::migrations` 的约定走「备份 + 重置」，不写迁移。
+///
+/// **只加字段不改版本**：新字段带 `#[serde(default)]`，旧文档照读（`projects` 即如此）。
 pub(crate) const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 /// 应用设置文档。
