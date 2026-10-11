@@ -193,8 +193,8 @@ pub enum PreviewKindView {
 #[serde(rename_all = "camelCase")]
 pub struct PreviewView {
     pub kind: PreviewKindView,
-    /// 文件总字节数（边界用 `f64`：specta 禁止 `u64` 越界到 TS 以防精度丢失；2^53 内精确）。
-    pub total_bytes: f64,
+    /// 文件总字节数（specta 禁止 `u64` 越界到 TS；预览元数据，> 4 GiB 饱和）。
+    pub total_bytes: u32,
     /// 文本内容（`kind == text`）。
     pub text: Option<String>,
     /// 无效 UTF-8，已 lossy 解码（顶部警示，D2 #20）。
@@ -211,12 +211,17 @@ pub struct PreviewView {
     pub image_too_large: bool,
 }
 
+/// `u64` 字节数 → TS 友好的 `u32`（specta 禁止 `u64`；预览元数据，> 4 GiB 饱和）。
+fn total_bytes_u32(bytes: u64) -> u32 {
+    u32::try_from(bytes).unwrap_or(u32::MAX)
+}
+
 impl From<ageminal_files::Preview> for PreviewView {
     fn from(preview: ageminal_files::Preview) -> Self {
         match preview {
             ageminal_files::Preview::Text(text) => Self {
                 kind: PreviewKindView::Text,
-                total_bytes: text.total_bytes as f64,
+                total_bytes: total_bytes_u32(text.total_bytes),
                 text: Some(text.text),
                 lossy: text.lossy,
                 truncated: text.truncated,
@@ -227,7 +232,7 @@ impl From<ageminal_files::Preview> for PreviewView {
             },
             ageminal_files::Preview::Image(image) => Self {
                 kind: PreviewKindView::Image,
-                total_bytes: image.total_bytes as f64,
+                total_bytes: total_bytes_u32(image.total_bytes),
                 text: None,
                 lossy: false,
                 truncated: false,
@@ -238,7 +243,7 @@ impl From<ageminal_files::Preview> for PreviewView {
             },
             ageminal_files::Preview::Binary(binary) => Self {
                 kind: PreviewKindView::Binary,
-                total_bytes: binary.total_bytes as f64,
+                total_bytes: total_bytes_u32(binary.total_bytes),
                 text: None,
                 lossy: false,
                 truncated: false,

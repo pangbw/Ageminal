@@ -115,7 +115,7 @@ export type PreviewKindView = "text" | "image" | "binary";
  */
 export type PreviewView = {
 	kind: PreviewKindView,
-	/**  文件总字节数（边界用 `f64`：specta 禁止 `u64` 越界到 TS 以防精度丢失；2^53 内精确）。 */
+	/**  文件总字节数（specta 禁止 `u64` 越界到 TS；预览元数据，> 4 GiB 饱和）。 */
 	totalBytes: number,
 	/**  文本内容（`kind == text`）。 */
 	text: string | null,
