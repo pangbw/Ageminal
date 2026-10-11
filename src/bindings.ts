@@ -25,7 +25,11 @@ export const commands = {
 	 * 
 	 *  返回 `None` = 用户取消。
 	 */
-	addProject: () => typedError<WorkspaceSnapshot | null, string>(__TAURI_INVOKE("add_project")),
+	addProject: () => typedError<{
+	projects: ProjectView[],
+	/**  激活 worktree 的路径；`None` = 没有激活项。 */
+	activeWorktree: string | null,
+} | null, string>(__TAURI_INVOKE("add_project")),
 	/**  移除项目：连同它的侧栏名单与项目级设置一起清掉。 */
 	removeProject: (path: string) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("remove_project", { path })),
 	/**  折叠 / 展开一个项目分组（侧栏状态，`state.json`，去抖落盘）。 */
@@ -94,3 +98,4 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
+
