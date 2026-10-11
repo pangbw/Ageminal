@@ -1,0 +1,14 @@
+[package]
+name = "ageminal-files"
+version.workspace = true
+description = "Ageminal 的文件域：目录列举与可见性标记（忽略过滤，纯逻辑）"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# #18 D1：忽略匹配用 `IncrementalIgnore`（按目录编译并缓存 matcher），
+# **不**用 `git check-ignore`（每次 spawn 会拖慢懒加载）。
+ignore = "0.4.33"
+thiserror = "2"

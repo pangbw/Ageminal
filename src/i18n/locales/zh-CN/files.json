@@ -3,5 +3,9 @@
     "title": "文件树",
     "collapse": "折叠文件树",
     "expand": "展开文件树"
+  },
+  "visibility": {
+    "showHidden": "显示隐藏文件",
+    "showIgnored": "显示忽略文件"
   }
 }

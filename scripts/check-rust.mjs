@@ -2,7 +2,7 @@
 // 平台感知的 Rust 检查（见 issue #50）。
 //
 // Windows：检查整个 workspace（含 src-tauri 桌面 crate）。
-// 其他平台：src-tauri 需要 GTK / WebKit 系统库，跳过它，只检查三个核心 crate。
+// 其他平台：src-tauri 需要 GTK / WebKit 系统库，跳过它，只检查核心 crate。
 //
 // 只调用 cargo，不递归调用 pnpm —— lint / typecheck 由 package.json 的 check 组合。
 // 不使用 shell，避免 Node 的 DEP0190（shell + args）。
@@ -20,6 +20,8 @@ const coreCrates = [
   "ageminal-git",
   "-p",
   "ageminal-workspace",
+  "-p",
+  "ageminal-files",
 ];
 
 const steps = [

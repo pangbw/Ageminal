@@ -73,4 +73,19 @@ describe("useUiStore", () => {
     ui.toggleSettings();
     expect(ui.settingsOpen).toBe(false);
   });
+
+  it("keeps the two file-visibility switches off by default and toggles them independently", () => {
+    const ui = useUiStore();
+
+    expect([ui.showHidden, ui.showIgnored]).toEqual([false, false]);
+
+    ui.toggleShowHidden();
+    expect([ui.showHidden, ui.showIgnored]).toEqual([true, false]);
+
+    ui.toggleShowIgnored();
+    expect([ui.showHidden, ui.showIgnored]).toEqual([true, true]);
+
+    ui.toggleShowHidden();
+    expect([ui.showHidden, ui.showIgnored]).toEqual([false, true]);
+  });
 });

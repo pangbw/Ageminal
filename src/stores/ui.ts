@@ -20,6 +20,11 @@ export const useUiStore = defineStore("ui", () => {
   const newTabMenuOpen = ref(false);
   const settingsOpen = ref(false);
 
+  // 文件树的两个可见性开关（§9；#18 D3 默认都关）。纯前端状态：Rust 已经把标记带回，
+  // 过滤在前端做，切开关不重扫目录（#58）。
+  const showHidden = ref(false);
+  const showIgnored = ref(false);
+
   function panelWidth(side: PanelSide): number {
     return side === "left" ? leftWidth.value : rightWidth.value;
   }
@@ -50,6 +55,14 @@ export const useUiStore = defineStore("ui", () => {
     settingsOpen.value = !settingsOpen.value;
   }
 
+  function toggleShowHidden(): void {
+    showHidden.value = !showHidden.value;
+  }
+
+  function toggleShowIgnored(): void {
+    showIgnored.value = !showIgnored.value;
+  }
+
   return {
     leftWidth,
     rightWidth,
@@ -57,6 +70,8 @@ export const useUiStore = defineStore("ui", () => {
     rightCollapsed,
     newTabMenuOpen,
     settingsOpen,
+    showHidden,
+    showIgnored,
     panelWidth,
     setPanelWidth,
     setPanelCollapsed,
@@ -64,5 +79,7 @@ export const useUiStore = defineStore("ui", () => {
     expandPanel,
     toggleNewTabMenu,
     toggleSettings,
+    toggleShowHidden,
+    toggleShowIgnored,
   };
 });

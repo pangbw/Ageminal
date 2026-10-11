@@ -247,7 +247,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - **`.gitignore` 过滤** ✅：默认隐藏 `.gitignore` 命中的文件与 `node_modules`、`.git` 等
 - **懒加载** ✅（按需读目录，大仓库性能）
 - **两个开关** ✅：「显示隐藏文件」与「显示忽略文件」
-- MVP **只读 `.gitignore`**，不自建忽略规则编辑器 ✅
+- MVP **只读 git 忽略规则**（嵌套 `.gitignore` + `.git/info/exclude` + 全局 excludes；**不认** `.ignore`），不自建忽略规则编辑器 ✅（D2 #18）
 - 预览 ✅（C4 #12）：
   - **只读**；提供「**用外部编辑器打开**」入口（系统默认程序）
   - 语法高亮用 **CodeMirror 6**；扩展集取**最小集**（行号 / 折叠 / 括号匹配 / 语法高亮 / 搜索 `Ctrl+F`；**不启用** history / activeLine / autocompletion）；只读下隐藏光标，保留选择与复制
@@ -584,6 +584,7 @@ Ageminal/
 │  ├─ protocol/          # app-core ↔ daemon 的帧协议（Rust 单一来源）
 │  ├─ git/               # git CLI 访问层（worktree 发现 + 薄执行；纯逻辑跨平台可测）
 │  ├─ workspace/         # 工作区模型（项目 / 侧栏 / 显示名投影；纯逻辑）
+│  ├─ files/             # 文件域（忽略过滤 + 目录列举；纯逻辑，#58）
 │  ├─ daemon/            # ageminal-daemon.exe
 │  └─ notify/            # ageminal-notify.exe（hook shim）
 ├─ scripts/              # build-sidecars.mjs 等
@@ -599,7 +600,7 @@ Ageminal/
 - **运行时落点**：daemon → `%LOCALAPPDATA%\Ageminal\daemon-host\<app 版本>\`（B4 #7，躲安装器清扫）；**shim → 稳定路径 `%LOCALAPPDATA%\Ageminal\bin\`**，使注入的 hook 配置**跨应用更新无需重写**。
 - **版本**：单一来源 = 根 `package.json`（`tauri.conf.json` 用 `"version": "../package.json"`）；**app 版本与协议版本分离**。
 - **构建编排**：根 `package.json` 的 `sidecars` → `tauri build`；`tauri.conf.json` 的 `beforeBuildCommand` 只负责前端构建。
-- **前端目录**：`features/{shell,terminal,tabs,files,agents,settings,projects}/`、`stores/`、`i18n/`、`styles/`、`lib/`、`assets/fonts/`（`shell` = 外壳：标题栏、三栏布局、面板分隔，#55；`projects` = 左侧项目树，#57）。
+- **前端目录**：`features/{shell,terminal,tabs,files,agents,settings,projects}/`、`stores/`、`i18n/`、`styles/`、`lib/`、`assets/fonts/`（`shell` = 外壳：标题栏、三栏布局、面板分隔，#55；`projects` = 左侧项目树，#57；`files` = 文件树（忽略过滤与可见性标记 #58、懒加载 + 搜索 + 树 UI #59））。
 
 ---
 

@@ -40,6 +40,13 @@ export const commands = {
 	renameWorktree: (projectPath: string, worktreePath: string, name: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("rename_worktree", { projectPath, worktreePath, name })),
 	/**  设置激活的 worktree（窗口标题与侧栏高亮都跟着它走）。 */
 	setActiveWorktree: (worktreePath: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("set_active_worktree", { worktreePath })),
+	/**
+	 *  列举 `dir`（须在 worktree 根 `root` 之内）下的条目，带可见性标记。
+	 * 
+	 *  `.git` 永远不会出现在结果里；过滤由前端按「显示隐藏文件 / 显示忽略文件」两个开关做
+	 *  （#18 D4：切开关不必重扫）。
+	 */
+	readDir: (root: string, dir: string) => typedError<DirEntryView[], string>(__TAURI_INVOKE("read_dir", { root, dir })),
 };
 
 /* Types */
@@ -51,6 +58,22 @@ export type AppInfo = {
 	version: string,
 	/**  运行平台（`std::env::consts::OS`）。 */
 	os: string,
+};
+
+/**
+ *  目录里的一个条目（与 `ageminal-files::Entry` 字段一一对应）。
+ */
+export type DirEntryView = {
+	/**  文件名。 */
+	name: string,
+	/**  绝对路径。 */
+	path: string,
+	/**  是否目录。 */
+	isDir: boolean,
+	/**  维度 2：dotfile（名字以 `.` 开头）。 */
+	hidden: boolean,
+	/**  维度 3：被忽略规则命中（`.gitignore` / `.git/info/exclude` / 全局 excludes）。 */
+	ignored: boolean,
 };
 
 /**  一个项目的视图（侧栏分组 + 设置页「项目」分页共用，#16 D6）。 */

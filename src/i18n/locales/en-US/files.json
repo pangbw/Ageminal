@@ -3,5 +3,9 @@
     "title": "File tree",
     "collapse": "Collapse file tree",
     "expand": "Expand file tree"
+  },
+  "visibility": {
+    "showHidden": "Show hidden files",
+    "showIgnored": "Show ignored files"
   }
 }

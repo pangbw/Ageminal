@@ -11,6 +11,7 @@ use specta::Type;
 use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
 
+pub mod files;
 pub mod storage;
 pub mod workspace;
 
@@ -88,7 +89,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         workspace::set_project_collapsed,
         workspace::set_worktree_pinned,
         workspace::rename_worktree,
-        workspace::set_active_worktree
+        workspace::set_active_worktree,
+        files::read_dir
     ])
 }
 
