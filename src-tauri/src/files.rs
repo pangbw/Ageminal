@@ -193,8 +193,8 @@ pub enum PreviewKindView {
 #[serde(rename_all = "camelCase")]
 pub struct PreviewView {
     pub kind: PreviewKindView,
-    /// 文件总字节数。
-    pub total_bytes: u64,
+    /// 文件总字节数（边界用 `f64`：specta 禁止 `u64` 越界到 TS 以防精度丢失；2^53 内精确）。
+    pub total_bytes: f64,
     /// 文本内容（`kind == text`）。
     pub text: Option<String>,
     /// 无效 UTF-8，已 lossy 解码（顶部警示，D2 #20）。
@@ -216,7 +216,7 @@ impl From<ageminal_files::Preview> for PreviewView {
         match preview {
             ageminal_files::Preview::Text(text) => Self {
                 kind: PreviewKindView::Text,
-                total_bytes: text.total_bytes,
+                total_bytes: text.total_bytes as f64,
                 text: Some(text.text),
                 lossy: text.lossy,
                 truncated: text.truncated,
@@ -227,7 +227,7 @@ impl From<ageminal_files::Preview> for PreviewView {
             },
             ageminal_files::Preview::Image(image) => Self {
                 kind: PreviewKindView::Image,
-                total_bytes: image.total_bytes,
+                total_bytes: image.total_bytes as f64,
                 text: None,
                 lossy: false,
                 truncated: false,
@@ -238,7 +238,7 @@ impl From<ageminal_files::Preview> for PreviewView {
             },
             ageminal_files::Preview::Binary(binary) => Self {
                 kind: PreviewKindView::Binary,
-                total_bytes: binary.total_bytes,
+                total_bytes: binary.total_bytes as f64,
                 text: None,
                 lossy: false,
                 truncated: false,
