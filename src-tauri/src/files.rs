@@ -13,7 +13,6 @@ use std::time::Duration;
 use ageminal_files::search::SearchOptions;
 use serde::Serialize;
 use specta::Type;
-
 /// 搜索的墙钟预算（#19 D8）：用完返回部分结果并置 `timedOut`。
 const SEARCH_BUDGET: Duration = Duration::from_secs(2);
 
@@ -128,7 +127,6 @@ impl From<ageminal_files::SearchOutcome> for SearchResultView {
         }
     }
 }
-
 /// 列举 `dir`（须在 worktree 根 `root` 之内）下的条目，带可见性标记。
 ///
 /// `.git` 永远不会出现在结果里；过滤由前端按「显示隐藏文件 / 显示忽略文件」两个开关做
@@ -176,4 +174,115 @@ pub async fn search_files(
     .map_err(|error| format!("搜索任务失败：{error}"))?;
 
     Ok(SearchResultView::from(outcome))
+}
+
+/// 内容类型（判定顺序的产物，D1 #20）。
+#[derive(Debug, Clone, Copy, Serialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum PreviewKindView {
+    Text,
+    Image,
+    Binary,
+}
+
+/// 文件预览的视图（与 `ageminal_files::Preview` 机械对应，扁平化以便生成简单 TS）。
+///
+/// 三个 `kind` 各自只填一部分字段：文本用 `text` 及其护栏位；图片用 `image_data_url` /
+/// `image_too_large`；二进制只用 `total_bytes`。
+#[derive(Debug, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewView {
+    pub kind: PreviewKindView,
+    /// 文件总字节数。
+    pub total_bytes: u64,
+    /// 文本内容（`kind == text`）。
+    pub text: Option<String>,
+    /// 无效 UTF-8，已 lossy 解码（顶部警示，D2 #20）。
+    pub lossy: bool,
+    /// 命中字节上限或行数上限，文本已截断。
+    pub truncated: bool,
+    /// 回传文本的行数。
+    pub lines: u32,
+    /// 含超长行（> 100 KiB，顶部提示）。
+    pub long_line: bool,
+    /// 图片的 `data:` URL（`kind == image` 且未超上限）。
+    pub image_data_url: Option<String>,
+    /// 图片超过 20 MiB，未加载数据。
+    pub image_too_large: bool,
+}
+
+impl From<ageminal_files::Preview> for PreviewView {
+    fn from(preview: ageminal_files::Preview) -> Self {
+        match preview {
+            ageminal_files::Preview::Text(text) => Self {
+                kind: PreviewKindView::Text,
+                total_bytes: text.total_bytes,
+                text: Some(text.text),
+                lossy: text.lossy,
+                truncated: text.truncated,
+                lines: text.lines as u32,
+                long_line: text.long_line,
+                image_data_url: None,
+                image_too_large: false,
+            },
+            ageminal_files::Preview::Image(image) => Self {
+                kind: PreviewKindView::Image,
+                total_bytes: image.total_bytes,
+                text: None,
+                lossy: false,
+                truncated: false,
+                lines: 0,
+                long_line: false,
+                image_data_url: image.data_url,
+                image_too_large: image.too_large,
+            },
+            ageminal_files::Preview::Binary(binary) => Self {
+                kind: PreviewKindView::Binary,
+                total_bytes: binary.total_bytes,
+                text: None,
+                lossy: false,
+                truncated: false,
+                lines: 0,
+                long_line: false,
+                image_data_url: None,
+                image_too_large: false,
+            },
+        }
+    }
+}
+
+/// 读取文件的只读预览（#60）。
+///
+/// 内容判定与护栏都在 `ageminal-files`（本机可测）；这里只做路径出入参与视图转换。读大图
+/// 与 base64 编码可能耗时，放阻塞线程池上跑。
+#[tauri::command]
+#[specta::specta]
+pub async fn read_preview(root: String, path: String) -> Result<PreviewView, String> {
+    let root = PathBuf::from(root);
+    let path = PathBuf::from(path);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        ageminal_files::read_preview(&root, &path)
+            .map(PreviewView::from)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("预览任务失败：{error}"))?
+}
+
+/// 用系统默认程序打开 `path`（D6 #20），路径须在 `root` 之内。
+///
+/// 走 `tauri-plugin-opener` 的 **Rust** API：不把 `plugin:opener|*` 放开给前端（capabilities
+/// 保持最小），路径校验与「用外部编辑器打开」同源，等于把能力限定在工作区路径内。
+#[tauri::command]
+#[specta::specta]
+pub fn open_in_editor(app: tauri::AppHandle, root: String, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let root = PathBuf::from(root);
+    let path = PathBuf::from(path);
+    ageminal_files::ensure_within(&root, &path).map_err(|error| error.to_string())?;
+    app.opener()
+        .open_path(path.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|error| error.to_string())
 }

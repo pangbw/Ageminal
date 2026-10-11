@@ -91,7 +91,9 @@ pub fn builder() -> Builder<tauri::Wry> {
         workspace::rename_worktree,
         workspace::set_active_worktree,
         files::read_dir,
-        files::search_files
+        files::search_files,
+        files::read_preview,
+        files::open_in_editor
     ])
 }
 
@@ -130,6 +132,8 @@ pub fn run() {
     tauri::Builder::default()
         // 目录选择器只从 Rust 侧调用（#32 D3）；capabilities 不放开它的命令。
         .plugin(tauri_plugin_dialog::init())
+        // 外部打开同样只从 Rust 侧调用（#60 D6 #20）；capabilities 不放开 plugin:opener。
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(builder().invoke_handler())
         .setup(|app| {
             match storage::Store::open_default() {

@@ -26,6 +26,8 @@ export function createBindingsMock() {
       setActiveWorktree: vi.fn(),
       readDir: vi.fn(),
       searchFiles: vi.fn(),
+      readPreview: vi.fn(),
+      openInEditor: vi.fn(),
     },
   };
 }

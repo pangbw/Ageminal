@@ -3,7 +3,7 @@
  * 组合根：外壳 + 当前主区内容，以及设置页的整页切换。
  *
  * 启动时拉一次工作区快照 hydrate（§14：前端只是 Rust 快照的内存投影）。
- * 主区仍是空态（§8）——页签模型见 #69；右栏文件树见 #58 / #59。
+ * 主区 = 文件只读预览（#60）或空态；完整页签模型见 #69；右栏文件树见 #58 / #59。
  */
 import IconEmptyWindow from "~icons/codicon/empty-window";
 import { computed, onMounted, watch } from "vue";
@@ -11,7 +11,7 @@ import { computed, onMounted, watch } from "vue";
 import FileTree from "./features/files/FileTree.vue";
 import FileTreeActions from "./features/files/FileTreeActions.vue";
 import ProjectTree from "./features/projects/ProjectTree.vue";
-import PreviewPlaceholder from "./features/tabs/PreviewPlaceholder.vue";
+import PreviewPanel from "./features/tabs/PreviewPanel.vue";
 import SettingsView from "./features/settings/SettingsView.vue";
 import AppShell from "./features/shell/AppShell.vue";
 import EmptyState from "./features/shell/EmptyState.vue";
@@ -33,13 +33,17 @@ useWindowTitle();
 // 文件树的根 = 当前激活 worktree（§9）。换树时把旧状态整个丢掉（#59）。
 watch(() => workspace.activePath, (path) => files.setRoot(path), { immediate: true });
 
-/** 当前 worktree 的激活预览页签；`null` = 主区显示空态。 */
-const preview = computed(() => (files.root === null ? null : tabs.activeTab(files.root)));
+/** 当前 worktree 的激活预览页签（含根路径）；`null` = 主区显示空态。 */
+const preview = computed(() => {
+  const root = files.root;
+  if (root === null) return null;
+  const tab = tabs.activeTab(root);
+  return tab ? { root, tab } : null;
+});
 
 function closePreview(): void {
-  if (files.root !== null && preview.value !== null) {
-    tabs.closeFile(files.root, preview.value.path);
-  }
+  const current = preview.value;
+  if (current !== null) tabs.closeFile(current.root, current.tab.path);
 }
 
 onMounted(() => {
@@ -62,11 +66,12 @@ function addProject(): void {
     <template #projects>
       <ProjectTree />
     </template>
-    <!-- 页签：暂无页签栏，预览面板见 #60 / #69。 -->
+    <!-- 主区：文件只读预览（#60）或空态；页签栏与完整页签模型见 #69。 -->
     <template #main>
-      <PreviewPlaceholder
+      <PreviewPanel
         v-if="preview"
-        :tab="preview"
+        :root="preview.root"
+        :tab="preview.tab"
         @close="closePreview"
       />
       <EmptyState

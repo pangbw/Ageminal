@@ -2,5 +2,14 @@
   "new": "New tab",
   "empty": "No open tabs",
   "close": "Close tab",
-  "previewComingSoon": "File preview coming soon"
+  "openExternal": "Open in external editor",
+  "preview": {
+    "loading": "Loading…",
+    "error": "Could not read file",
+    "binary": "Binary file, no preview",
+    "imageTooLarge": "Image too large to display (20 MB limit)",
+    "invalidUtf8": "Not valid UTF-8; text may be garbled. GBK support is deferred.",
+    "truncated": "File is large; showing only the beginning",
+    "longLine": "Contains a very long line; rendering may be slow"
+  }
 }

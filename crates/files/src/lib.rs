@@ -16,6 +16,7 @@ use std::path::{Component, Path, PathBuf};
 
 mod entry;
 mod error;
+pub mod preview;
 mod rules;
 pub mod search;
 
@@ -23,7 +24,16 @@ use rules::IgnoreRules;
 
 pub use entry::Entry;
 pub use error::FilesError;
+pub use preview::{read_preview, Preview, PreviewKind};
 pub use search::{search, SearchHit, SearchOptions, SearchOutcome, MAX_RESULTS};
+
+/// 校验 `path` 落在工作树根 `root` 之内（词法校验）。
+///
+/// 供需要「把能力限定在工作区路径内」的调用方复用（文件预览与「用外部编辑器打开」同源，
+/// 见 #60 D6 #20）。
+pub fn ensure_within(root: &Path, path: &Path) -> Result<(), FilesError> {
+    relative_to(root, path).map(|_| ())
+}
 
 /// `.git` 永不出现在列举 / 搜索结果里（#18 D3 维度 1，不可通过开关显示）。
 pub(crate) const GIT_DIR: &str = ".git";
@@ -117,7 +127,9 @@ fn list_dir(root: &Path, dir: &Path, limit: usize) -> Result<DirListing, FilesEr
 ///
 /// 校验是**词法**的：`strip_prefix` 按路径分量比较（`/a/proj-2` 不属于 `/a/proj`），并显式
 /// 拒绝 `..` 分量——否则 `root/../x` 会以 `../x` 的相对路径溜过前缀检查，读到 `root` 之外。
-fn relative_to(root: &Path, dir: &Path) -> Result<PathBuf, FilesError> {
+///
+/// `pub(crate)`：目录列举（[`list_dir`]）与文件预览（[`preview`]）共用同一道路径校验。
+pub(crate) fn relative_to(root: &Path, dir: &Path) -> Result<PathBuf, FilesError> {
     let outside = || FilesError::OutsideRoot {
         dir: dir.to_path_buf(),
     };

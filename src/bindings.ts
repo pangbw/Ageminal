@@ -56,6 +56,20 @@ export const commands = {
 	 *  返回 `Result`：async 命令带引用入参时 Tauri 要求如此（`State` 就是引用）。
 	 */
 	searchFiles: (root: string, query: string, showHidden: boolean, showIgnored: boolean) => typedError<SearchResultView, string>(__TAURI_INVOKE("search_files", { root, query, showHidden, showIgnored })),
+	/**
+	 *  读取文件的只读预览（#60）。
+	 * 
+	 *  内容判定与护栏都在 `ageminal-files`（本机可测）；这里只做路径出入参与视图转换。读大图
+	 *  与 base64 编码可能耗时，放阻塞线程池上跑。
+	 */
+	readPreview: (root: string, path: string) => typedError<PreviewView, string>(__TAURI_INVOKE("read_preview", { root, path })),
+	/**
+	 *  用系统默认程序打开 `path`（D6 #20），路径须在 `root` 之内。
+	 * 
+	 *  走 `tauri-plugin-opener` 的 **Rust** API：不把 `plugin:opener|*` 放开给前端（capabilities
+	 *  保持最小），路径校验与「用外部编辑器打开」同源，等于把能力限定在工作区路径内。
+	 */
+	openInEditor: (root: string, path: string) => typedError<null, string>(__TAURI_INVOKE("open_in_editor", { root, path })),
 };
 
 /* Types */
@@ -88,6 +102,35 @@ export type DirListingView = {
 	entries: DirEntryView[],
 	/**  条目数超过单目录上限（5000），已截断。 */
 	truncated: boolean,
+};
+
+/**  内容类型（判定顺序的产物，D1 #20）。 */
+export type PreviewKindView = "text" | "image" | "binary";
+
+/**
+ *  文件预览的视图（与 `ageminal_files::Preview` 机械对应，扁平化以便生成简单 TS）。
+ * 
+ *  三个 `kind` 各自只填一部分字段：文本用 `text` 及其护栏位；图片用 `image_data_url` /
+ *  `image_too_large`；二进制只用 `total_bytes`。
+ */
+export type PreviewView = {
+	kind: PreviewKindView,
+	/**  文件总字节数。 */
+	totalBytes: number,
+	/**  文本内容（`kind == text`）。 */
+	text: string | null,
+	/**  无效 UTF-8，已 lossy 解码（顶部警示，D2 #20）。 */
+	lossy: boolean,
+	/**  命中字节上限或行数上限，文本已截断。 */
+	truncated: boolean,
+	/**  回传文本的行数。 */
+	lines: number,
+	/**  含超长行（> 100 KiB，顶部提示）。 */
+	longLine: boolean,
+	/**  图片的 `data:` URL（`kind == image` 且未超上限）。 */
+	imageDataUrl: string | null,
+	/**  图片超过 20 MiB，未加载数据。 */
+	imageTooLarge: boolean,
 };
 
 /**  一个项目的视图（侧栏分组 + 设置页「项目」分页共用，#16 D6）。 */

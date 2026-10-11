@@ -13,6 +13,10 @@ pub enum FilesError {
     #[error("目录不存在：{path}")]
     NotFound { path: PathBuf },
 
+    /// 目标是目录，不是可预览的文件（预览只读文件）。
+    #[error("不是文件：{path}")]
+    NotAFile { path: PathBuf },
+
     /// 读取目录失败（权限不足、不是目录、超长路径等）。
     #[error("读取目录失败：{path}：{source}")]
     Io {
