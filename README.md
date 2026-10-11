@@ -7,13 +7,14 @@
 - **运行环境**：纯 Windows（默认 Git Bash，回退 PowerShell）；WSL 延后
 - **形态**：Tauri 2 桌面应用（待开发）
 - **许可**：完全开源，**Apache-2.0**
-- **当前阶段**：实现起步（issue #50 骨架已就位）
+- **当前阶段**：实现进行中——骨架 / i18n / 持久化内核 / git worktree 发现 / 应用外壳与侧栏（含设置页「项目」分页）已就位；下一张是 #58（文件树忽略过滤）
 
 ## 目录
 
 | 路径 | 说明 |
 | --- | --- |
-| `REQUIREMENTS.md` | 需求文档 v3（技术路线、进程与 Agent 集成、范围划分、验收标准） |
+| `REQUIREMENTS.md` | 需求文档 **v6**（技术路线、进程与 Agent 集成、范围划分、验收标准） |
+| `CONTEXT.md` | 领域词汇的单一事实来源（术语先改这里，再改代码与其它文档） |
 | `prototype/index.html` | 布局原型，单文件自包含，双击浏览器打开 |
 | `docs/research/ui-editor-route.md` | 技术路线调研：Tauri vs GPUI、Zed 编辑器内核复用、终端选型 |
 
@@ -48,7 +49,7 @@ pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts
 ```
 
 `pnpm check` 是**平台感知**的：Windows 上检查整个 workspace 与绑定一致性；
-其他平台跳过 `src-tauri`（它需要 GTK / WebKit 系统库），只检查三个核心 crate。
+其他平台跳过 `src-tauri`（它需要 GTK / WebKit 系统库），只检查 `crates/` 下的核心 crate。
 
 ## 分发
 
@@ -62,6 +63,6 @@ pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts
 
 技术路线已定：**Tauri 2 + WebView2 + xterm.js + CodeMirror 6**，先做初版；**GPUI 原生方案**转入延后分支验证（只验证 Windows 中文 IME 终端）。完全开源。
 
-仍待调研：前端框架、持久化方式、Tauri 通信协议、会话守护进程实现、Agent 集成注入方式。
+开工前的决策地图（issue #1）产出的决议已全部落到 `REQUIREMENTS.md`（技术选型、持久化、通信协议、会话守护进程、Agent 集成注入等）与 `docs/research/`；实现按 epic（issue #49）拆出的票据推进。
 
 需求文档分图例标注：**已确认 / 延后（含分支验证、专项调研）/ 待调研**。
