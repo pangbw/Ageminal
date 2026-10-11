@@ -1,1 +1,22 @@
-{}
+{
+  "title": "Settings",
+  "back": "Back",
+  "comingSoon": "Coming soon",
+  "nav": {
+    "general": "General",
+    "appearance": "Appearance",
+    "shortcuts": "Shortcuts",
+    "agents": "Agents",
+    "project": "Projects"
+  },
+  "project": {
+    "subtitle": "Manage the projects you added and their worktrees",
+    "addProject": "Add project",
+    "removeProject": "Remove project",
+    "worktreeList": "Worktrees",
+    "pin": "Add to sidebar",
+    "rename": "Rename display name",
+    "noBranch": "No branch",
+    "empty": "No projects yet"
+  }
+}

@@ -1,6 +1,7 @@
 {
   "windowTitle": {
-    "active": "{app} — {worktree} ({branch})"
+    "active": "{app} — {worktree} ({branch})",
+    "activeNoBranch": "{app} — {worktree}"
   },
   "windowControls": {
     "minimize": "最小化",
@@ -12,7 +13,14 @@
     "addProject": "添加项目",
     "collapse": "折叠项目栏",
     "expand": "展开项目栏",
-    "railLabel": "项目"
+    "railLabel": "项目",
+    "empty": "还没有添加任何项目",
+    "emptyHint": "添加一个本地 git 仓库，Ageminal 会自动发现它的 worktree。",
+    "collapseGroup": "折叠项目",
+    "expandGroup": "展开项目",
+    "bare": "bare 仓库",
+    "locked": "已锁定",
+    "stale": "已失效"
   },
   "panelResizer": "拖拽或按方向键调整宽度"
 }

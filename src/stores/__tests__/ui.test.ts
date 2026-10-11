@@ -64,13 +64,11 @@ describe("useUiStore", () => {
     const ui = useUiStore();
 
     expect(ui.newTabMenuOpen).toBe(false);
-    expect(ui.addProjectOpen).toBe(false);
     expect(ui.settingsOpen).toBe(false);
 
     ui.toggleNewTabMenu();
-    ui.toggleAddProject();
     ui.toggleSettings();
-    expect([ui.newTabMenuOpen, ui.addProjectOpen, ui.settingsOpen]).toEqual([true, true, true]);
+    expect([ui.newTabMenuOpen, ui.settingsOpen]).toEqual([true, true]);
 
     ui.toggleSettings();
     expect(ui.settingsOpen).toBe(false);

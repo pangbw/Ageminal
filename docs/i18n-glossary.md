@@ -13,7 +13,7 @@
 
 | 词 | 说明 |
 | --- | --- |
-| rebase / stash / branch / HEAD / detached | git 的子命令与状态（`commit` 已在 §7） |
+| rebase / stash / branch / HEAD / detached / bare | git 的子命令与状态（`commit` 已在 §7） |
 | Claude Code / Codex / opencode / pi | agent 产品名 |
 | Ageminal / Ageminal Mono / codicon | 本产品、字体与图标集的名字 |
 | `sid` / `incarnationId` / `launch spec` | 内部标识与结构名（`CONTEXT.md` §2） |
@@ -28,6 +28,10 @@
 | 项目 | Project |
 | 用户工作区 | User workspace |
 | 主工作树 | Main worktree |
+| 显示名（worktree 的） | Display name |
+| 加入左侧栏 | Add to sidebar |
+| 已锁定 | Locked |
+| 已失效 | Stale |
 | 页签 | Tab |
 | 面板 | Pane |
 | 终端 | Terminal |

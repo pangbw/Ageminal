@@ -11,9 +11,10 @@ vi.mock("../window", () => ({ setWindowTitle: mocks.setWindowTitle }));
 
 import { applyLocale } from "../../../i18n";
 import { localeString } from "../../../i18n/__tests__/locale-files";
+import { project, snapshot, worktree } from "../../../__tests__/workspace-fixtures";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import { formatWindowTitle, useWindowTitle } from "../useWindowTitle";
-import { expectedWindowTitle } from "./window-title-fixture";
+import { expectedWindowTitle, expectedWindowTitleNoBranch } from "./window-title-fixture";
 
 const Probe = defineComponent({
   setup() {
@@ -41,6 +42,13 @@ describe("formatWindowTitle", () => {
       expectedWindowTitle("en-US", "wt", "main"),
     );
   });
+
+  it("drops the branch part when the worktree has no branch", () => {
+    applyLocale("zh-CN");
+    expect(formatWindowTitle({ name: "bare", branch: null })).toBe(
+      expectedWindowTitleNoBranch("zh-CN", "bare"),
+    );
+  });
 });
 
 describe("useWindowTitle", () => {
@@ -63,9 +71,29 @@ describe("useWindowTitle", () => {
     setActivePinia(pinia);
     mount(Probe, { global: { plugins: [pinia] } });
 
-    useWorkspaceStore().activeWorktree = { name: "feat-x", branch: "main" };
+    useWorkspaceStore().hydrate(
+      snapshot(
+        [project("/ws/feat-x", [worktree("/ws/feat-x", { name: "feat-x", branchLabel: "main" })])],
+        "/ws/feat-x",
+      ),
+    );
     await nextTick();
 
     expect(mocks.setWindowTitle).toHaveBeenLastCalledWith(expectedWindowTitle("en-US", "feat-x", "main"));
+  });
+
+  it("omits the branch for a worktree that has none", async () => {
+    const pinia = createPinia();
+    setActivePinia(pinia);
+    mount(Probe, { global: { plugins: [pinia] } });
+
+    useWorkspaceStore().hydrate(
+      snapshot([project("/ws/bare", [worktree("/ws/bare", { name: "bare", bare: true })])], "/ws/bare"),
+    );
+    await nextTick();
+
+    expect(mocks.setWindowTitle).toHaveBeenLastCalledWith(
+      expectedWindowTitleNoBranch("en-US", "bare"),
+    );
   });
 });

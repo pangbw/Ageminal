@@ -15,10 +15,9 @@ export const useUiStore = defineStore("ui", () => {
   const leftCollapsed = ref(false);
   const rightCollapsed = ref(false);
 
-  // 弹层 / 对话框开关。实体分别归后续票：#69 新建页签菜单、#57 添加项目对话框、
-  // #86 设置页；#55 只把入口与开关接起来，保证外壳与原型一致。
+  // 弹层 / 对话框开关。实体分别归后续票：#69 新建页签菜单、#86 设置页；
+  // 「添加项目」不走前端对话框（#57 由 Rust 侧弹系统目录选择器，见 #32 D1）。
   const newTabMenuOpen = ref(false);
-  const addProjectOpen = ref(false);
   const settingsOpen = ref(false);
 
   function panelWidth(side: PanelSide): number {
@@ -47,10 +46,6 @@ export const useUiStore = defineStore("ui", () => {
     newTabMenuOpen.value = !newTabMenuOpen.value;
   }
 
-  function toggleAddProject(): void {
-    addProjectOpen.value = !addProjectOpen.value;
-  }
-
   function toggleSettings(): void {
     settingsOpen.value = !settingsOpen.value;
   }
@@ -61,7 +56,6 @@ export const useUiStore = defineStore("ui", () => {
     leftCollapsed,
     rightCollapsed,
     newTabMenuOpen,
-    addProjectOpen,
     settingsOpen,
     panelWidth,
     setPanelWidth,
@@ -69,7 +63,6 @@ export const useUiStore = defineStore("ui", () => {
     collapsePanel,
     expandPanel,
     toggleNewTabMenu,
-    toggleAddProject,
     toggleSettings,
   };
 });

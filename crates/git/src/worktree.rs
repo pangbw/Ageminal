@@ -211,7 +211,9 @@ fn malformed(reason: &str) -> GitError {
 }
 
 /// 目录 basename；没有 basename 时退回整个路径。
-fn dir_name(path: &Path) -> String {
+///
+/// 公开给兄弟 crate 复用：项目名与 worktree 默认名都走这条规则。
+pub fn dir_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned())

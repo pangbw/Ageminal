@@ -18,6 +18,24 @@ export const commands = {
 	getLanguage: () => __TAURI_INVOKE<string | null>("get_language"),
 	/**  写入界面语言并**立即落盘**；`None` = 恢复「跟随系统」。 */
 	setLanguage: (language: string | null) => typedError<null, string>(__TAURI_INVOKE("set_language", { language })),
+	/**  启动 hydrate：前端拿到的唯一工作区事实。 */
+	workspaceSnapshot: () => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("workspace_snapshot")),
+	/**
+	 *  弹系统目录选择器，把选中的仓库加为项目（自动发现其 worktree 并**全部加入侧栏**）。
+	 * 
+	 *  返回 `None` = 用户取消。
+	 */
+	addProject: () => typedError<WorkspaceSnapshot | null, string>(__TAURI_INVOKE("add_project")),
+	/**  移除项目：连同它的侧栏名单与项目级设置一起清掉。 */
+	removeProject: (path: string) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("remove_project", { path })),
+	/**  折叠 / 展开一个项目分组（侧栏状态，`state.json`，去抖落盘）。 */
+	setProjectCollapsed: (projectPath: string, collapsed: boolean) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("set_project_collapsed", { projectPath, collapsed })),
+	/**  把 worktree 加入 / 移出左侧栏。 */
+	setWorktreePinned: (projectPath: string, worktreePath: string, pinned: boolean) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("set_worktree_pinned", { projectPath, worktreePath, pinned })),
+	/**  改 worktree 的本地显示名；`name` 为 `None`（或只有空白）= 回到默认名。 */
+	renameWorktree: (projectPath: string, worktreePath: string, name: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("rename_worktree", { projectPath, worktreePath, name })),
+	/**  设置激活的 worktree（窗口标题与侧栏高亮都跟着它走）。 */
+	setActiveWorktree: (worktreePath: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("set_active_worktree", { worktreePath })),
 };
 
 /* Types */
@@ -31,6 +49,42 @@ export type AppInfo = {
 	os: string,
 };
 
+/**  一个项目的视图（侧栏分组 + 设置页「项目」分页共用，#16 D6）。 */
+export type ProjectView = {
+	path: string,
+	name: string,
+	collapsed: boolean,
+	/**  发现到的**全部** worktree；侧栏只渲染 `pinned` 的那些，设置页要全量。 */
+	worktrees: WorktreeView[],
+	/**  git 发现失败时的明确提示；成功为 `None`。 */
+	error: string | null,
+};
+
+/**  前端唯一的工作区事实来源。 */
+export type WorkspaceSnapshot = {
+	projects: ProjectView[],
+	/**  激活 worktree 的路径；`None` = 没有激活项。 */
+	activeWorktree: string | null,
+};
+
+/**
+ *  一个 worktree 的视图。
+ * 
+ *  不含 agent 状态：那是运行期事件（#79 / #80），不属于工作区的落盘事实。
+ */
+export type WorktreeView = {
+	path: string,
+	/**  显示名：本地覆盖 > 默认（主工作树用项目名，其余用目录 basename）。 */
+	name: string,
+	branchLabel: string | null,
+	isMain: boolean,
+	bare: boolean,
+	locked: boolean,
+	detached: boolean,
+	stale: boolean,
+	pinned: boolean,
+};
+
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
     try {
@@ -40,4 +94,3 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
-

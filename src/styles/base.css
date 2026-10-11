@@ -61,6 +61,44 @@ body.is-resizing {
   user-select: none;
 }
 
+/*
+ * 外壳文字按钮（原型 `.btn`）：空态、设置页的「添加项目 / 移除项目」共用。
+ * 图标按钮仍走 `.icon-button`。
+ */
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 28px;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+
+.button:hover {
+  background: var(--color-hover);
+}
+
+.button--primary {
+  border-color: var(--color-accent-line);
+  color: var(--color-accent);
+}
+
+.button--danger {
+  border-color: transparent;
+  color: var(--color-red);
+}
+
+.button--danger:hover {
+  background: var(--color-hover);
+}
+
 ::-webkit-scrollbar {
   width: 11px;
   height: 11px;

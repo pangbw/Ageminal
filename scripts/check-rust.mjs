@@ -18,6 +18,8 @@ const coreCrates = [
   "ageminal-notify",
   "-p",
   "ageminal-git",
+  "-p",
+  "ageminal-workspace",
 ];
 
 const steps = [

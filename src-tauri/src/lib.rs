@@ -12,6 +12,7 @@ use tauri::Manager;
 use tauri_specta::{collect_commands, Builder};
 
 pub mod storage;
+pub mod workspace;
 
 /// 状态类文档的巡检间隔（去抖窗口是 500 ms，巡检比它更密）。
 const STORAGE_TICK: Duration = Duration::from_millis(250);
@@ -80,7 +81,14 @@ pub fn builder() -> Builder<tauri::Wry> {
         app_info,
         system_locale,
         get_language,
-        set_language
+        set_language,
+        workspace::workspace_snapshot,
+        workspace::add_project,
+        workspace::remove_project,
+        workspace::set_project_collapsed,
+        workspace::set_worktree_pinned,
+        workspace::rename_worktree,
+        workspace::set_active_worktree
     ])
 }
 
@@ -117,6 +125,8 @@ fn spawn_state_flusher(handle: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 目录选择器只从 Rust 侧调用（#32 D3）；capabilities 不放开它的命令。
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(builder().invoke_handler())
         .setup(|app| {
             match storage::Store::open_default() {
@@ -130,6 +140,8 @@ pub fn run() {
                 }
                 Err(error) => eprintln!("[storage] 初始化失败：{error}"),
             }
+            // git 启动定位一次；失败记在 GitTool 里，由快照转成每个项目的提示（§15）。
+            app.manage(workspace::GitTool::locate());
             Ok(())
         })
         .build(tauri::generate_context!())

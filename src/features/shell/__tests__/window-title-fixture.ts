@@ -11,3 +11,10 @@ export function expectedWindowTitle(locale: Locale, name: string, branch: string
     .replace("{worktree}", name)
     .replace("{branch}", branch);
 }
+
+/** 没有分支可显示时（如 bare 主工作树）的期望标题。 */
+export function expectedWindowTitleNoBranch(locale: Locale, name: string): string {
+  return localeString(locale, "shell", ["windowTitle", "activeNoBranch"])
+    .replace("{app}", localeString(locale, "common", ["appName"]))
+    .replace("{worktree}", name);
+}

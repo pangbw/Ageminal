@@ -1,1 +1,22 @@
-{}
+{
+  "title": "设置",
+  "back": "返回",
+  "comingSoon": "即将推出",
+  "nav": {
+    "general": "通用",
+    "appearance": "外观",
+    "shortcuts": "快捷键",
+    "agents": "Agent",
+    "project": "项目"
+  },
+  "project": {
+    "subtitle": "管理已添加的项目及其工作树",
+    "addProject": "添加项目",
+    "removeProject": "移除项目",
+    "worktreeList": "工作树列表",
+    "pin": "加入左侧栏",
+    "rename": "重命名显示名",
+    "noBranch": "无分支",
+    "empty": "还没有添加任何项目"
+  }
+}

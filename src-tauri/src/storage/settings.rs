@@ -1,5 +1,6 @@
 //! `settings.json`：通用 / 外观 / 快捷键 / Agent / 项目级设置（REQUIREMENTS.md §11、§14）。
 
+use ageminal_workspace::ProjectSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -21,6 +22,9 @@ pub struct Settings {
     pub schema_version: u32,
     #[serde(default)]
     pub general: General,
+    /// 项目级设置（§14；#57 只填 worktree 显示名，#86 再加 shell 覆盖 / 环境变量 / agent 覆盖）。
+    #[serde(default)]
+    pub projects: Vec<ProjectSettings>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -30,6 +34,7 @@ impl Default for Settings {
         Self {
             schema_version: CURRENT_SETTINGS_VERSION,
             general: General::default(),
+            projects: Vec::new(),
             extra: Map::new(),
         }
     }

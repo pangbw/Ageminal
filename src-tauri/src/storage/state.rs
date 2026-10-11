@@ -1,5 +1,8 @@
 //! `state.json`：项目、侧栏、页签骨架、窗口尺寸 / 位置等（REQUIREMENTS.md §14）。
 
+use std::path::PathBuf;
+
+use ageminal_workspace::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -17,6 +20,12 @@ pub struct AppState {
     /// 窗口尺寸与位置（关闭时保存、启动时恢复）。
     #[serde(default)]
     pub window: Option<WindowState>,
+    /// 已加入的项目（#57）；worktree 列表不落盘，只在 `pinned` 里记「已加入侧栏」的。
+    #[serde(default)]
+    pub projects: Vec<Project>,
+    /// 最后激活的 worktree（§14）。
+    #[serde(default)]
+    pub active_worktree: Option<PathBuf>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -26,6 +35,8 @@ impl Default for AppState {
         Self {
             schema_version: CURRENT_STATE_VERSION,
             window: None,
+            projects: Vec::new(),
+            active_worktree: None,
             extra: Map::new(),
         }
     }

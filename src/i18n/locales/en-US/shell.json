@@ -1,6 +1,7 @@
 {
   "windowTitle": {
-    "active": "{app} — {worktree} ({branch})"
+    "active": "{app} — {worktree} ({branch})",
+    "activeNoBranch": "{app} — {worktree}"
   },
   "windowControls": {
     "minimize": "Minimize",
@@ -12,7 +13,14 @@
     "addProject": "Add project",
     "collapse": "Collapse project panel",
     "expand": "Expand project panel",
-    "railLabel": "Projects"
+    "railLabel": "Projects",
+    "empty": "No projects yet",
+    "emptyHint": "Add a local git repository and Ageminal will discover its worktrees.",
+    "collapseGroup": "Collapse project",
+    "expandGroup": "Expand project",
+    "bare": "bare repo",
+    "locked": "Locked",
+    "stale": "Stale"
   },
   "panelResizer": "Drag or use arrow keys to resize"
 }

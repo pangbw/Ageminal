@@ -18,12 +18,19 @@ vi.mock("../window", () => ({
 }));
 
 import App from "../../../App.vue";
+import { ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixtures";
+import { commands } from "../../../bindings";
 import { applyLocale } from "../../../i18n";
 import { localeString } from "../../../i18n/__tests__/locale-files";
 import { DEFAULT_PANEL_WIDTH } from "../../../lib/panel-layout";
 import { useUiStore } from "../../../stores/ui";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import { expectedWindowTitle } from "./window-title-fixture";
+
+vi.mock(
+  "../../../bindings",
+  async () => (await import("../../../__tests__/workspace-fixtures")).createBindingsMock(),
+);
 
 function zh(namespace: "common" | "shell" | "tabs" | "files", path: string[]): string {
   return localeString("zh-CN", namespace, path);
@@ -119,7 +126,12 @@ describe("app shell", () => {
 
     expect(mocks.setWindowTitle).toHaveBeenLastCalledWith(zh("common", ["appName"]));
 
-    workspace.activeWorktree = { name: "feat-x", branch: "main" };
+    workspace.hydrate(
+      snapshot(
+        [project("/ws/feat-x", [worktree("/ws/feat-x", { name: "feat-x", branchLabel: "main" })])],
+        "/ws/feat-x",
+      ),
+    );
     await nextTick();
 
     expect(mocks.setWindowTitle).toHaveBeenLastCalledWith(
@@ -145,9 +157,17 @@ describe("app shell", () => {
     const shell = wrapper!;
 
     await shell.get(".tabbar__new").trigger("click");
-    await shell.get(".pane--left .app__add-project").trigger("click");
     await shell.get(".titlebar__button").trigger("click");
 
-    expect([ui.newTabMenuOpen, ui.addProjectOpen, ui.settingsOpen]).toEqual([true, true, true]);
+    expect([ui.newTabMenuOpen, ui.settingsOpen]).toEqual([true, true]);
+  });
+
+  it("asks for a repository when Add project is clicked", async () => {
+    mountShell();
+    vi.mocked(commands.addProject).mockReturnValue(ok(null));
+
+    await wrapper!.get(".pane--left .app__add-project").trigger("click");
+
+    expect(commands.addProject).toHaveBeenCalledOnce();
   });
 });

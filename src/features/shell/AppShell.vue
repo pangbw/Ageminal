@@ -16,6 +16,9 @@ import TabBar from "./TabBar.vue";
 import TitleBar from "./TitleBar.vue";
 
 const ui = useUiStore();
+
+// 「添加项目」的实体归 #57（Rust 侧弹系统目录选择器）；外壳只抛事件，不引工作区 store。
+const emit = defineEmits<{ addProject: [] }>();
 </script>
 
 <template>
@@ -35,7 +38,7 @@ const ui = useUiStore();
           class="icon-button app__add-project"
           type="button"
           :title="t('shell.projectPanel.addProject')"
-          @click="ui.toggleAddProject()"
+          @click="emit('addProject')"
         >
           <IconAdd />
         </button>

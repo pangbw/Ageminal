@@ -583,6 +583,7 @@ Ageminal/
 ├─ crates/
 │  ├─ protocol/          # app-core ↔ daemon 的帧协议（Rust 单一来源）
 │  ├─ git/               # git CLI 访问层（worktree 发现 + 薄执行；纯逻辑跨平台可测）
+│  ├─ workspace/         # 工作区模型（项目 / 侧栏 / 显示名投影；纯逻辑）
 │  ├─ daemon/            # ageminal-daemon.exe
 │  └─ notify/            # ageminal-notify.exe（hook shim）
 ├─ scripts/              # build-sidecars.mjs 等
