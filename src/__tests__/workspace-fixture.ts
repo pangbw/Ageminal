@@ -25,6 +25,7 @@ export function createBindingsMock() {
       renameWorktree: vi.fn(),
       setActiveWorktree: vi.fn(),
       readDir: vi.fn(),
+      searchFiles: vi.fn(),
     },
   };
 }

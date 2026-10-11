@@ -54,7 +54,7 @@ fn ours(root: &Path) -> BTreeMap<String, bool> {
     let mut verdicts = BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        for entry in read_dir(root, &dir).unwrap() {
+        for entry in read_dir(root, &dir).unwrap().entries {
             verdicts.insert(relative(root, &entry.path), entry.ignored);
             if entry.is_dir {
                 pending.push(entry.path.clone());

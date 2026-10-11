@@ -46,7 +46,14 @@ export const commands = {
 	 *  `.git` 永远不会出现在结果里；过滤由前端按「显示隐藏文件 / 显示忽略文件」两个开关做
 	 *  （#18 D4：切开关不必重扫）。
 	 */
-	readDir: (root: string, dir: string) => typedError<DirEntryView[], string>(__TAURI_INVOKE("read_dir", { root, dir })),
+	readDir: (root: string, dir: string) => typedError<DirListingView, string>(__TAURI_INVOKE("read_dir", { root, dir })),
+	/**
+	 *  按名字（大小写不敏感的子串）在 `root` 下全树搜索。
+	 *  
+	 *  在阻塞线程池上跑（遍历可能耗时）；新查询会让旧的一停手（`SearchEpoch`）。`~2 s` 预算
+	 *  用尽返回部分结果，`timedOut` 置位。
+	 */
+	searchFiles: (root: string, query: string, showHidden: boolean, showIgnored: boolean) => __TAURI_INVOKE<SearchResultView>("search_files", { root, query, showHidden, showIgnored }),
 };
 
 /* Types */
@@ -76,6 +83,15 @@ export type DirEntryView = {
 	ignored: boolean,
 };
 
+/**
+ *  一个目录的列举结果。
+ */
+export type DirListingView = {
+	entries: DirEntryView[],
+	/**  条目数超过单目录上限（5000），已截断。 */
+	truncated: boolean,
+};
+
 /**  一个项目的视图（侧栏分组 + 设置页「项目」分页共用，#16 D6）。 */
 export type ProjectView = {
 	path: string,
@@ -85,6 +101,26 @@ export type ProjectView = {
 	worktrees: WorktreeView[],
 	/**  git 发现失败时的明确提示；成功为 `None`。 */
 	error: string | null,
+};
+
+/**  一条搜索命中（与 `ageminal-files::SearchHit` 字段一一对应）。 */
+export type SearchHitView = {
+	/**  绝对路径。 */
+	path: string,
+	/**  相对工作树根的展示路径（`/` 分隔）。 */
+	relative: string,
+	isDir: boolean,
+	/**  被忽略规则命中（仅「显示忽略文件」打开时才可能为 `true`）。 */
+	ignored: boolean,
+};
+
+/**  一次搜索的结果。 */
+export type SearchResultView = {
+	hits: SearchHitView[],
+	/**  命中数达到上限（200）。 */
+	truncated: boolean,
+	/**  预算用尽，结果是部分的。 */
+	timedOut: boolean,
 };
 
 /**  前端唯一的工作区事实来源。 */

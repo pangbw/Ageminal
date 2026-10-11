@@ -1,4 +1,6 @@
 {
   "new": "New tab",
-  "empty": "No open tabs"
+  "empty": "No open tabs",
+  "close": "Close tab",
+  "previewComingSoon": "File preview coming soon"
 }

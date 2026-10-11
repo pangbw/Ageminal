@@ -90,7 +90,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         workspace::set_worktree_pinned,
         workspace::rename_worktree,
         workspace::set_active_worktree,
-        files::read_dir
+        files::read_dir,
+        files::search_files
     ])
 }
 
@@ -144,6 +145,8 @@ pub fn run() {
             }
             // git 启动定位一次；失败记在 GitTool 里，由快照转成每个项目的提示（§15）。
             app.manage(workspace::GitTool::locate());
+            // 文件搜索的取消状态（#19 D8）。
+            app.manage(std::sync::Arc::new(files::SearchEpoch::default()));
             Ok(())
         })
         .build(tauri::generate_context!())

@@ -245,7 +245,9 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 
 - 右侧文件树，根 = 当前 worktree 根目录；顶部搜索框；**单击文件即预览** ✅
 - **`.gitignore` 过滤** ✅：默认隐藏 `.gitignore` 命中的文件与 `node_modules`、`.git` 等
-- **懒加载** ✅（按需读目录，大仓库性能）
+- **懒加载** ✅（按需读目录，大仓库性能）；单目录上限 **5000 条**，超出提示已截断（#19 D5）
+- **搜索 = Rust 全树搜** ✅（#19 D8）：`ignore::WalkBuilder`（同一套忽略规则 + 两个开关），去抖 ~200 ms、上限 **200 条**、~2 s 超时返回部分结果。懒加载下**不能**只过滤已加载节点，否则结果有误导性
+- **虚拟滚动** ✅（扁平化可见节点，#13 D5）
 - **两个开关** ✅：「显示隐藏文件」与「显示忽略文件」
 - MVP **只读 git 忽略规则**（嵌套 `.gitignore` + `.git/info/exclude` + 全局 excludes；**不认** `.ignore`），不自建忽略规则编辑器 ✅（D2 #18）
 - 预览 ✅（C4 #12）：
@@ -600,7 +602,7 @@ Ageminal/
 - **运行时落点**：daemon → `%LOCALAPPDATA%\Ageminal\daemon-host\<app 版本>\`（B4 #7，躲安装器清扫）；**shim → 稳定路径 `%LOCALAPPDATA%\Ageminal\bin\`**，使注入的 hook 配置**跨应用更新无需重写**。
 - **版本**：单一来源 = 根 `package.json`（`tauri.conf.json` 用 `"version": "../package.json"`）；**app 版本与协议版本分离**。
 - **构建编排**：根 `package.json` 的 `sidecars` → `tauri build`；`tauri.conf.json` 的 `beforeBuildCommand` 只负责前端构建。
-- **前端目录**：`features/{shell,terminal,tabs,files,agents,settings,projects}/`、`stores/`、`i18n/`、`styles/`、`lib/`、`assets/fonts/`（`shell` = 外壳：标题栏、三栏布局、面板分隔，#55；`projects` = 左侧项目树，#57；`files` = 文件树（忽略过滤与可见性标记 #58、懒加载 + 搜索 + 树 UI #59））。
+- **前端目录**：`features/{shell,terminal,tabs,files,agents,settings,projects}/`、`stores/`、`i18n/`、`styles/`、`lib/`、`assets/fonts/`（`shell` = 外壳：标题栏、三栏布局、面板分隔，#55；`projects` = 左侧项目树，#57；`files` = 文件树（忽略过滤与可见性标记 #58、懒加载 + 搜索 + 树 UI #59）；`tabs` = 预览页签（#59 的最小形态；完整页签模型 #69））。
 
 ---
 

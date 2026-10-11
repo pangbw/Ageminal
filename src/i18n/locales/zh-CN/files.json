@@ -7,5 +7,14 @@
   "visibility": {
     "showHidden": "显示隐藏文件",
     "showIgnored": "显示忽略文件"
+  },
+  "empty": "选择一个 worktree 以浏览文件",
+  "truncated": "目录过大，仅显示前 5000 项",
+  "search": {
+    "placeholder": "搜索文件",
+    "searching": "搜索中…",
+    "noResults": "没有匹配的文件",
+    "truncated": "结果过多，仅显示前 200 条",
+    "timedOut": "搜索超时，结果可能不完整"
   }
 }

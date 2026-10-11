@@ -18,7 +18,7 @@ fn omits_git_and_flags_dotfiles() {
     fs::write(root.join("README.md"), "readme\n").unwrap();
     fs::write(root.join("a.txt"), "a\n").unwrap();
 
-    let entries = read_dir(root, root).unwrap();
+    let entries = read_dir(root, root).unwrap().entries;
     let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
 
     // 目录优先，其余按名字（大小写不敏感）——`.git` 不在其中。
@@ -43,7 +43,7 @@ fn ignores_nothing_outside_a_git_repository() {
     fs::write(root.join("secret.txt"), "s\n").unwrap();
     fs::write(root.join("visible.txt"), "v\n").unwrap();
 
-    let entries = read_dir(root, root).unwrap();
+    let entries = read_dir(root, root).unwrap().entries;
 
     let secret = entries
         .iter()
@@ -60,7 +60,7 @@ fn lists_a_nested_directory_with_root_relative_marking() {
     fs::create_dir_all(&sub).unwrap();
     fs::write(sub.join("inner.txt"), "i\n").unwrap();
 
-    let entries = read_dir(root, &sub).unwrap();
+    let entries = read_dir(root, &sub).unwrap().entries;
 
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "inner.txt");

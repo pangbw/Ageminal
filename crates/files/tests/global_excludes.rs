@@ -41,7 +41,7 @@ fn honors_the_global_excludes_file() {
     std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
     std::env::set_var("HOME", &home);
 
-    let entries = read_dir(&root, &root).unwrap();
+    let entries = read_dir(&root, &root).unwrap().entries;
     let paths: Vec<String> = entries
         .iter()
         .map(|entry| relative(&root, &entry.path))

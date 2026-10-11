@@ -7,5 +7,14 @@
   "visibility": {
     "showHidden": "Show hidden files",
     "showIgnored": "Show ignored files"
+  },
+  "empty": "Select a worktree to browse its files",
+  "truncated": "Directory is large; showing the first 5000 entries",
+  "search": {
+    "placeholder": "Search files",
+    "searching": "Searching…",
+    "noResults": "No matching files",
+    "truncated": "Too many results; showing the first 200",
+    "timedOut": "Search timed out; results may be incomplete"
   }
 }
