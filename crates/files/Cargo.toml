@@ -14,3 +14,4 @@ ignore = "0.4.33"
 thiserror = "2"
 # 图片预览：编码为 `data:` URL 回传（C4 #12 / §9；上限 20 MiB）。
 base64 = "0.22"
+notify = "8.2.0"

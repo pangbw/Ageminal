@@ -13,6 +13,8 @@ import { ref } from "vue";
 export type PreviewTab = {
   path: string;
   name: string;
+  /** 后台期间文件变了、但还没重读（#61）：激活时才刷新。 */
+  stale: boolean;
 };
 
 export const useTabsStore = defineStore("tabs", () => {
@@ -25,17 +27,37 @@ export const useTabsStore = defineStore("tabs", () => {
     return tabsByRoot.value[root] ?? [];
   }
 
+  function findTab(root: string, path: string): PreviewTab | undefined {
+    return tabsFor(root).find((tab) => tab.path === path);
+  }
+
   function activeTab(root: string): PreviewTab | null {
     const active = activeByRoot.value[root];
     if (!active) return null;
-    return tabsFor(root).find((tab) => tab.path === active) ?? null;
+    return findTab(root, active) ?? null;
   }
 
   /** 打开（或激活已有的）文件预览页签。 */
   function openFile(root: string, path: string, name: string): void {
     const tabs = (tabsByRoot.value[root] ??= []);
-    if (!tabs.some((tab) => tab.path === path)) tabs.push({ path, name });
+    if (!tabs.some((tab) => tab.path === path)) tabs.push({ path, name, stale: false });
     activeByRoot.value[root] = path;
+  }
+
+  /** 后台变更：标记 stale，等激活时才刷新（#61）。 */
+  function markStale(root: string, path: string): void {
+    const tab = findTab(root, path);
+    if (tab) tab.stale = true;
+  }
+
+  /** 已刷新，清掉 stale。 */
+  function clearStale(root: string, path: string): void {
+    const tab = findTab(root, path);
+    if (tab) tab.stale = false;
+  }
+
+  function isStale(root: string, path: string): boolean {
+    return findTab(root, path)?.stale === true;
   }
 
   /** 关闭一个预览页签；关掉的是激活项时，挑一个邻居顶上。 */
@@ -51,5 +73,15 @@ export const useTabsStore = defineStore("tabs", () => {
     }
   }
 
-  return { tabsByRoot, activeByRoot, tabsFor, activeTab, openFile, closeFile };
+  return {
+    tabsByRoot,
+    activeByRoot,
+    tabsFor,
+    activeTab,
+    openFile,
+    closeFile,
+    markStale,
+    clearStale,
+    isStale,
+  };
 });

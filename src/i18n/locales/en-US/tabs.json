@@ -10,6 +10,7 @@
     "imageTooLarge": "Image too large to display (20 MB limit)",
     "invalidUtf8": "Not valid UTF-8; text may be garbled. GBK support is deferred.",
     "truncated": "File is large; showing only the beginning",
-    "longLine": "Contains a very long line; rendering may be slow"
+    "longLine": "Contains a very long line; rendering may be slow",
+    "updated": "File updated"
   }
 }

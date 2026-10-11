@@ -10,6 +10,7 @@
     "imageTooLarge": "图片过大，未显示（上限 20 MB）",
     "invalidUtf8": "文件不是有效 UTF-8，可能存在乱码；GBK 支持延后",
     "truncated": "文件过大，仅显示前一部分",
-    "longLine": "含超长行，渲染可能较慢"
+    "longLine": "含超长行，渲染可能较慢",
+    "updated": "文件已更新"
   }
 }

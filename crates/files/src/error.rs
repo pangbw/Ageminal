@@ -24,4 +24,11 @@ pub enum FilesError {
         #[source]
         source: std::io::Error,
     },
+
+    /// 建立 / 调整文件监听失败（#61）。
+    #[error("文件监听失败：{source}")]
+    Watch {
+        #[source]
+        source: notify::Error,
+    },
 }

@@ -70,6 +70,8 @@ export const commands = {
 	 *  保持最小），路径校验与「用外部编辑器打开」同源，等于把能力限定在工作区路径内。
 	 */
 	openInEditor: (root: string, path: string) => typedError<null, string>(__TAURI_INVOKE("open_in_editor", { root, path })),
+	/**  用前端当前打开着的预览文件替换监听集合（#61）。 */
+	setWatchedFiles: (paths: string[]) => typedError<null, string>(__TAURI_INVOKE("set_watched_files", { paths })),
 };
 
 /* Types */

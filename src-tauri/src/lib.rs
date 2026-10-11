@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use specta::Type;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_specta::{collect_commands, Builder};
 
 pub mod files;
 pub mod storage;
+pub mod watch;
 pub mod workspace;
 
 /// 状态类文档的巡检间隔（去抖窗口是 500 ms，巡检比它更密）。
@@ -93,7 +94,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         files::read_dir,
         files::search_files,
         files::read_preview,
-        files::open_in_editor
+        files::open_in_editor,
+        watch::set_watched_files
     ])
 }
 
@@ -151,6 +153,18 @@ pub fn run() {
             app.manage(workspace::GitTool::locate());
             // 文件搜索的取消状态（#19 D8）。
             app.manage(std::sync::Arc::new(files::SearchEpoch::default()));
+            // 已打开预览文件的变更监听（#61）；前端经 `set_watched_files` 下发集合。
+            let handle = app.handle().clone();
+            match ageminal_files::watch::FileWatcher::start(move |paths| {
+                let paths = paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .collect();
+                let _ = handle.emit("fs-change", watch::FsChange { paths });
+            }) {
+                Ok(watcher) => app.manage(watch::FileWatch(watcher)),
+                Err(error) => eprintln!("[watch] 初始化失败：{error}"),
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

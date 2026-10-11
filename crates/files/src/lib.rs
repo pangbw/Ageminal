@@ -9,8 +9,9 @@
 //! 忽略匹配用 `ignore` crate 的 `IncrementalIgnore`（#18 D1），范围 = 嵌套 `.gitignore`
 //! + `.git/info/exclude` + 全局 excludes；**不认** `.ignore`；**非 git 目录不做忽略过滤**。
 //!
-//! 本层**无状态**：每次调用建一个新匹配器（`.gitignore` 改动立刻生效）。按目录缓存与失效
-//! （#18 D5）连同 fs watch 归 #19 / #61——那需要一个比自己更长寿的持有者。
+//! 列举 / 搜索**无状态**：每次调用建一个新匹配器（`.gitignore` 改动立刻生效）。按目录缓存与
+//! 失效（#18 D5）仍归 #19——那需要一个比自己更长寿的持有者。文件变更监听见 [`watch`]（#61，
+//! 也只监听调用方显式给定的文件）。
 
 use std::path::{Component, Path, PathBuf};
 
@@ -19,6 +20,7 @@ mod error;
 pub mod preview;
 mod rules;
 pub mod search;
+pub mod watch;
 
 use rules::IgnoreRules;
 

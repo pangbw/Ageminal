@@ -118,4 +118,37 @@ describe("PreviewController", () => {
     expect(controller.state?.doc.toString()).toBe("B"); // 晚到的 A 不上屏
     controller.unmount();
   });
+
+  it("re-reads a cached tab when forced (stale activation)", async () => {
+    const controller = new PreviewController();
+    controller.mount(mountHost());
+    vi.mocked(commands.readPreview).mockReturnValue(ok(previewView({ text: "a" })));
+
+    await controller.activate(ROOT, `${ROOT}/a.txt`);
+    await controller.activate(ROOT, `${ROOT}/a.txt`, { force: true });
+
+    expect(commands.readPreview).toHaveBeenCalledTimes(2); // 强制绕过缓存
+    controller.unmount();
+  });
+
+  it("replaces the active document in place and keeps the scroll on reload", async () => {
+    const controller = new PreviewController();
+    const host = mountHost();
+    controller.mount(host);
+    vi.mocked(commands.readPreview).mockReturnValue(ok(previewView({ text: "one\ntwo" })));
+    await controller.activate(ROOT, `${ROOT}/a.txt`);
+
+    const view = EditorView.findFromDOM(host)!;
+    view.scrollDOM.scrollTop = 40;
+
+    vi.mocked(commands.readPreview).mockReturnValue(
+      ok(previewView({ text: "ONE\nTWO\nTHREE", lines: 3 })),
+    );
+    const entry = await controller.reload(ROOT, `${ROOT}/a.txt`);
+
+    expect(entry?.content.kind).toBe("text");
+    expect(controller.state?.doc.toString()).toBe("ONE\nTWO\nTHREE");
+    expect(view.scrollDOM.scrollTop).toBe(40); // 事务替换，滚动保留
+    controller.unmount();
+  });
 });

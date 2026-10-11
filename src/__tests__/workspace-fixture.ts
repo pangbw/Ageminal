@@ -28,6 +28,7 @@ export function createBindingsMock() {
       searchFiles: vi.fn(),
       readPreview: vi.fn(),
       openInEditor: vi.fn(),
+      setWatchedFiles: vi.fn().mockResolvedValue({ status: "ok", data: null }),
     },
   };
 }

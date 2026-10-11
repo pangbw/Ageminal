@@ -62,4 +62,18 @@ describe("useTabsStore", () => {
     expect(tabs.tabsFor(B).map((tab) => tab.name)).toEqual(["b.ts"]);
     expect(tabs.activeTab(A)?.name).toBe("a.ts");
   });
+
+  it("tracks a background tab's staleness", () => {
+    const tabs = useTabsStore();
+    tabs.openFile(A, `${A}/one.ts`, "one.ts");
+    tabs.openFile(A, `${A}/two.ts`, "two.ts");
+
+    expect(tabs.isStale(A, `${A}/one.ts`)).toBe(false);
+    tabs.markStale(A, `${A}/one.ts`);
+    expect(tabs.isStale(A, `${A}/one.ts`)).toBe(true);
+    expect(tabs.isStale(A, `${A}/two.ts`)).toBe(false); // 互不影响
+
+    tabs.clearStale(A, `${A}/one.ts`);
+    expect(tabs.isStale(A, `${A}/one.ts`)).toBe(false);
+  });
 });

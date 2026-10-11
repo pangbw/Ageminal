@@ -1,9 +1,11 @@
 import { mount } from "@vue/test-utils";
+import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ok, previewView } from "../../../__tests__/workspace-fixture";
 import { commands, type PreviewView } from "../../../bindings";
 import { translate as t } from "../../../i18n/translate";
+import { useTabsStore } from "../../../stores/tabs";
 import PreviewPanel from "../PreviewPanel.vue";
 
 vi.mock(
@@ -11,21 +13,55 @@ vi.mock(
   async () => (await import("../../../__tests__/workspace-fixture")).createBindingsMock(),
 );
 
-const ROOT = "/ws/a";
-const TAB = { path: `${ROOT}/a.txt`, name: "a.txt" };
+/** 可控的 Tauri 事件替身：测试里手动 `emit`。 */
+const bus = vi.hoisted(() => {
+  type Handler = (event: { payload: unknown }) => void;
+  const handlers = new Map<string, Set<Handler>>();
+  return {
+    async listen(name: string, handler: Handler) {
+      const set = handlers.get(name) ?? new Set<Handler>();
+      set.add(handler);
+      handlers.set(name, set);
+      return () => set.delete(handler);
+    },
+    emit(name: string, payload: unknown) {
+      for (const handler of handlers.get(name) ?? []) handler({ payload });
+    },
+    clear() {
+      handlers.clear();
+    },
+  };
+});
 
-async function mountPanel(overrides: Partial<PreviewView> = {}) {
+vi.mock("@tauri-apps/api/event", () => ({ listen: bus.listen }));
+
+const ROOT = "/ws/a";
+const TAB = { path: `${ROOT}/a.txt`, name: "a.txt", stale: false };
+const OTHER = { path: `${ROOT}/b.txt`, name: "b.txt", stale: false };
+
+async function mountPanel(
+  overrides: Partial<PreviewView> = {},
+  open: string[] = [TAB.path],
+): Promise<ReturnType<typeof mount>> {
   vi.mocked(commands.readPreview).mockReturnValue(ok(previewView(overrides)));
-  const wrapper = mount(PreviewPanel, { props: { root: ROOT, tab: TAB } });
-  await vi.waitFor(() =>
-    expect(wrapper.text()).not.toContain(t("tabs.preview.loading")),
-  );
+  const pinia = createPinia();
+  setActivePinia(pinia);
+  const tabs = useTabsStore();
+  for (const path of open) tabs.openFile(ROOT, path, path.split("/").pop() ?? path);
+  tabs.openFile(ROOT, TAB.path, TAB.name);
+
+  const wrapper = mount(PreviewPanel, {
+    props: { root: ROOT, tab: TAB },
+    global: { plugins: [pinia] },
+  });
+  await vi.waitFor(() => expect(wrapper.text()).not.toContain(t("tabs.preview.loading")));
   return wrapper;
 }
 
 describe("PreviewPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    bus.clear();
   });
 
   afterEach(() => {
@@ -104,6 +140,66 @@ describe("PreviewPanel", () => {
     await wrapper.findAll(".preview__action")[1].trigger("click");
 
     expect(wrapper.emitted("close")).toHaveLength(1);
+    wrapper.unmount();
+  });
+
+  it("watches the files of the open preview tabs", async () => {
+    const wrapper = await mountPanel({}, [TAB.path, OTHER.path]);
+
+    expect(commands.setWatchedFiles).toHaveBeenCalledWith(
+      expect.arrayContaining([TAB.path, OTHER.path]),
+    );
+    wrapper.unmount();
+  });
+
+  it("refreshes the visible tab in place and shows the updated hint", async () => {
+    const wrapper = await mountPanel();
+    vi.mocked(commands.readPreview).mockReturnValue(ok(previewView({ text: "new" })));
+
+    bus.emit("fs-change", { paths: [TAB.path] });
+
+    await vi.waitFor(() => expect(commands.readPreview).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(wrapper.find(".preview__updated").exists()).toBe(true));
+    expect(wrapper.find(".preview__updated").text()).toBe(t("tabs.preview.updated"));
+    wrapper.unmount();
+  });
+
+  it("marks a background tab stale without reloading it", async () => {
+    const wrapper = await mountPanel({}, [TAB.path, OTHER.path]);
+    const tabs = useTabsStore();
+
+    bus.emit("fs-change", { paths: [OTHER.path] });
+
+    await vi.waitFor(() => expect(tabs.isStale(ROOT, OTHER.path)).toBe(true));
+    expect(commands.readPreview).toHaveBeenCalledTimes(1); // 只读了激活页签那一次
+    expect(wrapper.find(".preview__updated").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("refreshes a stale tab when it becomes active", async () => {
+    const wrapper = await mountPanel({}, [TAB.path, OTHER.path]);
+    const tabs = useTabsStore();
+    tabs.markStale(ROOT, OTHER.path);
+    vi.mocked(commands.readPreview).mockClear();
+    vi.mocked(commands.readPreview).mockReturnValue(ok(previewView({ text: "b" })));
+
+    await wrapper.setProps({ tab: OTHER });
+
+    await vi.waitFor(() =>
+      expect(commands.readPreview).toHaveBeenCalledWith(ROOT, OTHER.path),
+    );
+    await vi.waitFor(() => expect(tabs.isStale(ROOT, OTHER.path)).toBe(false));
+    wrapper.unmount();
+  });
+
+  it("ignores changes to files that are not open", async () => {
+    const wrapper = await mountPanel();
+
+    bus.emit("fs-change", { paths: [`${ROOT}/other.txt`] });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(commands.readPreview).toHaveBeenCalledTimes(1);
+    expect(wrapper.find(".preview__updated").exists()).toBe(false);
     wrapper.unmount();
   });
 });
