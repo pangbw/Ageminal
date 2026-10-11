@@ -49,9 +49,11 @@ export const commands = {
 	readDir: (root: string, dir: string) => typedError<DirListingView, string>(__TAURI_INVOKE("read_dir", { root, dir })),
 	/**
 	 *  按名字（大小写不敏感的子串）在 `root` 下全树搜索。
-	 *  
+	 * 
 	 *  在阻塞线程池上跑（遍历可能耗时）；新查询会让旧的一停手（`SearchEpoch`）。`~2 s` 预算
 	 *  用尽返回部分结果，`timedOut` 置位。
+	 * 
+	 *  返回 `Result`：async 命令带引用入参时 Tauri 要求如此（`State` 就是引用）。
 	 */
 	searchFiles: (root: string, query: string, showHidden: boolean, showIgnored: boolean) => typedError<SearchResultView, string>(__TAURI_INVOKE("search_files", { root, query, showHidden, showIgnored })),
 };
@@ -67,9 +69,7 @@ export type AppInfo = {
 	os: string,
 };
 
-/**
- *  目录里的一个条目（与 `ageminal-files::Entry` 字段一一对应）。
- */
+/**  目录里的一个条目（与 `ageminal-files::Entry` 字段一一对应）。 */
 export type DirEntryView = {
 	/**  文件名。 */
 	name: string,
@@ -83,9 +83,7 @@ export type DirEntryView = {
 	ignored: boolean,
 };
 
-/**
- *  一个目录的列举结果。
- */
+/**  一个目录的列举结果。 */
 export type DirListingView = {
 	entries: DirEntryView[],
 	/**  条目数超过单目录上限（5000），已截断。 */
