@@ -9,6 +9,10 @@
 //!
 //! 视图类型与 `ageminal-workspace` 的对应类型字段一一对应、由 [`From`] 机械转换：
 //! §19 把「app ↔ 前端」这条类型边界划归 app-core，核心 crate 因此不引 specta。
+//!
+//! ⚠️ specta 会把 **`Option<命名类型>` 内联展开**成匿名对象字面量（`Result<Option<T>, E>`
+//! 的返回值就是这种），而 `Result<T, E>` 里引用的是命名类型。也就是说 `pnpm bindings`
+//! 生成出来的形状可能比手写的「啰嗦」——**以生成物为准**，别为了绑定好看去改 Rust 签名。
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
