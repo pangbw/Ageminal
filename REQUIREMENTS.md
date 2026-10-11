@@ -582,6 +582,7 @@ Ageminal/
 │  └─ binaries/          # sidecar 构建产物（-$TARGET_TRIPLE.exe，gitignore）
 ├─ crates/
 │  ├─ protocol/          # app-core ↔ daemon 的帧协议（Rust 单一来源）
+│  ├─ git/               # git CLI 访问层（worktree 发现 + 薄执行；纯逻辑跨平台可测）
 │  ├─ daemon/            # ageminal-daemon.exe
 │  └─ notify/            # ageminal-notify.exe（hook shim）
 ├─ scripts/              # build-sidecars.mjs 等
@@ -615,7 +616,7 @@ Ageminal/
 
 - **架构约束** ✅：**`crates/daemon` 不依赖 tauri**（才能脱离 UI 独立测试）；协议与纯逻辑**跨平台可测**；**PTY/ConPTY 测试标 `#[cfg(windows)]`**。
 - **明确不进 e2e**（走真机 spike）：中文 IME（K #38）、毛玻璃（#39）、ConPTY 极端行为（#40）、通知点击（#48）。
-- **夹具**统一 `tests/fixtures/`：迁移（F2 #29）、忽略规则 + `git check-ignore` 对照（D2 #18）、事件映射（E3 #24）、ANSI 快照（#42）。
+- **夹具**统一 `tests/fixtures/`：迁移（F2 #29）、worktree porcelain `-z`（#56）、忽略规则 + `git check-ignore` 对照（D2 #18）、事件映射（E3 #24）、ANSI 快照（#42）。
 - **纪律**：每个 bug 修复必须带回归测试；关键不变量用 `proptest`；**不设覆盖率数字门槛**。
 
 ---

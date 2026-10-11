@@ -16,6 +16,8 @@ const coreCrates = [
   "ageminal-daemon",
   "-p",
   "ageminal-notify",
+  "-p",
+  "ageminal-git",
 ];
 
 const steps = [
