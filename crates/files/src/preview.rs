@@ -1,6 +1,6 @@
-//! 文件只读预览的内容判定与截断（#60；D1–D5 #20；REQUIREMENTS.md §9）。
+//! 文件只读预览的内容判定与截断（#60；#20 决议；REQUIREMENTS.md §9）。
 //!
-//! 判定顺序（D1 #20，**不可调换**）：
+//! 判定顺序（#20 决议，**不可调换**）：
 //!
 //! 1. 图片扩展名 → 图片（前端走 `<img>`，D6 #20）；
 //! 2. 已知二进制扩展名黑名单 → 二进制；
@@ -15,6 +15,10 @@
 //!
 //! 换行（D4 #20）：只读不写回；`\n` / `\r\n` / `\r` 都按分隔符处理，**不规范化**——这里只用来
 //! 数行与判超长行，返回的文本保持原样。
+//!
+//! 判定用的字节**始终是有界前缀**（最多 [`MAX_TEXT_BYTES`] + 1）：NUL 与 UTF-8 都只看这段，
+//! 换来「不把整文件读进内存」。超长二进制若其 NUL 全落在上限之后，会被当作 lossy 文本——这是
+//! 有界读取换来的已知取舍。
 
 use std::io::Read as _;
 use std::path::Path;
@@ -148,11 +152,11 @@ fn read_preview_with(
         .read_to_end(&mut buffer)
         .map_err(|source| io_error(path, source))?;
     let byte_truncated = buffer.len() > limits.text_bytes;
-    buffer.truncate(limits.text_bytes);
-
     if buffer.contains(&0) {
+        // 判定顺序第 3 步：在截断前扫已读到的前缀（含多读的那 1 字节）。
         return Ok(Preview::Binary(BinaryPreview { total_bytes }));
     }
+    buffer.truncate(limits.text_bytes);
 
     let (decoded, bom, lossy) = decode_text(buffer, byte_truncated);
     let bounded = bound_lines(&decoded, limits.lines, limits.line_bytes);

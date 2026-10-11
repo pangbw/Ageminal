@@ -1,7 +1,7 @@
 import { mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ok } from "../../../__tests__/workspace-fixture";
+import { ok, previewView } from "../../../__tests__/workspace-fixture";
 import { commands, type PreviewView } from "../../../bindings";
 import { translate as t } from "../../../i18n/translate";
 import PreviewPanel from "../PreviewPanel.vue";
@@ -14,23 +14,8 @@ vi.mock(
 const ROOT = "/ws/a";
 const TAB = { path: `${ROOT}/a.txt`, name: "a.txt" };
 
-function view(overrides: Partial<PreviewView> = {}): PreviewView {
-  return {
-    kind: "text",
-    totalBytes: 0,
-    text: "hello",
-    lossy: false,
-    truncated: false,
-    lines: 1,
-    longLine: false,
-    imageDataUrl: null,
-    imageTooLarge: false,
-    ...overrides,
-  };
-}
-
 async function mountPanel(overrides: Partial<PreviewView> = {}) {
-  vi.mocked(commands.readPreview).mockReturnValue(ok(view(overrides)));
+  vi.mocked(commands.readPreview).mockReturnValue(ok(previewView(overrides)));
   const wrapper = mount(PreviewPanel, { props: { root: ROOT, tab: TAB } });
   await vi.waitFor(() =>
     expect(wrapper.text()).not.toContain(t("tabs.preview.loading")),

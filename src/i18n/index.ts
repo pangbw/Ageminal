@@ -18,6 +18,7 @@ import zhTabs from "./locales/zh-CN/tabs.json";
 import zhFiles from "./locales/zh-CN/files.json";
 import zhAgents from "./locales/zh-CN/agents.json";
 import zhSettings from "./locales/zh-CN/settings.json";
+import zhCodemirror from "./locales/zh-CN/codemirror.json";
 import zhErrors from "./locales/zh-CN/errors.json";
 
 import enCommon from "./locales/en-US/common.json";
@@ -27,12 +28,13 @@ import enTabs from "./locales/en-US/tabs.json";
 import enFiles from "./locales/en-US/files.json";
 import enAgents from "./locales/en-US/agents.json";
 import enSettings from "./locales/en-US/settings.json";
+import enCodemirror from "./locales/en-US/codemirror.json";
 import enErrors from "./locales/en-US/errors.json";
 
 /** 一个域的文案树：叶子是字符串，中间是嵌套对象。 */
 type MessageTree = { readonly [key: string]: string | MessageTree };
 
-// `satisfies` 保证八个命名空间一个不缺、一个不多（NAMESPACES 是唯一事实来源）。
+// `satisfies` 保证命名空间一个不缺、一个不多（NAMESPACES 是唯一事实来源）。
 const zhCN = {
   common: zhCommon,
   shell: zhShell,
@@ -41,6 +43,7 @@ const zhCN = {
   files: zhFiles,
   agents: zhAgents,
   settings: zhSettings,
+  codemirror: zhCodemirror,
   errors: zhErrors,
 } satisfies Record<Namespace, MessageTree>;
 
@@ -52,6 +55,7 @@ const enUS = {
   files: enFiles,
   agents: enAgents,
   settings: enSettings,
+  codemirror: enCodemirror,
   errors: enErrors,
 } satisfies Record<Namespace, MessageTree>;
 

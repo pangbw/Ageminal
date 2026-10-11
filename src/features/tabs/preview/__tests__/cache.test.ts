@@ -34,7 +34,6 @@ describe("PreviewCache", () => {
     cache.set("c", entry("c"));
 
     expect(cache.keys()).toEqual(["a", "c"]);
-    expect(cache.has("b")).toBe(false);
   });
 
   it("keeps the EditorState and restores the scroll position", () => {
@@ -63,12 +62,5 @@ describe("PreviewCache", () => {
     cache.set("c", entry("c"));
 
     expect(cache.keys()).toEqual(["b", "c"]);
-  });
-
-  it("deletes an entry", () => {
-    const cache = new PreviewCache();
-    cache.set("a", entry("a"));
-    cache.delete("a");
-    expect(cache.size).toBe(0);
   });
 });

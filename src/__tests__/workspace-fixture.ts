@@ -6,7 +6,7 @@
  */
 import { vi } from "vitest";
 
-import type { ProjectView, WorkspaceSnapshot, WorktreeView } from "../bindings";
+import type { PreviewView, ProjectView, WorkspaceSnapshot, WorktreeView } from "../bindings";
 import type { CommandResult } from "../lib/ipc";
 
 /** 与 `src/bindings.ts` 同形状的替身模块。 */
@@ -84,4 +84,20 @@ export function snapshot(
   activeWorktree: string | null = null,
 ): WorkspaceSnapshot {
   return { projects, activeWorktree };
+}
+
+/** 一个文件预览视图；只改用例关心的字段。 */
+export function previewView(overrides: Partial<PreviewView> = {}): PreviewView {
+  return {
+    kind: "text",
+    totalBytes: 0,
+    text: "",
+    lossy: false,
+    truncated: false,
+    lines: 1,
+    longLine: false,
+    imageDataUrl: null,
+    imageTooLarge: false,
+    ...overrides,
+  };
 }

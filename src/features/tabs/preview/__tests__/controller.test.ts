@@ -1,6 +1,8 @@
+import { EditorSelection } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ok } from "../../../../__tests__/workspace-fixture";
+import { ok, previewView } from "../../../../__tests__/workspace-fixture";
 import { commands, type PreviewView } from "../../../../bindings";
 import type { CommandResult } from "../../../../lib/ipc";
 import { PreviewController } from "../controller";
@@ -11,21 +13,6 @@ vi.mock(
 );
 
 const ROOT = "/ws/a";
-
-function view(overrides: Partial<PreviewView> = {}): PreviewView {
-  return {
-    kind: "text",
-    totalBytes: 0,
-    text: "",
-    lossy: false,
-    truncated: false,
-    lines: 1,
-    longLine: false,
-    imageDataUrl: null,
-    imageTooLarge: false,
-    ...overrides,
-  };
-}
 
 function mountHost(): HTMLElement {
   const host = document.createElement("div");
@@ -42,7 +29,7 @@ describe("PreviewController", () => {
     const controller = new PreviewController();
     controller.mount(mountHost());
     vi.mocked(commands.readPreview).mockReturnValue(
-      ok(view({ text: "hello\nworld", lines: 2 })),
+      ok(previewView({ text: "hello\nworld", lines: 2 })),
     );
 
     const first = await controller.activate(ROOT, `${ROOT}/a.txt`);
@@ -61,8 +48,8 @@ describe("PreviewController", () => {
     controller.mount(mountHost());
     vi.mocked(commands.readPreview).mockImplementation((_root, path) =>
       path.endsWith("a.txt")
-        ? ok(view({ text: "text" }))
-        : ok(view({ kind: "binary", text: null, totalBytes: 4 })),
+        ? ok(previewView({ text: "text" }))
+        : ok(previewView({ kind: "binary", text: null, totalBytes: 4 })),
     );
 
     await controller.activate(ROOT, `${ROOT}/a.txt`);
@@ -73,27 +60,39 @@ describe("PreviewController", () => {
     controller.unmount();
   });
 
-  it("caches small images and re-reads oversized ones", async () => {
+  it("restores a cached tab's live selection when switching back", async () => {
     const controller = new PreviewController();
-    controller.mount(mountHost());
+    const host = mountHost();
+    controller.mount(host);
     vi.mocked(commands.readPreview).mockImplementation((_root, path) =>
-      ok(
-        view({
-          kind: "image",
-          text: null,
-          imageDataUrl: "data:image/png;base64,AA==",
-          totalBytes: path.endsWith("big.png") ? 5 * 1024 * 1024 : 1024,
-        }),
-      ),
+      ok(previewView({ text: path.endsWith("a.txt") ? "aaa\nbbb\nccc" : "BBB" })),
     );
 
-    await controller.activate(ROOT, `${ROOT}/small.png`);
-    await controller.activate(ROOT, `${ROOT}/big.png`);
-    await controller.activate(ROOT, `${ROOT}/small.png`);
-    await controller.activate(ROOT, `${ROOT}/big.png`);
+    await controller.activate(ROOT, `${ROOT}/a.txt`);
+    // 模拟用户在 a 上做了选区（折叠 / 选区都体现在 EditorState 里）。
+    const view = EditorView.findFromDOM(host)!;
+    view.dispatch({ selection: EditorSelection.cursor(5) });
 
-    // 小图命中缓存（1 次），大图每次重读（2 次）——共 3 次。
-    expect(commands.readPreview).toHaveBeenCalledTimes(3);
+    await controller.activate(ROOT, `${ROOT}/b.txt`);
+    await controller.activate(ROOT, `${ROOT}/a.txt`);
+
+    expect(commands.readPreview).toHaveBeenCalledTimes(2); // 命中缓存
+    expect(controller.state?.doc.toString()).toBe("aaa\nbbb\nccc");
+    expect(controller.state?.selection.main.anchor).toBe(5);
+    controller.unmount();
+  });
+
+  it("re-reads images instead of caching them", async () => {
+    const controller = new PreviewController();
+    controller.mount(mountHost());
+    vi.mocked(commands.readPreview).mockReturnValue(
+      ok(previewView({ kind: "image", text: null, imageDataUrl: "data:image/png;base64,AA==" })),
+    );
+
+    await controller.activate(ROOT, `${ROOT}/x.png`);
+    await controller.activate(ROOT, `${ROOT}/x.png`);
+
+    expect(commands.readPreview).toHaveBeenCalledTimes(2);
     controller.unmount();
   });
 
@@ -111,25 +110,12 @@ describe("PreviewController", () => {
     const first = controller.activate(ROOT, `${ROOT}/a.txt`);
     const second = controller.activate(ROOT, `${ROOT}/b.txt`);
 
-    resolvers.get(`${ROOT}/b.txt`)!({ status: "ok", data: view({ text: "B" }) });
+    resolvers.get(`${ROOT}/b.txt`)!({ status: "ok", data: previewView({ text: "B" }) });
     await second;
-    resolvers.get(`${ROOT}/a.txt`)!({ status: "ok", data: view({ text: "A" }) });
+    resolvers.get(`${ROOT}/a.txt`)!({ status: "ok", data: previewView({ text: "A" }) });
     await first;
 
     expect(controller.state?.doc.toString()).toBe("B"); // 晚到的 A 不上屏
-    controller.unmount();
-  });
-
-  it("drops a page from the cache with forget", async () => {
-    const controller = new PreviewController();
-    controller.mount(mountHost());
-    vi.mocked(commands.readPreview).mockReturnValue(ok(view({ text: "x" })));
-
-    await controller.activate(ROOT, `${ROOT}/a.txt`);
-    controller.forget(`${ROOT}/a.txt`);
-    await controller.activate(ROOT, `${ROOT}/a.txt`);
-
-    expect(commands.readPreview).toHaveBeenCalledTimes(2);
     controller.unmount();
   });
 });

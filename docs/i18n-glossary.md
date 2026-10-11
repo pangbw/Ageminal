@@ -43,6 +43,7 @@
 | 流控 | Flow control |
 | 文件树 | File tree |
 | 只读预览 | Read-only preview |
+| 用外部编辑器打开 | Open in external editor |
 | 集成 | Integration |
 | 集成状态 | Integration status |
 | 统一状态 | Unified status |

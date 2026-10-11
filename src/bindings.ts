@@ -104,7 +104,7 @@ export type DirListingView = {
 	truncated: boolean,
 };
 
-/**  内容类型（判定顺序的产物，D1 #20）。 */
+/**  内容类型（判定顺序的产物，#20 决议）。 */
 export type PreviewKindView = "text" | "image" | "binary";
 
 /**

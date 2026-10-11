@@ -12,6 +12,7 @@ export const NAMESPACES = [
   "files",
   "agents",
   "settings",
+  "codemirror",
   "errors",
 ] as const;
 

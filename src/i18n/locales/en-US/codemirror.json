@@ -1,0 +1,32 @@
+{
+  "common": {
+    "close": "Close",
+    "controlCharacter": "Control character"
+  },
+  "search": {
+    "find": "Find",
+    "replace": "Replace",
+    "replaceAll": "Replace all",
+    "next": "Next",
+    "previous": "Previous",
+    "selectAll": "Select all",
+    "matchCase": "Match case",
+    "regexp": "Regexp",
+    "byWord": "By word",
+    "goToLine": "Go to line",
+    "go": "Go",
+    "currentMatch": "Current match",
+    "onLine": "on line",
+    "replacedMatches": "Replaced $1 matches",
+    "replacedOnLine": "Replaced match on line $1"
+  },
+  "fold": {
+    "foldedLines": "Folded lines",
+    "unfoldedLines": "Unfolded lines",
+    "to": "to",
+    "foldedCode": "Folded code",
+    "unfold": "Unfold",
+    "foldLine": "Fold line",
+    "unfoldLine": "Unfold line"
+  }
+}

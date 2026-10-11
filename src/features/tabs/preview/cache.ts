@@ -56,14 +56,6 @@ export class PreviewCache {
     if (entry) entry.scroll = scroll;
   }
 
-  delete(path: string): void {
-    this.entries.delete(path);
-  }
-
-  has(path: string): boolean {
-    return this.entries.has(path);
-  }
-
   get size(): number {
     return this.entries.size;
   }

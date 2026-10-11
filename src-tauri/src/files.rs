@@ -176,7 +176,7 @@ pub async fn search_files(
     Ok(SearchResultView::from(outcome))
 }
 
-/// 内容类型（判定顺序的产物，D1 #20）。
+/// 内容类型（判定顺序的产物，#20 决议）。
 #[derive(Debug, Clone, Copy, Serialize, Type)]
 #[serde(rename_all = "lowercase")]
 pub enum PreviewKindView {
