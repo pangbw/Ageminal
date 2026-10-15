@@ -45,6 +45,16 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      # Tauri 的构建脚本要求两类产物到位，否则编 src-tauri 会失败：
+      # - `frontendDist`（`../dist`）：`generate_context!` 要它存在；
+      # - `externalBin` 的 sidecar（`binaries/ageminal-*`）：构建脚本校验资源路径。
+      # 干净检出两样都没有，所以先各出一份。
+      - name: Build sidecars
+        run: pnpm sidecars
+
+      - name: Build frontend
+        run: pnpm build
+
       - name: Gates (rust + frontend + four checks + npm licenses)
         run: pnpm check
 
