@@ -34,7 +34,7 @@ pub fn set_watched_files(
         paths.len()
     );
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-    let result = state.set_files(&files);
+    let result = state.0.set_files(&files);
     if let Err(error) = &result {
         eprintln!("[fs-watch] set_files 失败：{error}");
     }

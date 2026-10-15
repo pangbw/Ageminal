@@ -164,7 +164,9 @@ pub fn run() {
                     .collect();
                 let _ = handle.emit("fs-change", watch::FsChange { paths });
             }) {
-                Ok(watcher) => app.manage(watch::FileWatch(watcher)),
+                Ok(watcher) => {
+                    app.manage(watch::FileWatch(watcher));
+                }
                 Err(error) => eprintln!("[watch] 初始化失败：{error}"),
             }
             Ok(())
