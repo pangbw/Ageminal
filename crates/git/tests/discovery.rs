@@ -12,6 +12,21 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// 用完即删的临时目录。
 struct TempDir(PathBuf);
 
+/// 解成**无短名**的绝对路径。
+///
+/// CI 的 Windows runner 临时目录是 8.3 短名（`C:\Users\RUNNER~1\…`），而 `git worktree list`
+/// 回**长**路径——不统一，`tree.path == 夹具路径` 这种逐分量比较就会失配。`fs::canonicalize`
+/// 在 Windows 上带 `\\?\`（verbatim）前缀、git 不带，故去掉。
+fn long_path(path: &Path) -> PathBuf {
+    match fs::canonicalize(path) {
+        Ok(canonical) => match canonical.to_string_lossy().strip_prefix(r"\\?\") {
+            Some(rest) => PathBuf::from(rest),
+            None => canonical,
+        },
+        Err(_) => path.to_path_buf(),
+    }
+}
+
 impl TempDir {
     fn new(tag: &str) -> Self {
         let mut path = std::env::temp_dir();
@@ -22,7 +37,7 @@ impl TempDir {
         ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
-        Self(path)
+        Self(long_path(&path))
     }
 
     fn path(&self) -> &Path {
