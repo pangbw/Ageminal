@@ -156,8 +156,6 @@ pub fn run() {
             // 已打开预览文件的变更监听（#61）；前端经 `set_watched_files` 下发集合。
             let handle = app.handle().clone();
             match ageminal_files::watch::FileWatcher::start(move |paths| {
-                // [fs-watch][debug] 诊断用；确认链路后删。
-                eprintln!("[fs-watch][debug] 回推 {} 个变更：{paths:?}", paths.len());
                 let paths = paths
                     .into_iter()
                     .map(|path| path.to_string_lossy().into_owned())

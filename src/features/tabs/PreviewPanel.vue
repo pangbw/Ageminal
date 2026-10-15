@@ -136,7 +136,6 @@ watch(
     void commands
       .setWatchedFiles(paths)
       .then(unwrap)
-      .then(() => console.info("[fs-watch][debug] watched", paths))
       .catch((failure: unknown) => console.error("[fs-watch] setWatchedFiles failed", failure));
   },
   { immediate: true },
@@ -144,10 +143,7 @@ watch(
 
 onMounted(() => {
   if (editorHost.value) controller.mount(editorHost.value);
-  void listen<FsChange>("fs-change", (event) => {
-    console.info("[fs-watch][debug] fs-change", event.payload);
-    onFsChange(event.payload);
-  })
+  void listen<FsChange>("fs-change", (event) => onFsChange(event.payload))
     .then((stop) => {
       if (disposed) stop();
       else unlisten = stop;

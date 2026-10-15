@@ -28,11 +28,6 @@ pub fn set_watched_files(
     paths: Vec<String>,
     state: tauri::State<'_, FileWatch>,
 ) -> Result<(), String> {
-    // [fs-watch][debug] 诊断用；确认链路后删。
-    eprintln!(
-        "[fs-watch][debug] set_watched_files：{} 个路径 {paths:?}",
-        paths.len()
-    );
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
     let result = state.0.set_files(&files);
     if let Err(error) = &result {
