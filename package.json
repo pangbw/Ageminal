@@ -17,8 +17,9 @@
     "lint": "eslint .",
     "typecheck": "vue-tsc --noEmit",
     "test:unit": "vitest run",
-    "check": "pnpm check:rust && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm check:bindings",
+    "check": "pnpm check:rust && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm check:licenses && pnpm check:bindings",
     "check:rust": "node scripts/check-rust.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs",
     "check:bindings": "node scripts/check-bindings.mjs"
   },
   "dependencies": {
