@@ -9,6 +9,8 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
+import { basename, isSameOrUnder } from "../lib/path";
+
 /** 一个文件预览页签。 */
 export type PreviewTab = {
   path: string;
@@ -89,6 +91,32 @@ export const useTabsStore = defineStore("tabs", () => {
     }
   }
 
+  /** 关闭落在 `prefix`（含其自身）之下的预览页签（#62：删除文件 / 目录后收尾）。 */
+  function closeUnder(root: string, prefix: string): void {
+    const tabs = tabsByRoot.value[root];
+    if (!tabs) return;
+    const kept = tabs.filter((tab) => !isSameOrUnder(tab.path, prefix));
+    if (kept.length === tabs.length) return;
+    tabsByRoot.value[root] = kept;
+    const active = activeByRoot.value[root];
+    if (typeof active === "string" && isSameOrUnder(active, prefix)) {
+      activeByRoot.value[root] = kept[0]?.path ?? null;
+    }
+  }
+
+  /** 重命名后把落在 `from`（含其自身）之下的页签路径改写到 `to`（#62）。 */
+  function movePath(root: string, from: string, to: string): void {
+    for (const tab of tabsFor(root)) {
+      if (!isSameOrUnder(tab.path, from)) continue;
+      tab.path = to + tab.path.slice(from.length);
+      tab.name = basename(tab.path);
+    }
+    const active = activeByRoot.value[root];
+    if (typeof active === "string" && isSameOrUnder(active, from)) {
+      activeByRoot.value[root] = to + active.slice(from.length);
+    }
+  }
+
   return {
     tabsByRoot,
     activeByRoot,
@@ -96,6 +124,8 @@ export const useTabsStore = defineStore("tabs", () => {
     activeTab,
     openFile,
     closeFile,
+    closeUnder,
+    movePath,
     markStale,
     clearStale,
     isStale,

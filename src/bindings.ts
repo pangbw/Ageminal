@@ -70,6 +70,20 @@ export const commands = {
 	 *  保持最小），路径校验与「用外部编辑器打开」同源，等于把能力限定在工作区路径内。
 	 */
 	openInEditor: (root: string, path: string) => typedError<null, string>(__TAURI_INVOKE("open_in_editor", { root, path })),
+	/**  新建文件 / 目录（#62）；返回新条目的绝对路径。`name` 是单一名（不含分隔符）。 */
+	createEntry: (root: string, dir: string, name: string, isDir: boolean) => typedError<string, string>(__TAURI_INVOKE("create_entry", { root, dir, name, isDir })),
+	/**  就地重命名（#62）；返回新路径。 */
+	renameEntry: (root: string, path: string, name: string) => typedError<string, string>(__TAURI_INVOKE("rename_entry", { root, path, name })),
+	/**  删除到**回收站**（#62 / §9）；回收站不可用时显式报错，绝不永久删除。 */
+	deleteEntry: (root: string, path: string) => typedError<null, string>(__TAURI_INVOKE("delete_entry", { root, path })),
+	/**  写文本到系统剪贴板（复制路径 / 相对路径，#62）。 */
+	writeClipboard: (text: string) => typedError<null, string>(__TAURI_INVOKE("write_clipboard", { text })),
+	/**  把文件放进系统剪贴板（`CF_HDROP`，可在资源管理器粘贴；#62；Windows 专有）。 */
+	copyFiles: (root: string, paths: string[]) => typedError<null, string>(__TAURI_INVOKE("copy_files", { root, paths })),
+	/**  在文件资源管理器中显示（#62；选中该条目）。 */
+	revealInExplorer: (root: string, path: string) => typedError<null, string>(__TAURI_INVOKE("reveal_in_explorer", { root, path })),
+	/**  在系统终端中打开 `dir`（#62；终端子系统落地前先用系统终端）。 */
+	openTerminal: (root: string, dir: string) => typedError<null, string>(__TAURI_INVOKE("open_terminal", { root, dir })),
 	/**  用前端当前打开着的预览文件替换监听集合（#61）。 */
 	setWatchedFiles: (paths: string[]) => typedError<null, string>(__TAURI_INVOKE("set_watched_files", { paths })),
 };

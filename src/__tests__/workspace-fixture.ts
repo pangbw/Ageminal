@@ -28,6 +28,13 @@ export function createBindingsMock() {
       searchFiles: vi.fn(),
       readPreview: vi.fn(),
       openInEditor: vi.fn(),
+      createEntry: vi.fn(),
+      renameEntry: vi.fn(),
+      deleteEntry: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      writeClipboard: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      copyFiles: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      revealInExplorer: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      openTerminal: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       setWatchedFiles: vi.fn().mockResolvedValue({ status: "ok", data: null }),
     },
   };

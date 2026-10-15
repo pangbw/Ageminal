@@ -16,5 +16,19 @@
     "noResults": "没有匹配的文件",
     "truncated": "结果过多，仅显示前 200 条",
     "timedOut": "搜索超时，结果可能不完整"
+  },
+  "context": {
+    "newFile": "新建文件",
+    "newFolder": "新建文件夹",
+    "rename": "重命名",
+    "reveal": "在文件资源管理器中显示",
+    "openTerminal": "在终端中打开",
+    "copyFile": "复制文件",
+    "copyPath": "复制路径",
+    "copyRelative": "复制相对路径",
+    "delete": "删除",
+    "deleteTitle": "删除到回收站",
+    "deleteMessage": "确定把「{name}」移到回收站吗？可从回收站恢复。",
+    "cancel": "取消"
   }
 }

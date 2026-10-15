@@ -291,3 +291,137 @@ pub fn open_in_editor(app: tauri::AppHandle, root: String, path: String) -> Resu
         .open_path(path.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|error| error.to_string())
 }
+
+/// 新建文件 / 目录（#62）；返回新条目的绝对路径。`name` 是单一名（不含分隔符）。
+#[tauri::command]
+#[specta::specta]
+pub fn create_entry(
+    root: String,
+    dir: String,
+    name: String,
+    is_dir: bool,
+) -> Result<String, String> {
+    let root = PathBuf::from(root);
+    let dir = PathBuf::from(dir);
+    let created = if is_dir {
+        ageminal_files::create_dir(&root, &dir, &name)
+    } else {
+        ageminal_files::create_file(&root, &dir, &name)
+    }
+    .map_err(|error| error.to_string())?;
+    Ok(created.to_string_lossy().into_owned())
+}
+
+/// 就地重命名（#62）；返回新路径。
+#[tauri::command]
+#[specta::specta]
+pub fn rename_entry(root: String, path: String, name: String) -> Result<String, String> {
+    ageminal_files::rename(&PathBuf::from(root), &PathBuf::from(path), &name)
+        .map(|target| target.to_string_lossy().into_owned())
+        .map_err(|error| error.to_string())
+}
+
+/// 删除到**回收站**（#62 / §9）；回收站不可用时显式报错，绝不永久删除。
+#[tauri::command]
+#[specta::specta]
+pub fn delete_entry(root: String, path: String) -> Result<(), String> {
+    ageminal_files::delete(&PathBuf::from(root), &PathBuf::from(path))
+        .map_err(|error| error.to_string())
+}
+
+/// 写文本到系统剪贴板（复制路径 / 相对路径，#62）。
+#[tauri::command]
+#[specta::specta]
+pub fn write_clipboard(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    // 走插件的 Rust API：capabilities 不放开 `clipboard-manager:*`。
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    app.clipboard()
+        .write_text(text)
+        .map_err(|error| error.to_string())
+}
+
+/// 把文件放进系统剪贴板（`CF_HDROP`，可在资源管理器粘贴；#62；Windows 专有）。
+#[tauri::command]
+#[specta::specta]
+pub fn copy_files(root: String, paths: Vec<String>) -> Result<(), String> {
+    let root = PathBuf::from(root);
+    for path in &paths {
+        ageminal_files::ensure_within(&root, &PathBuf::from(path))
+            .map_err(|error| error.to_string())?;
+    }
+    write_file_list(&paths)
+}
+
+/// 在文件资源管理器中显示（#62；选中该条目）。
+#[tauri::command]
+#[specta::specta]
+pub fn reveal_in_explorer(app: tauri::AppHandle, root: String, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let root = PathBuf::from(root);
+    let path = PathBuf::from(path);
+    ageminal_files::ensure_within(&root, &path).map_err(|error| error.to_string())?;
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|error| error.to_string())
+}
+
+/// 在系统终端中打开 `dir`（#62；终端子系统落地前先用系统终端）。
+#[tauri::command]
+#[specta::specta]
+pub fn open_terminal(root: String, dir: String) -> Result<(), String> {
+    let root = PathBuf::from(root);
+    let dir = PathBuf::from(dir);
+    ageminal_files::ensure_within(&root, &dir).map_err(|error| error.to_string())?;
+    spawn_terminal(&dir)
+}
+
+/// `CF_HDROP` 写文件列表（Windows；见 `clipboard-win`）。其它平台显式报错。
+#[cfg(windows)]
+fn write_file_list(paths: &[String]) -> Result<(), String> {
+    // `write_clipboard` 要求剪贴板已打开，且要在写期间保持打开。
+    use clipboard_win::formats::FileList;
+    use clipboard_win::{Clipboard, Setter};
+
+    let _clip = Clipboard::new_attempts(10).map_err(|error| error.to_string())?;
+    FileList
+        .write_clipboard(paths)
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn write_file_list(_paths: &[String]) -> Result<(), String> {
+    Err("复制文件到剪贴板仅支持 Windows".to_owned())
+}
+
+/// 开一个系统终端并 `cd` 到 `dir`：优先 Windows Terminal，回退 `cmd.exe`。
+#[cfg(windows)]
+fn spawn_terminal(dir: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NEW_CONSOLE：GUI 进程没有控制台，`cmd` 得开个新的。
+    const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+    if std::process::Command::new("wt.exe")
+        .arg("-d")
+        .arg(dir)
+        .spawn()
+        .is_ok()
+    {
+        return Ok(());
+    }
+    std::process::Command::new("cmd.exe")
+        .arg("/K")
+        .arg("cd")
+        .arg("/d")
+        .arg(dir)
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn spawn_terminal(_dir: &std::path::Path) -> Result<(), String> {
+    Err("在终端中打开当前仅支持 Windows".to_owned())
+}

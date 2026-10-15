@@ -17,6 +17,7 @@ use std::path::{Component, Path, PathBuf};
 
 mod entry;
 mod error;
+pub mod ops;
 pub mod preview;
 mod rules;
 pub mod search;
@@ -26,8 +27,23 @@ use rules::IgnoreRules;
 
 pub use entry::Entry;
 pub use error::FilesError;
+pub use ops::{create_dir, create_file, delete, rename};
 pub use preview::{read_preview, Preview, PreviewKind};
 pub use search::{search, SearchHit, SearchOptions, SearchOutcome, MAX_RESULTS};
+
+/// `std::io::Error` → [`FilesError`]：`NotFound` 单独成类，便于上层给出「文件已消失」的明确提示。
+pub(crate) fn io_error(path: &Path, source: std::io::Error) -> FilesError {
+    if source.kind() == std::io::ErrorKind::NotFound {
+        FilesError::NotFound {
+            path: path.to_path_buf(),
+        }
+    } else {
+        FilesError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+}
 
 /// 校验 `path` 落在工作树根 `root` 之内（词法校验）。
 ///

@@ -16,5 +16,19 @@
     "noResults": "No matching files",
     "truncated": "Too many results; showing the first 200",
     "timedOut": "Search timed out; results may be incomplete"
+  },
+  "context": {
+    "newFile": "New file",
+    "newFolder": "New folder",
+    "rename": "Rename",
+    "reveal": "Show in File Explorer",
+    "openTerminal": "Open in terminal",
+    "copyFile": "Copy file",
+    "copyPath": "Copy path",
+    "copyRelative": "Copy relative path",
+    "delete": "Delete",
+    "deleteTitle": "Delete to Recycle Bin",
+    "deleteMessage": "Move “{name}” to the Recycle Bin? You can restore it from there.",
+    "cancel": "Cancel"
   }
 }

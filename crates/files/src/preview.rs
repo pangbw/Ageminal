@@ -27,6 +27,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 
 use crate::error::FilesError;
+use crate::io_error;
 
 /// 文本回传上限：2 MiB（D5 #20 / §9）。
 pub const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -191,19 +192,6 @@ fn read_image(
         too_large: false,
         total_bytes,
     }))
-}
-
-fn io_error(path: &Path, source: std::io::Error) -> FilesError {
-    if source.kind() == std::io::ErrorKind::NotFound {
-        FilesError::NotFound {
-            path: path.to_path_buf(),
-        }
-    } else {
-        FilesError::Io {
-            path: path.to_path_buf(),
-            source,
-        }
-    }
 }
 
 /// 按判定顺序第 4 / 5 步解码文本（剥 BOM，无效 UTF-8 走 lossy）。

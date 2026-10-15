@@ -24,3 +24,27 @@ export function ancestorsOf(root: string, path: string): string[] {
   }
   return chain;
 }
+
+/** 路径的父目录；没有父目录（如 `C:\`）时返回 `null`。 */
+export function parentOf(path: string): string | null {
+  const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  if (cut <= 0) return null;
+  return path.slice(0, cut);
+}
+
+/** `path` 相对 `root` 的展示路径，统一用 `/` 分隔；不在 `root` 之下时原样返回。 */
+export function relativeTo(root: string, path: string): string {
+  if (path === root) return "";
+  const sep = root.includes("\\") ? "\\" : "/";
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  const rest = path.startsWith(prefix) ? path.slice(prefix.length) : path;
+  return rest.split(/[\\/]/).join("/");
+}
+
+/** `path` 是否就是 `prefix`、或落在它之下（按路径分量，`/a/b` 不属于 `/a/bc`）。 */
+export function isSameOrUnder(path: string, prefix: string): boolean {
+  if (path === prefix) return true;
+  const sep = prefix.includes("\\") ? "\\" : "/";
+  const base = prefix.endsWith(sep) ? prefix : prefix + sep;
+  return path.startsWith(base);
+}

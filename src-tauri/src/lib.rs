@@ -95,6 +95,13 @@ pub fn builder() -> Builder<tauri::Wry> {
         files::search_files,
         files::read_preview,
         files::open_in_editor,
+        files::create_entry,
+        files::rename_entry,
+        files::delete_entry,
+        files::write_clipboard,
+        files::copy_files,
+        files::reveal_in_explorer,
+        files::open_terminal,
         watch::set_watched_files
     ])
 }
@@ -136,6 +143,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         // 外部打开同样只从 Rust 侧调用（#60 D6 #20）；capabilities 不放开 plugin:opener。
         .plugin(tauri_plugin_opener::init())
+        // 剪贴板同样只从 Rust 侧调用（#62）；capabilities 不放开 clipboard-manager。
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(builder().invoke_handler())
         .setup(|app| {
             match storage::Store::open_default() {

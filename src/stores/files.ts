@@ -14,11 +14,16 @@ import { computed, ref, watch } from "vue";
 import { commands, type DirEntryView, type SearchHitView } from "../bindings";
 import { isVisible } from "../features/files/visibility";
 import { unwrap } from "../lib/ipc";
-import { ancestorsOf } from "../lib/path";
+import { ancestorsOf, isSameOrUnder, parentOf } from "../lib/path";
 import { useUiStore } from "./ui";
 
 /** 搜索去抖（#19 D8：~200 ms）。 */
 const SEARCH_DEBOUNCE_MS = 200;
+
+/** 把 catch 到的值转成给用户看的文案。 */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 /** 树里的一行：一个可见节点，或一条「目录过大」提示。 */
 export type FileRow = {
@@ -84,7 +89,7 @@ export const useFilesStore = defineStore("files", () => {
       truncated.value[path] = listing.truncated;
       lastError.value = null;
     } catch (error) {
-      lastError.value = error instanceof Error ? error.message : String(error);
+      lastError.value = messageOf(error);
     }
   }
 
@@ -111,6 +116,57 @@ export const useFilesStore = defineStore("files", () => {
       if (!children.value[ancestor]) await loadDir(ancestor);
     }
     selected.value = path;
+  }
+
+  /** 新建文件 / 目录（#62）；成功时展开并刷新所在目录，返回新路径。 */
+  async function createEntry(dir: string, name: string, isDir: boolean): Promise<string | null> {
+    const current = root.value;
+    if (current === null) return null;
+    try {
+      const created = unwrap(await commands.createEntry(current, dir, name, isDir));
+      expanded.value[dir] = true;
+      await loadDir(dir);
+      selected.value = created;
+      lastError.value = null;
+      return created;
+    } catch (error) {
+      lastError.value = messageOf(error);
+      return null;
+    }
+  }
+
+  /** 就地重命名（#62）；成功时刷新所在目录，返回新路径。 */
+  async function renameEntry(path: string, name: string): Promise<string | null> {
+    const current = root.value;
+    if (current === null) return null;
+    try {
+      const target = unwrap(await commands.renameEntry(current, path, name));
+      const parent = parentOf(path);
+      if (parent !== null) await loadDir(parent);
+      selected.value = target;
+      lastError.value = null;
+      return target;
+    } catch (error) {
+      lastError.value = messageOf(error);
+      return null;
+    }
+  }
+
+  /** 删除到回收站（#62 / §9）；成功时刷新所在目录，返回是否删掉。 */
+  async function deleteEntry(path: string): Promise<boolean> {
+    const current = root.value;
+    if (current === null) return false;
+    try {
+      unwrap(await commands.deleteEntry(current, path));
+      const parent = parentOf(path);
+      if (parent !== null) await loadDir(parent);
+      if (selected.value !== null && isSameOrUnder(selected.value, path)) selected.value = null;
+      lastError.value = null;
+      return true;
+    } catch (error) {
+      lastError.value = messageOf(error);
+      return false;
+    }
   }
 
   function clearSearch(): void {
@@ -225,6 +281,9 @@ export const useFilesStore = defineStore("files", () => {
     expandDir,
     toggleDir,
     reveal,
+    createEntry,
+    renameEntry,
+    deleteEntry,
     clearSearch,
     setQuery,
     isSelected,

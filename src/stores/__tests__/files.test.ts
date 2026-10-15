@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ok } from "../../__tests__/workspace-fixture";
+import { fail, ok } from "../../__tests__/workspace-fixture";
 import {
   commands,
   type DirEntryView,
@@ -187,5 +187,83 @@ describe("useFilesStore", () => {
 
     expect(files.results).toBeNull();
     expect(files.query).toBe("");
+  });
+
+  it("creates an entry and refreshes the directory", async () => {
+    const files = useFilesStore();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([entry("a.txt")])));
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
+
+    vi.mocked(commands.createEntry).mockReturnValue(ok(`${ROOT}/new.txt`));
+    vi.mocked(commands.readDir).mockClear();
+
+    const created = await files.createEntry(ROOT, "new.txt", false);
+
+    expect(created).toBe(`${ROOT}/new.txt`);
+    expect(commands.createEntry).toHaveBeenCalledWith(ROOT, ROOT, "new.txt", false);
+    expect(commands.readDir).toHaveBeenCalledWith(ROOT, ROOT);
+    expect(files.selected).toBe(`${ROOT}/new.txt`);
+  });
+
+  it("surfaces a create failure in lastError", async () => {
+    const files = useFilesStore();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([])));
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(commands.readDir).toHaveBeenCalled());
+
+    vi.mocked(commands.createEntry).mockReturnValue(fail("already exists"));
+
+    const created = await files.createEntry(ROOT, "a.txt", false);
+
+    expect(created).toBeNull();
+    expect(files.lastError).toContain("already exists");
+  });
+
+  it("renames an entry and refreshes its parent", async () => {
+    const files = useFilesStore();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([])));
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(commands.readDir).toHaveBeenCalled());
+
+    vi.mocked(commands.renameEntry).mockReturnValue(ok(`${ROOT}/sub/new.ts`));
+    vi.mocked(commands.readDir).mockClear();
+
+    const target = await files.renameEntry(`${ROOT}/sub/old.ts`, "new.ts");
+
+    expect(target).toBe(`${ROOT}/sub/new.ts`);
+    expect(commands.renameEntry).toHaveBeenCalledWith(ROOT, `${ROOT}/sub/old.ts`, "new.ts");
+    expect(commands.readDir).toHaveBeenCalledWith(ROOT, `${ROOT}/sub`);
+  });
+
+  it("deletes an entry and clears the selection", async () => {
+    const files = useFilesStore();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([entry("a.txt")])));
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
+    files.selected = `${ROOT}/a.txt`;
+
+    vi.mocked(commands.deleteEntry).mockReturnValue(ok(null));
+    vi.mocked(commands.readDir).mockClear();
+
+    const deleted = await files.deleteEntry(`${ROOT}/a.txt`);
+
+    expect(deleted).toBe(true);
+    expect(commands.deleteEntry).toHaveBeenCalledWith(ROOT, `${ROOT}/a.txt`);
+    expect(files.selected).toBeNull();
+  });
+
+  it("surfaces a delete failure in lastError", async () => {
+    const files = useFilesStore();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([])));
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(commands.readDir).toHaveBeenCalled());
+
+    vi.mocked(commands.deleteEntry).mockReturnValue(fail("trash unavailable"));
+
+    const deleted = await files.deleteEntry(`${ROOT}/a.txt`);
+
+    expect(deleted).toBe(false);
+    expect(files.lastError).toContain("trash unavailable");
   });
 });

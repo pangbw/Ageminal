@@ -25,6 +25,22 @@ pub enum FilesError {
         source: std::io::Error,
     },
 
+    /// 目标已存在（新建 / 重命名）。
+    #[error("已存在：{path}")]
+    AlreadyExists { path: PathBuf },
+
+    /// 名称非法（空、`.` / `..`、含路径分隔符或控制字符）。
+    #[error("名称非法：{name}")]
+    InvalidName { name: String },
+
+    /// 移入回收站失败（§9：回收站不可用时**显式报错，绝不静默永久删除**）。
+    #[error("移入回收站失败：{path}：{source}")]
+    Trash {
+        path: PathBuf,
+        #[source]
+        source: trash::Error,
+    },
+
     /// 建立 / 调整文件监听失败（#61）。
     #[error("文件监听失败：{source}")]
     Watch {

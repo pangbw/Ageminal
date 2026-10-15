@@ -196,4 +196,69 @@ describe("FileTree", () => {
 
     expect(tabs.tabsFor(ROOT)).toHaveLength(0);
   });
+
+  it("creates a file inline from the context menu", async () => {
+    const { pinia, files } = setup();
+    vi.mocked(commands.readDir).mockImplementation((_root, dir) =>
+      dir === ROOT ? ok(listing([entry("src", { isDir: true })])) : ok(listing([entry("src/child.ts")])),
+    );
+
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
+    const wrapper = mountTree(pinia);
+
+    await wrapper.find(".files__row").trigger("contextmenu");
+    await wrapper.findAll(".ctx__item")[0].trigger("click"); // 新建文件
+    await vi.waitFor(() => expect(wrapper.find(".files__edit").exists()).toBe(true));
+
+    vi.mocked(commands.createEntry).mockReturnValue(ok(`${ROOT}/src/new.ts`));
+    await wrapper.find(".files__edit").setValue("new.ts");
+    await wrapper.find(".files__edit").trigger("keydown.enter");
+
+    await vi.waitFor(() =>
+      expect(commands.createEntry).toHaveBeenCalledWith(ROOT, `${ROOT}/src`, "new.ts", false),
+    );
+  });
+
+  it("renames inline from the context menu", async () => {
+    const { pinia, files } = setup();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([entry("README.md")])));
+
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
+    const wrapper = mountTree(pinia);
+
+    await wrapper.find(".files__row").trigger("contextmenu");
+    await wrapper.findAll(".ctx__item")[2].trigger("click"); // 重命名
+    await vi.waitFor(() => expect(wrapper.find(".files__edit").exists()).toBe(true));
+    expect((wrapper.find(".files__edit").element as HTMLInputElement).value).toBe("README.md");
+
+    vi.mocked(commands.renameEntry).mockReturnValue(ok(`${ROOT}/RENAMED.md`));
+    await wrapper.find(".files__edit").setValue("RENAMED.md");
+    await wrapper.find(".files__edit").trigger("keydown.enter");
+
+    await vi.waitFor(() =>
+      expect(commands.renameEntry).toHaveBeenCalledWith(ROOT, `${ROOT}/README.md`, "RENAMED.md"),
+    );
+  });
+
+  it("asks for confirmation before deleting", async () => {
+    const { pinia, files } = setup();
+    vi.mocked(commands.readDir).mockReturnValue(ok(listing([entry("README.md")])));
+
+    files.setRoot(ROOT);
+    await vi.waitFor(() => expect(files.visibleRows).toHaveLength(1));
+    const wrapper = mountTree(pinia);
+
+    await wrapper.find(".files__row").trigger("contextmenu");
+    await wrapper.findAll(".ctx__item")[8].trigger("click"); // 删除
+    await vi.waitFor(() => expect(wrapper.find(".confirm__box").exists()).toBe(true));
+
+    vi.mocked(commands.deleteEntry).mockReturnValue(ok(null));
+    await wrapper.find(".confirm__button--danger").trigger("click");
+
+    await vi.waitFor(() =>
+      expect(commands.deleteEntry).toHaveBeenCalledWith(ROOT, `${ROOT}/README.md`),
+    );
+  });
 });

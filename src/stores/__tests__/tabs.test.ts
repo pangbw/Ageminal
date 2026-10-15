@@ -89,4 +89,33 @@ describe("useTabsStore", () => {
     expect(tabs.isStale(B, `${B}/b.ts`)).toBe(true);
     expect(tabs.isStale(A, `${A}/a.ts`)).toBe(false);
   });
+
+  it("closes the open tabs under a deleted path", () => {
+    const tabs = useTabsStore();
+    tabs.openFile(A, `${A}/src/one.ts`, "one.ts");
+    tabs.openFile(A, `${A}/src/two.ts`, "two.ts");
+    tabs.openFile(A, `${A}/readme.md`, "readme.md");
+
+    tabs.closeUnder(A, `${A}/src`);
+
+    expect(tabs.tabsFor(A).map((tab) => tab.name)).toEqual(["readme.md"]);
+    expect(tabs.activeTab(A)?.name).toBe("readme.md");
+  });
+
+  it("rewrites the open tabs when a parent is renamed", () => {
+    const tabs = useTabsStore();
+    tabs.openFile(A, `${A}/src/one.ts`, "one.ts");
+
+    tabs.movePath(A, `${A}/src`, `${A}/lib`);
+
+    expect(tabs.tabsFor(A)[0]).toMatchObject({ path: `${A}/lib/one.ts`, name: "one.ts" });
+    expect(tabs.activeTab(A)?.path).toBe(`${A}/lib/one.ts`);
+  });
+
+  it("tolerates movePath and closeUnder when nothing is open", () => {
+    const tabs = useTabsStore();
+
+    expect(() => tabs.movePath(A, `${A}/x`, `${A}/y`)).not.toThrow();
+    expect(() => tabs.closeUnder(A, `${A}/x`)).not.toThrow();
+  });
 });
