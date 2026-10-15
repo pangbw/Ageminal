@@ -132,21 +132,27 @@ function openExternal(): void {
 watch(
   () => tabs.allPaths(),
   (paths) => {
-    // 监听是尽力而为的旁路：失配不该打断预览。
+    // 监听是尽力而为的旁路：失配不该打断预览，但要把失败显出来（否则静默失效）。
     void commands
       .setWatchedFiles(paths)
       .then(unwrap)
-      .catch(() => {});
+      .then(() => console.info("[fs-watch][debug] watched", paths))
+      .catch((failure: unknown) => console.error("[fs-watch] setWatchedFiles failed", failure));
   },
   { immediate: true },
 );
 
 onMounted(() => {
   if (editorHost.value) controller.mount(editorHost.value);
-  void listen<FsChange>("fs-change", (event) => onFsChange(event.payload)).then((stop) => {
-    if (disposed) stop();
-    else unlisten = stop;
-  });
+  void listen<FsChange>("fs-change", (event) => {
+    console.info("[fs-watch][debug] fs-change", event.payload);
+    onFsChange(event.payload);
+  })
+    .then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    })
+    .catch((failure: unknown) => console.error("[fs-watch] listen failed", failure));
 });
 
 onBeforeUnmount(() => {
