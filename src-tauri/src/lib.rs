@@ -24,6 +24,15 @@ pub fn bindings_path() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/bindings.ts")
 }
 
+/// `Path` → 前端字符串：统一成**平台原生分隔符**。
+///
+/// Windows 上 git 给的 worktree 路径是 `/`，而 `PathBuf::join` 又追加 `\`——不统一的话 UI 里
+/// 会出现 `D:/…\file` 这种混合路径，前端的前缀匹配 / 相对路径也会跟着错。
+pub(crate) fn path_text(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 /// 应用与运行时的基础信息。
 #[derive(Debug, Serialize, Type)]
 pub struct AppInfo {
@@ -167,7 +176,7 @@ pub fn run() {
             match ageminal_files::watch::FileWatcher::start(move |paths| {
                 let paths = paths
                     .into_iter()
-                    .map(|path| path.to_string_lossy().into_owned())
+                    .map(|path| crate::path_text(&path))
                     .collect();
                 let _ = handle.emit("fs-change", watch::FsChange { paths });
             }) {

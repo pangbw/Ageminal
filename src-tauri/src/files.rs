@@ -86,7 +86,7 @@ impl From<ageminal_files::Entry> for DirEntryView {
     fn from(entry: ageminal_files::Entry) -> Self {
         Self {
             name: entry.name,
-            path: entry.path.display().to_string(),
+            path: crate::path_text(&entry.path),
             is_dir: entry.is_dir,
             hidden: entry.hidden,
             ignored: entry.ignored,
@@ -110,7 +110,7 @@ impl From<ageminal_files::DirListing> for DirListingView {
 impl From<ageminal_files::SearchHit> for SearchHitView {
     fn from(hit: ageminal_files::SearchHit) -> Self {
         Self {
-            path: hit.path.display().to_string(),
+            path: crate::path_text(&hit.path),
             relative: hit.relative,
             is_dir: hit.is_dir,
             ignored: hit.ignored,
@@ -309,7 +309,7 @@ pub fn create_entry(
         ageminal_files::create_file(&root, &dir, &name)
     }
     .map_err(|error| error.to_string())?;
-    Ok(created.to_string_lossy().into_owned())
+    Ok(crate::path_text(&created))
 }
 
 /// 就地重命名（#62）；返回新路径。
@@ -317,7 +317,7 @@ pub fn create_entry(
 #[specta::specta]
 pub fn rename_entry(root: String, path: String, name: String) -> Result<String, String> {
     ageminal_files::rename(&PathBuf::from(root), &PathBuf::from(path), &name)
-        .map(|target| target.to_string_lossy().into_owned())
+        .map(|target| crate::path_text(&target))
         .map_err(|error| error.to_string())
 }
 

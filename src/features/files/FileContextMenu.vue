@@ -5,7 +5,7 @@
  * 纯呈现：按目标（文件 / 目录）算出条目列表，点击只 `emit('action', id)`，实体操作留给
  * `FileTree`。分组用**弱分隔线**（§9：`|` 表示分组）；「删除」红色强调。
  */
-import { computed, onBeforeUnmount, onMounted } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
 import { translate as t } from "../../i18n/translate";
 
@@ -21,13 +21,22 @@ export type ContextAction =
   | "copyRelative"
   | "delete";
 
-defineProps<{
+const props = defineProps<{
   x: number;
   y: number;
   target: { path: string; name: string; isDir: boolean };
 }>();
 
 const emit = defineEmits<{ action: [action: ContextAction]; close: [] }>();
+
+/** 贴近视口边缘时把菜单拉回可见范围（8px 边距）。 */
+const MARGIN = 8;
+
+const menuEl = ref<HTMLElement | null>(null);
+const left = ref(props.x);
+const top = ref(props.y);
+/** 量过尺寸前先隐藏，避免越界位置闪一下。 */
+const placed = ref(false);
 
 type Item = {
   id: ContextAction;
@@ -58,7 +67,22 @@ function onKey(event: KeyboardEvent): void {
   if (event.key === "Escape") emit("close");
 }
 
-onMounted(() => window.addEventListener("keydown", onKey));
+onMounted(() => {
+  window.addEventListener("keydown", onKey);
+  const menu = menuEl.value;
+  if (menu) {
+    const rect = menu.getBoundingClientRect();
+    left.value = Math.max(
+      MARGIN,
+      Math.min(props.x, window.innerWidth - rect.width - MARGIN),
+    );
+    top.value = Math.max(
+      MARGIN,
+      Math.min(props.y, window.innerHeight - rect.height - MARGIN),
+    );
+  }
+  placed.value = true;
+});
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 </script>
 
@@ -70,9 +94,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       @contextmenu.prevent="emit('close')"
     />
     <div
+      ref="menuEl"
       class="ctx__menu"
       role="menu"
-      :style="{ left: `${x}px`, top: `${y}px` }"
+      :style="{ left: `${left}px`, top: `${top}px`, visibility: placed ? 'visible' : 'hidden' }"
     >
       <template
         v-for="item in items"
@@ -107,6 +132,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
   position: fixed;
   z-index: 191;
   min-width: 190px;
+  max-height: calc(100vh - 16px);
+  overflow: auto;
   padding: var(--space-1) 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);

@@ -83,7 +83,7 @@ pub struct WorktreeView {
 impl From<ageminal_workspace::ProjectView> for ProjectView {
     fn from(view: ageminal_workspace::ProjectView) -> Self {
         Self {
-            path: view.path.display().to_string(),
+            path: crate::path_text(&view.path),
             name: view.name,
             collapsed: view.collapsed,
             worktrees: view.worktrees.into_iter().map(WorktreeView::from).collect(),
@@ -95,7 +95,7 @@ impl From<ageminal_workspace::ProjectView> for ProjectView {
 impl From<ageminal_workspace::WorktreeView> for WorktreeView {
     fn from(view: ageminal_workspace::WorktreeView) -> Self {
         Self {
-            path: view.path.display().to_string(),
+            path: crate::path_text(&view.path),
             name: view.name,
             branch_label: view.branch_label,
             is_main: view.is_main,
@@ -336,7 +336,7 @@ fn build_snapshot(store: &Store, tool: &GitTool) -> WorkspaceSnapshot {
         active_worktree: state
             .active_worktree
             .as_ref()
-            .map(|path| path.display().to_string()),
+            .map(|path| crate::path_text(path)),
     }
 }
 
