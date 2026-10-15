@@ -13,3 +13,8 @@ export function unwrap<T>(result: CommandResult<T>): T {
   if (result.status === "error") throw new Error(result.error);
   return result.data;
 }
+
+/** 把 catch 到的任意值转成给用户看的文案。 */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

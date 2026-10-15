@@ -12,7 +12,7 @@ use crate::error::FilesError;
 
 /// 新建一个空文件；返回其绝对路径。目标已存在或名称非法时报错。
 pub fn create_file(root: &Path, dir: &Path, name: &str) -> Result<PathBuf, FilesError> {
-    crate::relative_to(root, dir)?;
+    crate::ensure_within(root, dir)?;
     let path = dir.join(validate_name(name)?);
     if path.exists() {
         return Err(FilesError::AlreadyExists { path });
@@ -23,7 +23,7 @@ pub fn create_file(root: &Path, dir: &Path, name: &str) -> Result<PathBuf, Files
 
 /// 新建一个目录（父目录须已存在）；返回其绝对路径。
 pub fn create_dir(root: &Path, dir: &Path, name: &str) -> Result<PathBuf, FilesError> {
-    crate::relative_to(root, dir)?;
+    crate::ensure_within(root, dir)?;
     let path = dir.join(validate_name(name)?);
     if path.exists() {
         return Err(FilesError::AlreadyExists { path });
@@ -34,7 +34,7 @@ pub fn create_dir(root: &Path, dir: &Path, name: &str) -> Result<PathBuf, FilesE
 
 /// 就地重命名（改 basename，不移动）；返回新路径。
 pub fn rename(root: &Path, path: &Path, new_name: &str) -> Result<PathBuf, FilesError> {
-    crate::relative_to(root, path)?;
+    ensure_not_root(root, path)?;
     if !path.exists() {
         return Err(FilesError::NotFound {
             path: path.to_path_buf(),
@@ -44,8 +44,8 @@ pub fn rename(root: &Path, path: &Path, new_name: &str) -> Result<PathBuf, Files
         name: new_name.to_owned(),
     })?;
     let target = parent.join(validate_name(new_name)?);
-    // 目标仍须落在 worktree 内（重命名 worktree 根时会走到这里被挡下）。
-    crate::relative_to(root, &target)?;
+    // 目标仍须落在 worktree 内。
+    crate::ensure_within(root, &target)?;
     if target.exists() {
         return Err(FilesError::AlreadyExists { path: target });
     }
@@ -55,7 +55,8 @@ pub fn rename(root: &Path, path: &Path, new_name: &str) -> Result<PathBuf, Files
 
 /// 移入**回收站**（可恢复）。路径须在 worktree 内且存在。
 pub fn delete(root: &Path, path: &Path) -> Result<(), FilesError> {
-    crate::relative_to(root, path)?;
+    // 保护 worktree 根：`relative_to(root, root)` 是 `Ok("")`，不挡就会把整棵树扔进回收站。
+    ensure_not_root(root, path)?;
     if !path.exists() {
         return Err(FilesError::NotFound {
             path: path.to_path_buf(),
@@ -65,6 +66,17 @@ pub fn delete(root: &Path, path: &Path) -> Result<(), FilesError> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// 拒绝「对整个 worktree 根」操作（删除 / 改名）；其余照常校验在 root 之内。
+fn ensure_not_root(root: &Path, path: &Path) -> Result<(), FilesError> {
+    crate::ensure_within(root, path)?;
+    if path == root {
+        return Err(FilesError::ProtectedRoot {
+            path: path.to_path_buf(),
+        });
+    }
+    Ok(())
 }
 
 /// 校验一个「名字」（单一路径分量）：非空、不是 `.` / `..`、不含路径分隔符。
@@ -200,6 +212,23 @@ mod tests {
 
         let error = delete(&root, &outside).unwrap_err();
         assert!(matches!(error, FilesError::OutsideRoot { .. }));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refuses_to_delete_or_rename_the_worktree_root() {
+        let root = workspace("root-guard");
+
+        assert!(matches!(
+            delete(&root, &root).unwrap_err(),
+            FilesError::ProtectedRoot { .. }
+        ));
+        assert!(matches!(
+            rename(&root, &root, "x").unwrap_err(),
+            FilesError::ProtectedRoot { .. }
+        ));
+        assert!(root.exists()); // 根还在
 
         let _ = std::fs::remove_dir_all(&root);
     }

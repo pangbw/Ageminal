@@ -9,9 +9,13 @@ pub enum FilesError {
     #[error("目录不在工作树根之内：{dir}")]
     OutsideRoot { dir: PathBuf },
 
-    /// 目标目录不存在。
-    #[error("目录不存在：{path}")]
+    /// 目标不存在（文件或目录）。
+    #[error("不存在：{path}")]
     NotFound { path: PathBuf },
+
+    /// 目标是 worktree 根：禁止整体删除 / 改名（#62）。
+    #[error("不能操作 worktree 根：{path}")]
+    ProtectedRoot { path: PathBuf },
 
     /// 目标是目录，不是可预览的文件（预览只读文件）。
     #[error("不是文件：{path}")]

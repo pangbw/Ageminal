@@ -23,7 +23,7 @@ import { computed, nextTick, ref, type Component } from "vue";
 import type { SearchHitView } from "../../bindings";
 import { commands } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
-import { unwrap, type CommandResult } from "../../lib/ipc";
+import { unwrap, errorMessage, type CommandResult } from "../../lib/ipc";
 import { basename, parentOf, relativeTo } from "../../lib/path";
 import { useFilesStore, type FileRow } from "../../stores/files";
 import { useTabsStore } from "../../stores/tabs";
@@ -98,12 +98,14 @@ function onContextMenu(event: MouseEvent, row: FileRow): void {
 }
 
 /** 跑一个「旁路」命令（复制 / 终端 / 资源管理器）：失败只提示，不打断树。 */
-async function run(result: Promise<CommandResult<unknown>>): Promise<void> {
+async function runSideEffect(result: Promise<CommandResult<unknown>>): Promise<void> {
   try {
     unwrap(await result);
     actionError.value = null;
+    // 成功即清掉上一次的红字（可能是删除失败留下的）。
+    files.lastError = null;
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : String(error);
+    actionError.value = errorMessage(error);
   }
 }
 
@@ -124,6 +126,7 @@ async function onMenuAction(action: ContextAction): Promise<void> {
   const row = menu.value?.row;
   const root = files.root;
   if (!row || root === null) return;
+  actionError.value = null; // 新一次操作：先清掉上一次的旁路错误
   switch (action) {
     case "newFile":
       await startEdit("newFile", targetDir(row), "", "");
@@ -135,19 +138,19 @@ async function onMenuAction(action: ContextAction): Promise<void> {
       await startEdit("rename", parentOf(row.path) ?? root, row.path, row.name);
       break;
     case "reveal":
-      await run(commands.revealInExplorer(root, row.path));
+      await runSideEffect(commands.revealInExplorer(root, row.path));
       break;
     case "terminal":
-      await run(commands.openTerminal(root, targetDir(row)));
+      await runSideEffect(commands.openTerminal(root, targetDir(row)));
       break;
     case "copyFile":
-      await run(commands.copyFiles(root, [row.path]));
+      await runSideEffect(commands.copyFiles(root, [row.path]));
       break;
     case "copyPath":
-      await run(commands.writeClipboard(row.path));
+      await runSideEffect(commands.writeClipboard(row.path));
       break;
     case "copyRelative":
-      await run(commands.writeClipboard(relativeTo(root, row.path)));
+      await runSideEffect(commands.writeClipboard(relativeTo(root, row.path)));
       break;
     case "delete":
       confirm.value = { path: row.path, name: row.name };

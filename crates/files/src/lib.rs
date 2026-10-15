@@ -89,18 +89,7 @@ fn list_dir(root: &Path, dir: &Path, limit: usize) -> Result<DirListing, FilesEr
     let relative_dir = relative_to(root, dir)?;
     let mut rules = IgnoreRules::new(root);
 
-    let listing = std::fs::read_dir(dir).map_err(|source| {
-        if source.kind() == std::io::ErrorKind::NotFound {
-            FilesError::NotFound {
-                path: dir.to_path_buf(),
-            }
-        } else {
-            FilesError::Io {
-                path: dir.to_path_buf(),
-                source,
-            }
-        }
-    })?;
+    let listing = std::fs::read_dir(dir).map_err(|source| io_error(dir, source))?;
 
     let mut entries = Vec::new();
     for item in listing {

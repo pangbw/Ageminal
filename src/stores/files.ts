@@ -13,17 +13,12 @@ import { computed, ref, watch } from "vue";
 
 import { commands, type DirEntryView, type SearchHitView } from "../bindings";
 import { isVisible } from "../features/files/visibility";
-import { unwrap } from "../lib/ipc";
+import { errorMessage, unwrap } from "../lib/ipc";
 import { ancestorsOf, isSameOrUnder, parentOf } from "../lib/path";
 import { useUiStore } from "./ui";
 
 /** 搜索去抖（#19 D8：~200 ms）。 */
 const SEARCH_DEBOUNCE_MS = 200;
-
-/** 把 catch 到的值转成给用户看的文案。 */
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** 树里的一行：一个可见节点，或一条「目录过大」提示。 */
 export type FileRow = {
@@ -89,7 +84,7 @@ export const useFilesStore = defineStore("files", () => {
       truncated.value[path] = listing.truncated;
       lastError.value = null;
     } catch (error) {
-      lastError.value = messageOf(error);
+      lastError.value = errorMessage(error);
     }
   }
 
@@ -130,7 +125,7 @@ export const useFilesStore = defineStore("files", () => {
       lastError.value = null;
       return created;
     } catch (error) {
-      lastError.value = messageOf(error);
+      lastError.value = errorMessage(error);
       return null;
     }
   }
@@ -147,7 +142,7 @@ export const useFilesStore = defineStore("files", () => {
       lastError.value = null;
       return target;
     } catch (error) {
-      lastError.value = messageOf(error);
+      lastError.value = errorMessage(error);
       return null;
     }
   }
@@ -164,7 +159,7 @@ export const useFilesStore = defineStore("files", () => {
       lastError.value = null;
       return true;
     } catch (error) {
-      lastError.value = messageOf(error);
+      lastError.value = errorMessage(error);
       return false;
     }
   }

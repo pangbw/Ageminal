@@ -15,7 +15,7 @@ import {
   type WorkspaceSnapshot,
   type WorktreeView,
 } from "../bindings";
-import { unwrap, type CommandResult } from "../lib/ipc";
+import { errorMessage, unwrap, type CommandResult } from "../lib/ipc";
 
 /** 窗口标题需要的两个字段（§6）。`branch` 为 `null` = 没有分支可显示（如 bare 主工作树）。 */
 export type ActiveWorktree = {
@@ -35,12 +35,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     activePath.value = snapshot.activeWorktree;
   }
 
-  function messageOf(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
-
-  /** 跑一条命令并把返回的快照整体换上；失败记进 `lastError`，组件不必层层 try。 */
-  async function applyCommand(
+  /** 跑一条命令并把返回的快照整体换上；失败记进 `lastError`，组件不必层层 try。 */  async function applyCommand(
     pending: Promise<CommandResult<WorkspaceSnapshot | null>>,
   ): Promise<boolean> {
     try {
@@ -51,7 +46,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
       lastError.value = null;
       return true;
     } catch (error) {
-      lastError.value = messageOf(error);
+      lastError.value = errorMessage(error);
       return false;
     }
   }
