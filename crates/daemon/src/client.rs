@@ -57,7 +57,7 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
             proto_max: PROTOCOL_VERSION,
             caps: Caps::supported(),
             token: info.token.clone(),
-            client_instance: client_instance(),
+            client_instance_id: client_instance_id(),
             resume: Vec::new(),
         }),
     )?;
@@ -85,7 +85,7 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
 }
 
 /// 客户端实例 id（diagnostics、以及「同一 UI 的多次连接」识别）。
-fn client_instance() -> String {
+fn client_instance_id() -> String {
     format!("ui-{}-{}", std::process::id(), crate::logging::now_ms())
 }
 

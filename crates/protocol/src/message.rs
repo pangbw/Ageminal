@@ -2,10 +2,15 @@
 //!
 //! 两条规则先说清楚：
 //!
-//! 1. **控制消息一律走 JSON 负载**，帧头的 `session` / `seq` 恒为 0——帧是自描述的，不依赖
+//! 1. **控制消息一律走 JSON 负载**，帧头的 `handle` / `seq` **恒为 0**——帧是自描述的，不依赖
 //!    任何句柄状态；逻辑 `sid`（字符串）就写在 JSON 里。
 //! 2. **只有原始字节帧**（[`Message::Data`] / [`Message::Input`]）才用帧头承载**连接内会话句柄**
 //!    与 `seq`——热路径不背 JSON 的包袱。句柄由 daemon 分配（见 [`SessionCreated`]）。
+//!
+//! > 与研究稿 §3.4 的一处**有意偏离**：那里 `Ack` / `Resize` 等也带 `sessionId`。这里让控制帧
+//! > 一律用 `handle = 0` + JSON 里的 `sid`，好处是**每类帧只有一个事实来源**（不会出现「帧头
+//! > 句柄」与「payload sid」不一致），代价是高频 `Ack` 要多一次 JSON 解析与 sid 查表——量级上
+//! > 是微秒级，可接受。
 //!
 //! 版本协商（研究稿 §6.1）：客户端在 [`Hello`] 里给**区间** `protoMin..protoMax` + 能力位，
 //! daemon 取交集最高版本；**没有交集就明确报错**（[`ErrorCode::UnsupportedVersion`]），
@@ -21,8 +26,12 @@ pub const PROTOCOL_VERSION: u16 = 1;
 /// 支持区间的**下界**。
 pub const PROTOCOL_VERSION_MIN: u16 = 1;
 
-/// 能力位（研究稿 §6.1 的示例集合）。
-pub struct Caps;
+/// 能力位。
+///
+/// 与 [`crate::frame::Flags`] 同形——newtype 包住位图，不裸用 `u32`（免得能力位和别的整数混着传）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Caps(u32);
 
 impl Caps {
     /// 数据帧原始二进制负载。
@@ -33,8 +42,23 @@ impl Caps {
     pub const COMPRESSION: u32 = 1 << 2;
 
     /// 本实现支持的能力。
-    pub const fn supported() -> u32 {
-        Self::BINARY_PAYLOAD
+    pub fn supported() -> Self {
+        Self(Self::BINARY_PAYLOAD)
+    }
+
+    /// 原始位。
+    pub fn bits(self) -> u32 {
+        self.0
+    }
+
+    /// 是否置了某个（或某几个）位。
+    pub fn contains(self, bits: u32) -> bool {
+        self.0 & bits == bits
+    }
+
+    /// 双方能力的**交集**——只有交集中的能力才真正生效。
+    pub fn intersect(self, other: Self) -> Self {
+        Self(self.0 & other.0)
     }
 }
 
@@ -66,12 +90,12 @@ pub struct Hello {
     pub proto_min: u16,
     /// 客户端支持的版本区间上界。
     pub proto_max: u16,
-    /// 能力位（[`Caps`] 的组合）。
-    pub caps: u32,
+    /// 能力位（[`Caps`]）。
+    pub caps: Caps,
     /// 握手令牌（`AGEMINAL_TOKEN`；daemon 每次启动重生成）。
     pub token: String,
     /// 客户端实例 id（diagnostics 与「同一 UI 的多次连接」识别）。
-    pub client_instance: String,
+    pub client_instance_id: String,
     /// 想接回的会话及各自已消费到的位置（研究稿 §6.4）。
     #[serde(default)]
     pub resume: Vec<Resume>,
@@ -93,8 +117,9 @@ pub struct Resume {
 pub struct Welcome {
     /// daemon 选定的协议版本（双方区间的最高交集）。
     pub proto: u16,
-    /// daemon 的能力位。
-    pub caps: u32,
+    /// daemon **自己**的能力位（研究稿 §6.1）。实际生效的是它与客户端能力的**交集**，
+    /// 由客户端用 [`Caps::intersect`] 算。
+    pub caps: Caps,
     /// daemon 的构建版本。
     pub daemon_version: String,
 }
@@ -166,8 +191,8 @@ pub struct SessionCreated {
     pub handle: u32,
     /// 子进程 pid。
     pub pid: u32,
-    /// 本次 spawn 的世代（迟到 exit 据此丢弃）。
-    pub incarnation: String,
+    /// 本次 spawn 的世代（`CONTEXT.md` 的 `incarnationId`；迟到 exit 据此丢弃）。
+    pub incarnation_id: String,
 }
 
 /// 接回已有会话：UI→D。
@@ -217,8 +242,8 @@ pub struct Terminate {
 pub struct SessionExited {
     /// 逻辑会话 id。
     pub sid: String,
-    /// 世代 id。
-    pub incarnation: String,
+    /// 世代 id（`incarnationId`）。
+    pub incarnation_id: String,
     /// 退出码。
     #[serde(default)]
     pub exit_code: Option<i32>,
@@ -353,12 +378,12 @@ impl Message {
     pub fn from_frame(frame: &Frame) -> Result<Self, MessageError> {
         match frame.kind {
             FrameKind::Data => Ok(Message::Data {
-                handle: frame.session,
+                handle: frame.handle,
                 seq: frame.seq,
                 bytes: frame.payload.clone(),
             }),
             FrameKind::Input => Ok(Message::Input {
-                handle: frame.session,
+                handle: frame.handle,
                 seq: frame.seq,
                 bytes: frame.payload.clone(),
             }),
@@ -410,7 +435,7 @@ mod tests {
                 proto_max: PROTOCOL_VERSION,
                 caps: Caps::supported(),
                 token: "tok".to_owned(),
-                client_instance: "ui-1".to_owned(),
+                client_instance_id: "ui-1".to_owned(),
                 resume: vec![Resume {
                     sid: "wt/main/shell/1".to_owned(),
                     last_seq: 42,
@@ -443,7 +468,7 @@ mod tests {
                 sid: "wt/main/shell/1".to_owned(),
                 handle: 3,
                 pid: 4242,
-                incarnation: "inc-1".to_owned(),
+                incarnation_id: "inc-1".to_owned(),
             }),
             Message::Attach(Attach {
                 sid: "wt/main/shell/1".to_owned(),
@@ -463,7 +488,7 @@ mod tests {
             }),
             Message::SessionExited(SessionExited {
                 sid: "wt/main/shell/1".to_owned(),
-                incarnation: "inc-1".to_owned(),
+                incarnation_id: "inc-1".to_owned(),
                 exit_code: Some(0),
             }),
             Message::Resize(Resize {
@@ -506,7 +531,7 @@ mod tests {
             bytes: b"\x1b[0m".to_vec(),
         };
         let frame = message.to_frame().unwrap();
-        assert_eq!(frame.session, 11);
+        assert_eq!(frame.handle, 11);
         assert_eq!(frame.seq, 22);
         assert!(frame.flags.contains(crate::frame::Flags::PAYLOAD_IS_RAW));
         // JSON 负载携带原始字节是禁忌：数据帧必须是裸字节。
@@ -522,7 +547,7 @@ mod tests {
         })
         .to_frame()
         .unwrap();
-        assert_eq!(frame.session, 0, "控制帧不占帧头句柄位");
+        assert_eq!(frame.handle, 0, "控制帧不占帧头句柄位");
         assert_eq!(frame.seq, 0);
     }
 
@@ -542,6 +567,19 @@ mod tests {
             Message::from_frame(&frame),
             Err(MessageError::Json(_))
         ));
+    }
+
+    #[test]
+    fn caps_are_a_bitmap() {
+        let supported = Caps::supported();
+        assert!(supported.contains(Caps::BINARY_PAYLOAD));
+        assert!(!supported.contains(Caps::COMPRESSION), "v1 不开压缩");
+
+        // 客户端只声明压缩 → 交集为空，谁也别想用没谈拢的能力。
+        let client = Caps::default();
+        assert_eq!(supported.intersect(client).bits(), 0);
+        assert_eq!(supported.intersect(supported), supported);
+        assert_eq!(Caps::default().bits(), 0, "默认是空能力集");
     }
 
     #[test]

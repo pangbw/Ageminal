@@ -216,8 +216,8 @@ fn serve_connection(handle: HANDLE, info: &DaemonInfo, log_path: &Path) -> Resul
         ));
     };
 
-    match check_handshake(info, &hello) {
-        Handshake::Accepted => {}
+    let proto = match check_handshake(info, &hello) {
+        Handshake::Accepted(proto) => proto,
         Handshake::Rejected(code, reason) => {
             logging::append(log_path, &format!("握手被拒：{reason}"));
             framed::send(
@@ -229,22 +229,15 @@ fn serve_connection(handle: HANDLE, info: &DaemonInfo, log_path: &Path) -> Resul
             )?;
             return wait_for_close(&mut reader);
         }
-    }
-
-    let proto = match negotiate(hello.proto_min, hello.proto_max) {
-        Negotiation::Agreed(proto) => proto,
-        // `check_handshake` 已经把无交集挡掉了；这里只是把不变量写出来。
-        Negotiation::NoOverlap => {
-            return Err(DaemonError::Protocol {
-                reason: "版本协商无交集却没被 handshake 挡住".to_owned(),
-            })
-        }
     };
+
     framed::send(
         &mut writer,
         &Message::Welcome(Welcome {
             proto,
-            caps: Caps::supported() & hello.caps,
+            // 研究稿 §6.1：`Welcome` 回**自己**的能力位；实际生效的是它与客户端能力的交集，
+            // 由客户端算（[`Caps::intersect`]）。
+            caps: Caps::supported(),
             daemon_version: info.daemon_version.clone(),
         }),
     )?;
@@ -268,8 +261,8 @@ fn serve_connection(handle: HANDLE, info: &DaemonInfo, log_path: &Path) -> Resul
 
 /// 握手校验的结果。
 enum Handshake {
-    /// 通过。
-    Accepted,
+    /// 通过：带上**协商出来的版本**（交给 `Welcome`，不重复算第二遍）。
+    Accepted(u16),
     /// 拒绝：错误码 + 理由（理由会**明确写回**给客户端，不静默断连）。
     Rejected(ErrorCode, String),
 }
@@ -280,7 +273,7 @@ fn check_handshake(info: &DaemonInfo, hello: &Hello) -> Handshake {
         return Handshake::Rejected(ErrorCode::BadToken, "令牌不匹配".to_owned());
     }
     match negotiate(hello.proto_min, hello.proto_max) {
-        Negotiation::Agreed(_) => Handshake::Accepted,
+        Negotiation::Agreed(proto) => Handshake::Accepted(proto),
         Negotiation::NoOverlap => Handshake::Rejected(
             ErrorCode::UnsupportedVersion,
             format!(
@@ -336,7 +329,7 @@ mod tests {
             proto_max,
             caps: Caps::supported(),
             token: token.to_owned(),
-            client_instance: "ui-1".to_owned(),
+            client_instance_id: "ui-1".to_owned(),
             resume: Vec::<Resume>::new(),
         }
     }
@@ -368,12 +361,12 @@ mod tests {
                 &info(),
                 &hello("good", PROTOCOL_VERSION_MIN, PROTOCOL_VERSION)
             ),
-            Handshake::Accepted
+            Handshake::Accepted(_)
         ));
         // 客户端比我们新但区间覆盖我们 → 取交集，接受。
         assert!(matches!(
             check_handshake(&info(), &hello("good", 0, 99)),
-            Handshake::Accepted
+            Handshake::Accepted(_)
         ));
     }
 

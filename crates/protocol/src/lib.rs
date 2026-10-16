@@ -19,7 +19,7 @@ pub mod message;
 pub mod queue;
 
 pub use discovery::{state_file_in, DaemonInfo, DiscoveryError, STATE_FILE_NAME};
-pub use frame::{Flags, Frame, FrameError, FrameKind, HEADER_BYTES, MAX_FRAME_BYTES};
+pub use frame::{fragments, Flags, Frame, FrameError, FrameKind, HEADER_BYTES, MAX_FRAME_BYTES};
 pub use message::{
     negotiate, Ack, Attach, Attached, Caps, CreateSession, Detach, EnvVar, ErrorCode, Hello,
     Message, MessageError, Negotiation, ProtocolError, Resume, SessionCreated, SessionExited,

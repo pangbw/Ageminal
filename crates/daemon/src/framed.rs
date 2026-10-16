@@ -4,20 +4,29 @@
 
 use std::io::{Read, Write};
 
-use ageminal_protocol::{Frame, FrameError, Message};
+use ageminal_protocol::{Frame, FrameError, Message, MessageError};
 
 use crate::DaemonError;
 
 /// 读一条消息。**`Ok(None)` = 对端在帧边界处正常关闭**。
+///
+/// **不认识的帧类型一律跳过、不断连**（研究稿 §6.1 的兼容策略）——这样加新帧类型不会把旧对端
+/// 打死。已知类型但负载是坏 JSON 仍算错误（对方说的是我们懂的协议，只是说坏了）。
 pub fn read_message(reader: &mut impl Read) -> Result<Option<Message>, DaemonError> {
-    let Some(frame) = Frame::read_from(reader).map_err(frame_error)? else {
-        return Ok(None);
-    };
-    Message::from_frame(&frame)
-        .map_err(|error| DaemonError::Protocol {
-            reason: error.to_string(),
-        })
-        .map(Some)
+    loop {
+        let Some(frame) = Frame::read_from(reader).map_err(frame_error)? else {
+            return Ok(None);
+        };
+        match Message::from_frame(&frame) {
+            Ok(message) => return Ok(Some(message)),
+            Err(MessageError::UnsupportedKind(_)) => continue,
+            Err(error) => {
+                return Err(DaemonError::Protocol {
+                    reason: error.to_string(),
+                })
+            }
+        }
+    }
 }
 
 /// 编码并整帧写出。

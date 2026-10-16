@@ -10,6 +10,10 @@
 //! 20      N     payload    数据帧 = 原始字节；控制帧 = UTF-8 JSON
 //! ```
 //!
+//! > 命名：帧头那个槽位研究稿叫 `sessionId`；Rust 侧一律叫 [`Frame::handle`]——它是**连接内**
+//! > 的会话句柄，而「会话」在 `CONTEXT.md` 里是另一层概念（逻辑 `sid` 是不透明字符串，只出现在
+//! > 控制 payload 里）。
+//!
 //! 三条设计约束（研究稿 §3.1）：
 //! 1. **长度前缀是唯一可靠的边界来源**——不做转义、不猜；
 //! 2. payload 怎么解由 `type` 决定，**不靠猜**；
@@ -29,7 +33,7 @@ pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 /// 一律忽略而不是断连），交给上层决定跳不跳过。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FrameKind {
-    // —— 连接级（`session = 0`）
+    // —— 连接级（`handle = 0`）
     /// UI→D：握手（版本区间 + 能力位 + 令牌）。
     Hello,
     /// D→UI：握手结果。
@@ -184,9 +188,9 @@ pub struct Frame {
     pub kind: FrameKind,
     /// 标志位。
     pub flags: Flags,
-    /// 0 = 连接级；否则是 daemon 分配的**连接内会话句柄**（逻辑 `sid` 是字符串，只在控制
-    /// payload 里出现——见 [`crate::message`]）。
-    pub session: u32,
+    /// 0 = 连接级；否则是 daemon 分配的**连接内会话句柄**（逻辑 `sid` 是不透明字符串，只在控制
+    /// payload 里出现——见 [`crate::message`]）。研究稿把这个槽位叫 `sessionId`。
+    pub handle: u32,
     /// 会话内单调递增序号；不适用时 0。
     pub seq: u64,
     /// 负载。
@@ -195,22 +199,22 @@ pub struct Frame {
 
 impl Frame {
     /// 控制帧（JSON 负载）。
-    pub fn control(kind: FrameKind, session: u32, seq: u64, payload: Vec<u8>) -> Self {
+    pub fn control(kind: FrameKind, handle: u32, seq: u64, payload: Vec<u8>) -> Self {
         Self {
             kind,
             flags: Flags::empty(),
-            session,
+            handle,
             seq,
             payload,
         }
     }
 
     /// 数据帧（原始字节负载，置 `PAYLOAD_IS_RAW`）。
-    pub fn raw(kind: FrameKind, session: u32, seq: u64, payload: Vec<u8>) -> Self {
+    pub fn raw(kind: FrameKind, handle: u32, seq: u64, payload: Vec<u8>) -> Self {
         Self {
             kind,
             flags: Flags::empty().with(Flags::PAYLOAD_IS_RAW),
-            session,
+            handle,
             seq,
             payload,
         }
@@ -235,7 +239,7 @@ impl Frame {
         out.extend_from_slice(&((total - 4) as u32).to_le_bytes());
         out.extend_from_slice(&self.kind.as_u16().to_le_bytes());
         out.extend_from_slice(&self.flags.bits().to_le_bytes());
-        out.extend_from_slice(&self.session.to_le_bytes());
+        out.extend_from_slice(&self.handle.to_le_bytes());
         out.extend_from_slice(&self.seq.to_le_bytes());
         out.extend_from_slice(&self.payload);
         Ok(())
@@ -286,7 +290,7 @@ impl Frame {
 
         let kind = FrameKind::from_u16(u16::from_le_bytes([rest[0], rest[1]]));
         let flags = Flags::from_bits(u16::from_le_bytes([rest[2], rest[3]]));
-        let session = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
+        let handle = u32::from_le_bytes([rest[4], rest[5], rest[6], rest[7]]);
         let seq = u64::from_le_bytes([
             rest[8], rest[9], rest[10], rest[11], rest[12], rest[13], rest[14], rest[15],
         ]);
@@ -295,11 +299,37 @@ impl Frame {
         Ok(Some(Self {
             kind,
             flags,
-            session,
+            handle,
             seq,
             payload,
         }))
     }
+}
+
+/// 把一个逻辑负载切成若干帧——**除最后一帧外都置 [`Flags::MORE`]**。
+///
+/// 研究稿 §3.2：超过 [`MAX_FRAME_BYTES`] 的块由**发送侧**切分，接收侧按 `handle` + `seq` 顺序
+/// 拼接。各分片**共用同一个 `seq`**：它们是**一个**逻辑消息，不是多条消息。
+///
+/// 帧层只负责把这个语义做对（每帧都在上界内、`MORE` 置位正确）；真正的消费者在数据路径——
+/// ConPTY 输出与大快照（#67 / #71）。
+pub fn fragments(kind: FrameKind, handle: u32, seq: u64, payload: &[u8]) -> Vec<Frame> {
+    let max_payload = MAX_FRAME_BYTES - HEADER_BYTES;
+    // 空负载也要占一帧，否则接收侧看不到这个逻辑消息。
+    if payload.is_empty() {
+        return vec![Frame::raw(kind, handle, seq, Vec::new())];
+    }
+
+    let mut chunks = payload.chunks(max_payload).peekable();
+    let mut frames = Vec::new();
+    while let Some(chunk) = chunks.next() {
+        let mut frame = Frame::raw(kind, handle, seq, chunk.to_vec());
+        if chunks.peek().is_some() {
+            frame.flags = frame.flags.with(Flags::MORE);
+        }
+        frames.push(frame);
+    }
+    frames
 }
 
 /// 读满整个缓冲，返回实际读到的字节数（EOF 时可能少于缓冲长度）。
@@ -361,7 +391,7 @@ mod tests {
             seq in any::<u64>(),
             payload in proptest::collection::vec(any::<u8>(), 0..4096),
         ) {
-            let frame = Frame { kind, flags: Flags::from_bits(flags), session, seq, payload };
+            let frame = Frame { kind, flags: Flags::from_bits(flags), handle: session, seq, payload };
             let mut bytes = Vec::new();
             frame.encode(&mut bytes).unwrap();
             prop_assert_eq!(bytes.len(), frame.encoded_len());
@@ -390,8 +420,8 @@ mod tests {
         ) {
             let mut bytes = Vec::new();
             let mut expected = Vec::new();
-            for (kind, session, seq, payload) in frames {
-                let frame = Frame::control(kind, session, seq, payload);
+            for (kind, handle, seq, payload) in frames {
+                let frame = Frame::control(kind, handle, seq, payload);
                 frame.encode(&mut bytes).unwrap();
                 expected.push(frame);
             }
@@ -443,5 +473,48 @@ mod tests {
         assert!(frame.flags.contains(Flags::PAYLOAD_IS_RAW));
         assert!(frame.kind.is_raw_payload());
         assert!(!FrameKind::Resize.is_raw_payload());
+    }
+
+    #[test]
+    fn fragments_split_oversized_payloads_and_mark_the_continuation() {
+        let payload = vec![0xAB; MAX_FRAME_BYTES + 1234];
+        let frames = fragments(FrameKind::Data, 5, 77, &payload);
+
+        assert_eq!(frames.len(), 2, "一帧装不下就该切成两帧");
+        for frame in &frames {
+            assert!(
+                frame.encoded_len() <= MAX_FRAME_BYTES,
+                "每一片都必须在帧上界内"
+            );
+            assert_eq!(frame.handle, 5);
+            assert_eq!(frame.seq, 77, "各分片共用一个 seq：它们是一个逻辑消息");
+        }
+        assert!(frames[0].flags.contains(Flags::MORE), "非末片要置 MORE");
+        assert!(!frames[1].flags.contains(Flags::MORE), "末片不置 MORE");
+
+        // 接收侧的拼接规则：按序把 payload 接起来就还原。
+        let reassembled: Vec<u8> = frames.iter().flat_map(|f| f.payload.clone()).collect();
+        assert_eq!(reassembled, payload);
+
+        // 每片都能按序从字节流里读回来。
+        let mut bytes = Vec::new();
+        for frame in &frames {
+            frame.encode(&mut bytes).unwrap();
+        }
+        let mut cursor = bytes.as_slice();
+        for want in &frames {
+            assert_eq!(&Frame::read_from(&mut cursor).unwrap().unwrap(), want);
+        }
+    }
+
+    #[test]
+    fn fragments_keep_small_payloads_as_one_frame() {
+        let frames = fragments(FrameKind::Data, 1, 1, b"short");
+        assert_eq!(frames.len(), 1);
+        assert!(!frames[0].flags.contains(Flags::MORE));
+
+        let empty = fragments(FrameKind::Data, 1, 2, b"");
+        assert_eq!(empty.len(), 1, "空负载也要占一帧");
+        assert!(empty[0].payload.is_empty());
     }
 }
