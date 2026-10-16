@@ -115,8 +115,8 @@ fn launches_and_replies_to_ping_pong() {
     assert_eq!(daemon.info.protocol, ageminal_protocol::PROTOCOL_VERSION);
 
     let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
-    for nonce in [1_u64, 2, 3, 0xdead_beef] {
-        client.ping(nonce).unwrap();
+    for _ in 0..4 {
+        client.ping().unwrap();
     }
 }
 
@@ -156,7 +156,7 @@ fn reuses_the_same_daemon_on_relaunch() {
     assert_eq!(info.pid, daemon.info.pid);
     assert_eq!(info.token, daemon.info.token);
     let mut client = client::connect(&info, Duration::from_secs(5)).unwrap();
-    client.ping(7).unwrap();
+    client.ping().unwrap();
 }
 
 /// 握手负路径：令牌不对要被明确拒绝，且拒绝之后真令牌照样能用。
@@ -176,5 +176,5 @@ fn rejects_a_mismatched_token() {
     );
 
     let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
-    client.ping(1).unwrap();
+    client.ping().unwrap();
 }

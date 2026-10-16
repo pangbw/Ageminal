@@ -1,4 +1,4 @@
-//! 命名管道服务端：单例守卫 + token 握手 + ping/pong（issue #64）。
+//! 命名管道服务端：单例守卫 + 握手 + ping/pong（issue #64 / #65）。
 //!
 //! 单例：`FILE_FLAG_FIRST_PIPE_INSTANCE` 让**第二个** `CreateNamedPipeW` 直接失败——内核级守卫，
 //! 不需要锁文件或 `Mutex`。**但「名字被占」的错误码各家实现口径不一**（CI 实测是
@@ -8,14 +8,17 @@
 //! 管道 DACL 只放当前用户（[`crate::acl`]），所以「非当前用户被拒绝」由内核完成，不靠应用层判断。
 
 use std::fs::File;
-use std::io::{BufReader, ErrorKind};
+use std::io::BufReader;
 use std::mem::ManuallyDrop;
 use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use ageminal_protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use ageminal_protocol::{
+    negotiate, Caps, ErrorCode, Hello, Message, Negotiation, ProtocolError, Welcome,
+    PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+};
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
@@ -25,9 +28,9 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
-use crate::{acl, launch, logging, paths, win, wire, DaemonError, DaemonInfo};
+use crate::{acl, framed, launch, logging, paths, win, DaemonError, DaemonInfo};
 
-/// 管道的内核缓冲（握手流量很小；这不是我们自己的读缓冲）。
+/// 管道的内核缓冲（控制流量很小；这不是我们自己的读缓冲）。
 const BUFFER_BYTES: u32 = 8 * 1024;
 
 /// 建管道失败后，给「上一个 daemon 已建好管道、状态文件还没落盘」这个窗口留的宽限时间。
@@ -109,7 +112,7 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
         pipe: config.pipe.clone(),
         token: win::random_token()?,
         protocol: PROTOCOL_VERSION,
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        daemon_version: env!("CARGO_PKG_VERSION").to_owned(),
         started_at_ms: logging::now_ms(),
     };
     // 状态文件必须在「开始 accept」之前落盘：客户端靠它拿管道名与令牌。
@@ -207,66 +210,85 @@ fn serve_connection(handle: HANDLE, info: &DaemonInfo, log_path: &Path) -> Resul
     let mut reader = BufReader::new(stream);
     let mut writer = stream;
 
-    let hello: ClientMessage = wire::read_message(&mut reader)?;
-    let ClientMessage::Hello { token, protocol } = hello else {
+    let Some(Message::Hello(hello)) = framed::read_message(&mut reader)? else {
         return Err(DaemonError::Unexpected(
             "连接后的第一条消息必须是 hello".to_owned(),
         ));
     };
 
-    if let Some(reason) = handshake_rejection(info, &token, protocol) {
-        logging::append(log_path, &format!("握手被拒：{reason}"));
-        reject(&mut writer, &reason)?;
-        return wait_for_close(&mut reader);
+    match check_handshake(info, &hello) {
+        Handshake::Accepted => {}
+        Handshake::Rejected(code, reason) => {
+            logging::append(log_path, &format!("握手被拒：{reason}"));
+            framed::send(
+                &mut writer,
+                &Message::Error(ProtocolError {
+                    code,
+                    message: reason,
+                }),
+            )?;
+            return wait_for_close(&mut reader);
+        }
     }
 
-    wire::write_message(
+    let proto = match negotiate(hello.proto_min, hello.proto_max) {
+        Negotiation::Agreed(proto) => proto,
+        // `check_handshake` 已经把无交集挡掉了；这里只是把不变量写出来。
+        Negotiation::NoOverlap => {
+            return Err(DaemonError::Protocol {
+                reason: "版本协商无交集却没被 handshake 挡住".to_owned(),
+            })
+        }
+    };
+    framed::send(
         &mut writer,
-        &ServerMessage::Welcome {
-            protocol: PROTOCOL_VERSION,
-            pid: info.pid,
-            version: info.version.clone(),
-        },
+        &Message::Welcome(Welcome {
+            proto,
+            caps: Caps::supported() & hello.caps,
+            daemon_version: info.daemon_version.clone(),
+        }),
     )?;
     logging::append(log_path, "握手通过");
 
     loop {
-        match wire::read_message::<_, ClientMessage>(&mut reader) {
-            Ok(ClientMessage::Ping { nonce }) => {
-                wire::write_message(&mut writer, &ServerMessage::Pong { nonce })?;
+        match framed::read_message(&mut reader) {
+            // 对端在帧边界处正常关闭。
+            Ok(None) => return Ok(()),
+            Ok(Some(Message::Ping)) => framed::send(&mut writer, &Message::Pong)?,
+            // 会话层（create / resize / ack…）归 #67；此刻收到就说明对端跑在了 daemon 前面。
+            Ok(Some(other)) => {
+                return Err(DaemonError::Unexpected(format!(
+                    "daemon 尚未实现的消息：{other:?}"
+                )))
             }
-            Ok(ClientMessage::Hello { .. }) => {
-                return Err(DaemonError::Unexpected("重复的 hello".to_owned()));
-            }
-            // 对端正常关闭。
-            Err(error) if error.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-            Err(error) => return Err(DaemonError::Io(error)),
+            Err(error) => return Err(error),
         }
     }
 }
 
-/// 握手校验：通过返回 `None`，否则返回**拒绝理由**。
-fn handshake_rejection(info: &DaemonInfo, token: &str, protocol: u32) -> Option<String> {
-    if token != info.token {
-        return Some("令牌不匹配".to_owned());
-    }
-    if protocol != PROTOCOL_VERSION {
-        return Some(format!(
-            "协议版本不一致：daemon {PROTOCOL_VERSION} / 客户端 {protocol}"
-        ));
-    }
-    None
+/// 握手校验的结果。
+enum Handshake {
+    /// 通过。
+    Accepted,
+    /// 拒绝：错误码 + 理由（理由会**明确写回**给客户端，不静默断连）。
+    Rejected(ErrorCode, String),
 }
 
-/// 发拒绝消息。
-fn reject(writer: &mut &File, reason: &str) -> Result<(), DaemonError> {
-    wire::write_message(
-        writer,
-        &ServerMessage::Rejected {
-            reason: reason.to_owned(),
-        },
-    )
-    .map_err(DaemonError::from)
+/// 校验令牌与**版本区间**（纯函数，可单测）。
+fn check_handshake(info: &DaemonInfo, hello: &Hello) -> Handshake {
+    if hello.token != info.token {
+        return Handshake::Rejected(ErrorCode::BadToken, "令牌不匹配".to_owned());
+    }
+    match negotiate(hello.proto_min, hello.proto_max) {
+        Negotiation::Agreed(_) => Handshake::Accepted,
+        Negotiation::NoOverlap => Handshake::Rejected(
+            ErrorCode::UnsupportedVersion,
+            format!(
+                "协议版本无交集：客户端 [{}..{}]，daemon [{}..{}]",
+                hello.proto_min, hello.proto_max, PROTOCOL_VERSION_MIN, PROTOCOL_VERSION
+            ),
+        ),
+    }
 }
 
 /// 等对端把拒绝消息读完再断开——`DisconnectNamedPipe` 会**丢弃未读数据**，立刻断开会让客户端
@@ -274,16 +296,18 @@ fn reject(writer: &mut &File, reason: &str) -> Result<(), DaemonError> {
 ///
 /// 读到 EOF 为止，期间收到的消息一律丢弃。**没有超时**：只有当前用户连得上（管道 DACL），所以
 /// 挂起风险可接受；真要紧缩得换 overlapped IO 加超时。
-fn wait_for_close(reader: &mut BufReader<&File>) -> Result<(), DaemonError> {
+fn wait_for_close(reader: &mut impl std::io::Read) -> Result<(), DaemonError> {
     loop {
-        if wire::read_message::<_, ClientMessage>(reader).is_err() {
-            return Ok(());
+        match framed::read_message(reader) {
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => return Ok(()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use ageminal_protocol::Resume;
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_KERNEL_OBJECT};
     use windows_sys::Win32::Security::{
@@ -294,6 +318,64 @@ mod tests {
     };
 
     use super::*;
+
+    fn info() -> DaemonInfo {
+        DaemonInfo {
+            pid: 1,
+            pipe: r"\\.\pipe\x".to_owned(),
+            token: "good".to_owned(),
+            protocol: PROTOCOL_VERSION,
+            daemon_version: "0.0.0".to_owned(),
+            started_at_ms: 0,
+        }
+    }
+
+    fn hello(token: &str, proto_min: u16, proto_max: u16) -> Hello {
+        Hello {
+            proto_min,
+            proto_max,
+            caps: Caps::supported(),
+            token: token.to_owned(),
+            client_instance: "ui-1".to_owned(),
+            resume: Vec::<Resume>::new(),
+        }
+    }
+
+    /// 验收 3：版本不匹配有**明确处理**（而不是静默断连）。
+    #[test]
+    fn handshake_rejects_bad_token_and_unsupported_version() {
+        match check_handshake(
+            &info(),
+            &hello("bad", PROTOCOL_VERSION_MIN, PROTOCOL_VERSION),
+        ) {
+            Handshake::Rejected(code, reason) => {
+                assert_eq!(code, ErrorCode::BadToken);
+                assert!(reason.contains("令牌"), "{reason}");
+            }
+            _ => panic!("令牌不对必须被拒"),
+        }
+
+        match check_handshake(&info(), &hello("good", 9, 12)) {
+            Handshake::Rejected(code, reason) => {
+                assert_eq!(code, ErrorCode::UnsupportedVersion, "无交集要用这个错误码");
+                assert!(reason.contains("无交集"), "理由要写清楚：{reason}");
+            }
+            _ => panic!("版本无交集必须被明确拒绝"),
+        }
+
+        assert!(matches!(
+            check_handshake(
+                &info(),
+                &hello("good", PROTOCOL_VERSION_MIN, PROTOCOL_VERSION)
+            ),
+            Handshake::Accepted
+        ));
+        // 客户端比我们新但区间覆盖我们 → 取交集，接受。
+        assert!(matches!(
+            check_handshake(&info(), &hello("good", 0, 99)),
+            Handshake::Accepted
+        ));
+    }
 
     /// 自动化的那半：**内核实际挂在管道上**的 DACL 只有当前用户一条 ACE。
     ///
@@ -361,25 +443,5 @@ mod tests {
             CloseHandle(client);
         }
         drop(server);
-    }
-
-    #[test]
-    fn handshake_checks_token_then_protocol() {
-        let info = DaemonInfo {
-            pid: 1,
-            pipe: r"\\.\pipe\x".to_owned(),
-            token: "good".to_owned(),
-            protocol: PROTOCOL_VERSION,
-            version: "0.0.0".to_owned(),
-            started_at_ms: 0,
-        };
-        assert_eq!(handshake_rejection(&info, "good", PROTOCOL_VERSION), None);
-        assert_eq!(
-            handshake_rejection(&info, "bad", PROTOCOL_VERSION).as_deref(),
-            Some("令牌不匹配")
-        );
-        assert!(handshake_rejection(&info, "good", PROTOCOL_VERSION + 1)
-            .unwrap()
-            .contains("协议版本不一致"));
     }
 }

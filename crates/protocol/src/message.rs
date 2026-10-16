@@ -1,0 +1,559 @@
+//! 控制消息的类型与**版本协商**（研究稿 §3.4 / §6）。
+//!
+//! 两条规则先说清楚：
+//!
+//! 1. **控制消息一律走 JSON 负载**，帧头的 `session` / `seq` 恒为 0——帧是自描述的，不依赖
+//!    任何句柄状态；逻辑 `sid`（字符串）就写在 JSON 里。
+//! 2. **只有原始字节帧**（[`Message::Data`] / [`Message::Input`]）才用帧头承载**连接内会话句柄**
+//!    与 `seq`——热路径不背 JSON 的包袱。句柄由 daemon 分配（见 [`SessionCreated`]）。
+//!
+//! 版本协商（研究稿 §6.1）：客户端在 [`Hello`] 里给**区间** `protoMin..protoMax` + 能力位，
+//! daemon 取交集最高版本；**没有交集就明确报错**（[`ErrorCode::UnsupportedVersion`]），
+//! 而不是像 Contour 那样静默拒绝（本地单用户，可排障性更值钱）。
+
+use serde::{Deserialize, Serialize};
+
+use crate::frame::{Frame, FrameKind};
+
+/// 当前协议版本（支持区间的**上界**）。
+pub const PROTOCOL_VERSION: u16 = 1;
+
+/// 支持区间的**下界**。
+pub const PROTOCOL_VERSION_MIN: u16 = 1;
+
+/// 能力位（研究稿 §6.1 的示例集合）。
+pub struct Caps;
+
+impl Caps {
+    /// 数据帧原始二进制负载。
+    pub const BINARY_PAYLOAD: u32 = 1 << 0;
+    /// agent 状态机事件（#79）。
+    pub const AGENT_EVENTS: u32 = 1 << 1;
+    /// 负载压缩（v1 预留，恒不开）。
+    pub const COMPRESSION: u32 = 1 << 2;
+
+    /// 本实现支持的能力。
+    pub const fn supported() -> u32 {
+        Self::BINARY_PAYLOAD
+    }
+}
+
+/// 版本协商结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Negotiation {
+    /// 双方区间的最高交集版本。
+    Agreed(u16),
+    /// 区间不相交——要明确拒绝，不能装作没事。
+    NoOverlap,
+}
+
+/// 取「客户端区间 ∩ daemon 区间」的最高版本。
+pub fn negotiate(client_min: u16, client_max: u16) -> Negotiation {
+    let min = client_min.max(PROTOCOL_VERSION_MIN);
+    let max = client_max.min(PROTOCOL_VERSION);
+    if min <= max {
+        Negotiation::Agreed(max)
+    } else {
+        Negotiation::NoOverlap
+    }
+}
+
+/// 握手：UI→D。连接后的**第一条**消息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hello {
+    /// 客户端支持的版本区间下界。
+    pub proto_min: u16,
+    /// 客户端支持的版本区间上界。
+    pub proto_max: u16,
+    /// 能力位（[`Caps`] 的组合）。
+    pub caps: u32,
+    /// 握手令牌（`AGEMINAL_TOKEN`；daemon 每次启动重生成）。
+    pub token: String,
+    /// 客户端实例 id（diagnostics 与「同一 UI 的多次连接」识别）。
+    pub client_instance: String,
+    /// 想接回的会话及各自已消费到的位置（研究稿 §6.4）。
+    #[serde(default)]
+    pub resume: Vec<Resume>,
+}
+
+/// [`Hello::resume`] 里的一项。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Resume {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 客户端已消费到的最后一个 `seq`。
+    pub last_seq: u64,
+}
+
+/// 握手结果：D→UI。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Welcome {
+    /// daemon 选定的协议版本（双方区间的最高交集）。
+    pub proto: u16,
+    /// daemon 的能力位。
+    pub caps: u32,
+    /// daemon 的构建版本。
+    pub daemon_version: String,
+}
+
+/// 错误：D→UI。**版本不匹配**也走这里，带明确理由。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolError {
+    /// 机器可读的错误码。
+    pub code: ErrorCode,
+    /// 给人看的理由。
+    pub message: String,
+}
+
+/// 错误码。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorCode {
+    /// 版本区间无交集（[`negotiate`]）。
+    UnsupportedVersion,
+    /// 令牌不匹配。
+    BadToken,
+    /// 帧无法解析 / 用法不合协议。
+    BadFrame,
+    /// daemon 内部错误。
+    Internal,
+}
+
+/// 建会话：UI→D。`sid` 是**逻辑**会话 id（字符串）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSession {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 工作目录（worktree 根）。
+    pub cwd: String,
+    /// 要起的 shell（缺省由 daemon 定）。
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// 启动命令（agent 页签会用到）。
+    #[serde(default)]
+    pub command: Option<String>,
+    /// 初始列数。
+    pub cols: u16,
+    /// 初始行数。
+    pub rows: u16,
+    /// 追加的环境变量。
+    #[serde(default)]
+    pub env: Vec<EnvVar>,
+}
+
+/// 一个环境变量。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvVar {
+    /// 变量名。
+    pub name: String,
+    /// 变量值。
+    pub value: String,
+}
+
+/// 建好了：D→UI。**连接内句柄**由 daemon 分配，客户端之后用它收数据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCreated {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 连接内句柄（数据帧帧头用的就是它）。
+    pub handle: u32,
+    /// 子进程 pid。
+    pub pid: u32,
+    /// 本次 spawn 的世代（迟到 exit 据此丢弃）。
+    pub incarnation: String,
+}
+
+/// 接回已有会话：UI→D。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attach {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 客户端已消费到的最后一个 `seq`。
+    pub last_seq: u64,
+}
+
+/// 接上了：D→UI。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Attached {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 连接内句柄。
+    pub handle: u32,
+    /// 回放将从哪个 `seq` 开始。
+    pub from_seq: u64,
+}
+
+/// 断开：UI→D。**≠ 终止**——会话继续活在 daemon 里（§5.2 的三层退出语义）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Detach {
+    /// 逻辑会话 id。
+    pub sid: String,
+}
+
+/// 终止：UI→D。唯一真正结束会话的入口。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Terminate {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 是否强杀（先礼后兵）。
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// 会话进程退出了：D→UI。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionExited {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 世代 id。
+    pub incarnation: String,
+    /// 退出码。
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+}
+
+/// 改尺寸：UI→D。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Resize {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 列数。
+    pub cols: u16,
+    /// 行数。
+    pub rows: u16,
+}
+
+/// 累计已消费字节数：UI→D（流控，研究稿 §4.2）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ack {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 累计已消费字节数。
+    pub acked_bytes: u64,
+}
+
+/// 一条控制消息（**类型 + 负载**），与 [`Frame`] 一一对应。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Message {
+    /// [`Hello`]。
+    Hello(Hello),
+    /// [`Welcome`]。
+    Welcome(Welcome),
+    /// [`ProtocolError`]。
+    Error(ProtocolError),
+    /// 心跳。
+    Ping,
+    /// 心跳应答。
+    Pong,
+    /// [`CreateSession`]。
+    CreateSession(CreateSession),
+    /// [`SessionCreated`]。
+    SessionCreated(SessionCreated),
+    /// [`Attach`]。
+    Attach(Attach),
+    /// [`Attached`]。
+    Attached(Attached),
+    /// [`Detach`]。
+    Detach(Detach),
+    /// [`Terminate`]。
+    Terminate(Terminate),
+    /// [`SessionExited`]。
+    SessionExited(SessionExited),
+    /// [`Resize`]。
+    Resize(Resize),
+    /// [`Ack`]。
+    Ack(Ack),
+    /// 会话输出：**句柄与序号在帧头**，`bytes` 是原始 PTY 字节。
+    Data {
+        /// 连接内句柄。
+        handle: u32,
+        /// 会话内单调递增序号。
+        seq: u64,
+        /// 原始字节。
+        bytes: Vec<u8>,
+    },
+    /// 会话输入：原始按键字节。
+    Input {
+        /// 连接内句柄。
+        handle: u32,
+        /// 会话内单调递增序号。
+        seq: u64,
+        /// 原始字节。
+        bytes: Vec<u8>,
+    },
+}
+
+impl Message {
+    /// 对应的帧类型。
+    pub fn kind(&self) -> FrameKind {
+        match self {
+            Message::Hello(_) => FrameKind::Hello,
+            Message::Welcome(_) => FrameKind::Welcome,
+            Message::Error(_) => FrameKind::Error,
+            Message::Ping => FrameKind::Ping,
+            Message::Pong => FrameKind::Pong,
+            Message::CreateSession(_) => FrameKind::CreateSession,
+            Message::SessionCreated(_) => FrameKind::SessionCreated,
+            Message::Attach(_) => FrameKind::Attach,
+            Message::Attached(_) => FrameKind::Attached,
+            Message::Detach(_) => FrameKind::Detach,
+            Message::Terminate(_) => FrameKind::Terminate,
+            Message::SessionExited(_) => FrameKind::SessionExited,
+            Message::Resize(_) => FrameKind::Resize,
+            Message::Ack(_) => FrameKind::Ack,
+            Message::Data { .. } => FrameKind::Data,
+            Message::Input { .. } => FrameKind::Input,
+        }
+    }
+
+    /// 编码成帧：原始字节帧用帧头带句柄与序号，其余走 JSON 负载。
+    pub fn to_frame(&self) -> Result<Frame, MessageError> {
+        let kind = self.kind();
+        let payload = match self {
+            // 热路径：句柄与序号在**帧头**，负载是裸字节——不碰 JSON。
+            Message::Data { handle, seq, bytes } | Message::Input { handle, seq, bytes } => {
+                return Ok(Frame::raw(kind, *handle, *seq, bytes.clone()))
+            }
+            Message::Hello(value) => serde_json::to_vec(value)?,
+            Message::Welcome(value) => serde_json::to_vec(value)?,
+            Message::Error(value) => serde_json::to_vec(value)?,
+            Message::CreateSession(value) => serde_json::to_vec(value)?,
+            Message::SessionCreated(value) => serde_json::to_vec(value)?,
+            Message::Attach(value) => serde_json::to_vec(value)?,
+            Message::Attached(value) => serde_json::to_vec(value)?,
+            Message::Detach(value) => serde_json::to_vec(value)?,
+            Message::Terminate(value) => serde_json::to_vec(value)?,
+            Message::SessionExited(value) => serde_json::to_vec(value)?,
+            Message::Resize(value) => serde_json::to_vec(value)?,
+            Message::Ack(value) => serde_json::to_vec(value)?,
+            // 心跳没有负载。
+            Message::Ping | Message::Pong => Vec::new(),
+        };
+        Ok(Frame::control(kind, 0, 0, payload))
+    }
+
+    /// 由帧解出消息。
+    ///
+    /// 未知 / 尚未定义的类型返回 [`MessageError::UnsupportedKind`]——**由调用方决定跳过还是
+    /// 报错**（研究稿 §6.1：未知帧一律忽略，不断连）。
+    pub fn from_frame(frame: &Frame) -> Result<Self, MessageError> {
+        match frame.kind {
+            FrameKind::Data => Ok(Message::Data {
+                handle: frame.session,
+                seq: frame.seq,
+                bytes: frame.payload.clone(),
+            }),
+            FrameKind::Input => Ok(Message::Input {
+                handle: frame.session,
+                seq: frame.seq,
+                bytes: frame.payload.clone(),
+            }),
+            FrameKind::Ping => Ok(Message::Ping),
+            FrameKind::Pong => Ok(Message::Pong),
+            FrameKind::Hello => Ok(Message::Hello(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Welcome => Ok(Message::Welcome(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Error => Ok(Message::Error(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::CreateSession => Ok(Message::CreateSession(serde_json::from_slice(
+                &frame.payload,
+            )?)),
+            FrameKind::SessionCreated => Ok(Message::SessionCreated(serde_json::from_slice(
+                &frame.payload,
+            )?)),
+            FrameKind::Attach => Ok(Message::Attach(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Attached => Ok(Message::Attached(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Detach => Ok(Message::Detach(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Terminate => Ok(Message::Terminate(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::SessionExited => Ok(Message::SessionExited(serde_json::from_slice(
+                &frame.payload,
+            )?)),
+            FrameKind::Resize => Ok(Message::Resize(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Ack => Ok(Message::Ack(serde_json::from_slice(&frame.payload)?)),
+            other => Err(MessageError::UnsupportedKind(other)),
+        }
+    }
+}
+
+/// 消息（反）序列化错误。
+#[derive(Debug, thiserror::Error)]
+pub enum MessageError {
+    /// 这个帧类型还没有对应的消息定义（或干脆不认识）。
+    #[error("帧类型 {0:?} 没有对应的消息")]
+    UnsupportedKind(FrameKind),
+
+    /// 控制帧负载不是合法 JSON。
+    #[error("控制帧负载不是合法 JSON：{0}")]
+    Json(#[from] serde_json::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn every_message() -> Vec<Message> {
+        vec![
+            Message::Hello(Hello {
+                proto_min: PROTOCOL_VERSION_MIN,
+                proto_max: PROTOCOL_VERSION,
+                caps: Caps::supported(),
+                token: "tok".to_owned(),
+                client_instance: "ui-1".to_owned(),
+                resume: vec![Resume {
+                    sid: "wt/main/shell/1".to_owned(),
+                    last_seq: 42,
+                }],
+            }),
+            Message::Welcome(Welcome {
+                proto: PROTOCOL_VERSION,
+                caps: Caps::supported(),
+                daemon_version: "0.0.0".to_owned(),
+            }),
+            Message::Error(ProtocolError {
+                code: ErrorCode::UnsupportedVersion,
+                message: "无交集".to_owned(),
+            }),
+            Message::Ping,
+            Message::Pong,
+            Message::CreateSession(CreateSession {
+                sid: "wt/main/shell/1".to_owned(),
+                cwd: r"C:\code\wt".to_owned(),
+                shell: Some("pwsh".to_owned()),
+                command: None,
+                cols: 120,
+                rows: 30,
+                env: vec![EnvVar {
+                    name: "AGEMINAL_SESSION_ID".to_owned(),
+                    value: "wt/main/shell/1".to_owned(),
+                }],
+            }),
+            Message::SessionCreated(SessionCreated {
+                sid: "wt/main/shell/1".to_owned(),
+                handle: 3,
+                pid: 4242,
+                incarnation: "inc-1".to_owned(),
+            }),
+            Message::Attach(Attach {
+                sid: "wt/main/shell/1".to_owned(),
+                last_seq: 7,
+            }),
+            Message::Attached(Attached {
+                sid: "wt/main/shell/1".to_owned(),
+                handle: 3,
+                from_seq: 8,
+            }),
+            Message::Detach(Detach {
+                sid: "wt/main/shell/1".to_owned(),
+            }),
+            Message::Terminate(Terminate {
+                sid: "wt/main/shell/1".to_owned(),
+                force: true,
+            }),
+            Message::SessionExited(SessionExited {
+                sid: "wt/main/shell/1".to_owned(),
+                incarnation: "inc-1".to_owned(),
+                exit_code: Some(0),
+            }),
+            Message::Resize(Resize {
+                sid: "wt/main/shell/1".to_owned(),
+                cols: 100,
+                rows: 40,
+            }),
+            Message::Ack(Ack {
+                sid: "wt/main/shell/1".to_owned(),
+                acked_bytes: 65536,
+            }),
+            Message::Data {
+                handle: 3,
+                seq: 9,
+                bytes: vec![0x1b, 0x5b, 0x33, 0x31, 0x6d, 0xff],
+            },
+            Message::Input {
+                handle: 3,
+                seq: 1,
+                bytes: b"ls\r".to_vec(),
+            },
+        ]
+    }
+
+    #[test]
+    fn every_message_round_trips_through_a_frame() {
+        for message in every_message() {
+            let frame = message.to_frame().unwrap();
+            assert_eq!(frame.kind, message.kind(), "类型应一致：{message:?}");
+            let back = Message::from_frame(&frame).unwrap();
+            assert_eq!(back, message);
+        }
+    }
+
+    #[test]
+    fn raw_frames_carry_handle_and_seq_in_the_header() {
+        let message = Message::Data {
+            handle: 11,
+            seq: 22,
+            bytes: b"\x1b[0m".to_vec(),
+        };
+        let frame = message.to_frame().unwrap();
+        assert_eq!(frame.session, 11);
+        assert_eq!(frame.seq, 22);
+        assert!(frame.flags.contains(crate::frame::Flags::PAYLOAD_IS_RAW));
+        // JSON 负载携带原始字节是禁忌：数据帧必须是裸字节。
+        assert_eq!(frame.payload, b"\x1b[0m");
+    }
+
+    #[test]
+    fn control_frames_leave_session_and_seq_zero() {
+        let frame = Message::Resize(Resize {
+            sid: "s".to_owned(),
+            cols: 1,
+            rows: 1,
+        })
+        .to_frame()
+        .unwrap();
+        assert_eq!(frame.session, 0, "控制帧不占帧头句柄位");
+        assert_eq!(frame.seq, 0);
+    }
+
+    #[test]
+    fn unknown_kinds_are_reported_not_panicked() {
+        let frame = Frame::control(FrameKind::Unknown(0x7777), 0, 0, Vec::new());
+        assert!(matches!(
+            Message::from_frame(&frame),
+            Err(MessageError::UnsupportedKind(FrameKind::Unknown(0x7777)))
+        ));
+    }
+
+    #[test]
+    fn malformed_json_is_an_error_not_a_panic() {
+        let frame = Frame::control(FrameKind::Resize, 0, 0, b"{not json".to_vec());
+        assert!(matches!(
+            Message::from_frame(&frame),
+            Err(MessageError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn negotiation_takes_the_highest_overlap() {
+        assert_eq!(negotiate(1, 1), Negotiation::Agreed(1));
+        // 客户端比我们新：取我们的上界。
+        assert_eq!(negotiate(1, 9), Negotiation::Agreed(PROTOCOL_VERSION));
+        // 客户端区间更宽：仍取交集上界。
+        assert_eq!(negotiate(0, 9), Negotiation::Agreed(PROTOCOL_VERSION));
+        // 无交集。
+        assert_eq!(negotiate(2, 5), Negotiation::NoOverlap);
+        // 区间自身非法。
+        assert_eq!(negotiate(5, 2), Negotiation::NoOverlap);
+    }
+}

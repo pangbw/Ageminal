@@ -10,6 +10,9 @@ rust-version.workspace = true
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
 
 [dev-dependencies]
-serde_json = "1"
+# 帧往返性质（#65 验收 1）。
+proptest = "1"

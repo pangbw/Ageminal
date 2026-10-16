@@ -2,7 +2,6 @@
 //!
 //! 与 app-core 的边界约定一致：库内用类型化错误，到了 Tauri 命令边界再 `to_string()`。
 
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// daemon 拉起 / 握手 / 管道 IO 期间的类型化错误。
@@ -24,25 +23,21 @@ pub enum DaemonError {
     #[error("等待 daemon 就绪超时（{timeout:?}）：{reason}")]
     Timeout { timeout: Duration, reason: String },
 
-    /// 握手被 daemon 拒绝。
+    /// 握手被 daemon 拒绝（令牌不匹配 / 版本无交集）——拒绝理由由 daemon 明确给出。
     #[error("握手被拒：{reason}")]
     Rejected { reason: String },
-
-    /// 协议版本不一致。
-    #[error("协议版本不一致：daemon {daemon} / 客户端 {client}")]
-    ProtocolMismatch { daemon: u32, client: u32 },
 
     /// 收到了当下不该出现的消息（协议状态机被打破）。
     #[error("意外的消息：{0}")]
     Unexpected(String),
 
-    /// 状态文件读写失败。
-    #[error("状态文件读写失败 {path}：{source}")]
-    State {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+    /// 线协议层面的失败（帧编解码 / 消息解析）。
+    #[error("协议错误：{reason}")]
+    Protocol { reason: String },
+
+    /// 发现文件（`daemon.json`）读写失败。
+    #[error(transparent)]
+    Discovery(#[from] ageminal_protocol::DiscoveryError),
 
     /// 无法启动 daemon 进程。
     #[error("无法启动 daemon：{reason}")]
@@ -55,10 +50,6 @@ pub enum DaemonError {
     /// Windows 调用失败。
     #[error("Windows 调用 {call} 失败：{reason}")]
     Windows { call: &'static str, reason: String },
-
-    /// 编解码失败。
-    #[error("编解码失败：{reason}")]
-    Codec { reason: String },
 
     /// 管道 IO 失败。
     #[error("管道 IO 失败：{0}")]

@@ -1,20 +1,23 @@
-//! 命名管道客户端：连接 + token 握手 + ping（issue #64）。
+//! 命名管道客户端：连接 + 握手 + ping（issue #64 / #65）。
 //!
 //! 这是 app-core 侧唯一的对话入口；agent hook shim（`ageminal-notify`）将来也走同一套。
+//! **只经 `ageminal-protocol` 的类型收发**（#65 验收 4），不自己碰字节。
 
 use std::fs::File;
 use std::io::BufReader;
 use std::os::windows::io::FromRawHandle;
 use std::time::{Duration, Instant};
 
-use ageminal_protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
+use ageminal_protocol::{
+    Caps, Hello, Message, ProtocolError, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+};
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
 use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 
-use crate::{win, wire, DaemonError, DaemonInfo};
+use crate::{framed, win, DaemonError, DaemonInfo};
 
 /// 管道忙时的单次重试等待（`WaitNamedPipeW` 的毫秒数）。
 const RETRY_WAIT_MS: u32 = 250;
@@ -27,14 +30,13 @@ pub struct Client {
 }
 
 impl Client {
-    /// 存活探测：发 `ping`，核对回显的 `nonce`。
-    pub fn ping(&mut self, nonce: u64) -> Result<(), DaemonError> {
-        wire::write_message(&mut self.writer, &ClientMessage::Ping { nonce })?;
-        let response: ServerMessage = wire::read_message(&mut self.reader)?;
-        match response {
-            ServerMessage::Pong { nonce: echo } if echo == nonce => Ok(()),
+    /// 存活探测：发 `ping`，等 `pong`。
+    pub fn ping(&mut self) -> Result<(), DaemonError> {
+        framed::send(&mut self.writer, &Message::Ping)?;
+        match framed::read_message(&mut self.reader)? {
+            Some(Message::Pong) => Ok(()),
             other => Err(DaemonError::Unexpected(format!(
-                "期待 pong({nonce})，收到 {other:?}"
+                "期待 pong，收到 {other:?}"
             ))),
         }
     }
@@ -48,35 +50,43 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
     let mut writer = stream.try_clone().map_err(DaemonError::from)?;
     let mut reader = BufReader::new(stream);
 
-    wire::write_message(
+    framed::send(
         &mut writer,
-        &ClientMessage::Hello {
+        &Message::Hello(Hello {
+            proto_min: PROTOCOL_VERSION_MIN,
+            proto_max: PROTOCOL_VERSION,
+            caps: Caps::supported(),
             token: info.token.clone(),
-            protocol: PROTOCOL_VERSION,
-        },
+            client_instance: client_instance(),
+            resume: Vec::new(),
+        }),
     )?;
-    let response: ServerMessage = wire::read_message(&mut reader)?;
-    match &response {
-        ServerMessage::Welcome { protocol, .. } if *protocol == PROTOCOL_VERSION => {}
-        ServerMessage::Welcome { protocol, .. } => {
-            return Err(DaemonError::ProtocolMismatch {
-                daemon: *protocol,
-                client: PROTOCOL_VERSION,
-            })
-        }
-        ServerMessage::Rejected { reason } => {
-            return Err(DaemonError::Rejected {
-                reason: reason.clone(),
-            })
-        }
-        other => {
-            return Err(DaemonError::Unexpected(format!(
-                "期待 welcome，收到 {other:?}"
-            )))
-        }
-    }
 
-    Ok(Client { reader, writer })
+    match framed::read_message(&mut reader)? {
+        Some(Message::Welcome(welcome)) => {
+            // 协商由 daemon 做（取交集最高版本）；这里只守一条不变量：它选出来的版本我们得认识。
+            if !(PROTOCOL_VERSION_MIN..=PROTOCOL_VERSION).contains(&welcome.proto) {
+                return Err(DaemonError::Protocol {
+                    reason: format!(
+                        "daemon 选定版本 {} 不在客户端支持区间 [{PROTOCOL_VERSION_MIN}..{PROTOCOL_VERSION}]",
+                        welcome.proto
+                    ),
+                });
+            }
+            Ok(Client { reader, writer })
+        }
+        Some(Message::Error(ProtocolError { code, message })) => Err(DaemonError::Rejected {
+            reason: format!("{code:?}：{message}"),
+        }),
+        other => Err(DaemonError::Unexpected(format!(
+            "期待 welcome，收到 {other:?}"
+        ))),
+    }
+}
+
+/// 客户端实例 id（diagnostics、以及「同一 UI 的多次连接」识别）。
+fn client_instance() -> String {
+    format!("ui-{}-{}", std::process::id(), crate::logging::now_ms())
 }
 
 /// 打开管道客户端句柄；`ERROR_PIPE_BUSY` 时重试到 `timeout`。

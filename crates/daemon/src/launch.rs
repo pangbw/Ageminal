@@ -74,7 +74,7 @@ pub fn spawn_detached(exe: &Path, pipe: &str, config_dir: &Path) -> Result<Child
 pub fn try_reuse(config_dir: &Path) -> Option<DaemonInfo> {
     let info = DaemonInfo::read(config_dir).ok()?;
     let mut client = client::connect(&info, PROBE_TIMEOUT).ok()?;
-    client.ping(1).ok()?;
+    client.ping().ok()?;
     Some(info)
 }
 
