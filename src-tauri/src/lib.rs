@@ -11,6 +11,7 @@ use specta::Type;
 use tauri::{Emitter, Manager};
 use tauri_specta::{collect_commands, Builder};
 
+pub mod daemon;
 pub mod files;
 pub mod storage;
 pub mod watch;
@@ -185,6 +186,8 @@ pub fn run() {
                 }
                 Err(error) => eprintln!("[watch] 初始化失败：{error}"),
             }
+            // 守护进程常驻（#64）：后台确保它在跑（复用优先），不阻塞窗口创建。
+            daemon::spawn_ensure();
             Ok(())
         })
         .build(tauri::generate_context!())

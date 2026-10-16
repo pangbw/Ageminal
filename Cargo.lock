@@ -19,12 +19,17 @@ name = "ageminal-daemon"
 version = "0.0.0"
 dependencies = [
  "ageminal-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "ageminal-desktop"
 version = "0.0.0"
 dependencies = [
+ "ageminal-daemon",
  "ageminal-files",
  "ageminal-git",
  "ageminal-workspace",
@@ -71,6 +76,10 @@ dependencies = [
 [[package]]
 name = "ageminal-protocol"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "ageminal-workspace"
