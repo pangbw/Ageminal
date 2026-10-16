@@ -56,10 +56,6 @@ pub enum DaemonError {
     #[error("Windows 调用 {call} 失败：{reason}")]
     Windows { call: &'static str, reason: String },
 
-    /// 平台不支持（本 crate 的实现只在 Windows 上存在）。
-    #[error("当前平台不支持：{0}")]
-    Unsupported(&'static str),
-
     /// 编解码失败。
     #[error("编解码失败：{reason}")]
     Codec { reason: String },

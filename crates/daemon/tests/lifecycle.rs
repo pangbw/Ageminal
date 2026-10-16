@@ -6,8 +6,8 @@
 //!
 //! 非 Windows 整文件跳过——daemon 只有 Windows 实现。
 //!
-//! **未自动覆盖**：验收 4「**别的**用户被 ACL 拒绝」需要第二个 Windows 账户，属人工验收；
-//! 自动化的那一半（「DACL 里只有当前用户」）在 `acl` 模块的单测里。
+//! **未自动覆盖**：验收 4「**别的**用户被 ACL 拒绝」需要第二个 Windows 账户，属人工验收。
+//! 自动化的那半（描述符真的被挂到管道上、且只有当前用户）在 `server` 的单测里。
 
 #![cfg(windows)]
 
@@ -97,10 +97,12 @@ fn daemon_log(fixture: &Fixture) -> String {
         .unwrap_or_else(|_| "<没有 daemon.log>".to_owned())
 }
 
-/// 验收 1 + 3：真进程拉起 → 握手 → ping/pong；且 stdio 指向 NUL 时不崩
-/// （`launch::spawn_detached` 把三个句柄都接到 NUL——能应答就说明没被写失败打崩）。
+/// 验收 1 + 3：真进程拉起 → 握手 → ping/pong。
+///
+/// stdio 由 `launch::spawn_detached` 三个句柄全接到 NUL；能一路应答到 ping/pong，说明 daemon
+/// 没有被「stdio 是 NUL」这件事打崩（它运行期不写 stdout，见 `crates/daemon/src/logging.rs`）。
 #[test]
-fn 拉起进程_握手并_ping_pong() {
+fn launches_and_replies_to_ping_pong() {
     let fixture = Fixture::new("ping");
     let daemon = Spawned::start(&fixture);
 
@@ -111,7 +113,6 @@ fn 拉起进程_握手并_ping_pong() {
     );
     assert_eq!(daemon.info.pipe, fixture.pipe);
     assert_eq!(daemon.info.protocol, ageminal_protocol::PROTOCOL_VERSION);
-    assert!(daemon.info.pid > 0);
 
     let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
     for nonce in [1_u64, 2, 3, 0xdead_beef] {
@@ -119,11 +120,19 @@ fn 拉起进程_握手并_ping_pong() {
     }
 }
 
-/// 验收 2：重复拉起**复用同一个 daemon**——第二个进程认输退出，原 daemon 不受影响。
+/// 验收 2：重复拉起**复用同一个 daemon**。两层都验：
+///
+/// 1. 应用侧入口 `ensure_running_with` 认出已有 daemon，**不再拉起新进程**；
+/// 2. 就算硬拉起第二个进程，它也应认出并**正常退出**，不动原 daemon。
 #[test]
-fn 重复拉起复用同一个守护进程() {
+fn reuses_the_same_daemon_on_relaunch() {
     let fixture = Fixture::new("reuse");
     let daemon = Spawned::start(&fixture);
+
+    let reused =
+        launch::ensure_running_with(fixture.exe(), &fixture.pipe, &fixture.config_dir).unwrap();
+    assert_eq!(reused.pid, daemon.info.pid, "应用侧入口应复用同一个 daemon");
+    assert_eq!(reused.token, daemon.info.token);
 
     let mut second =
         launch::spawn_detached(fixture.exe(), &fixture.pipe, &fixture.config_dir).unwrap();
@@ -143,7 +152,7 @@ fn 重复拉起复用同一个守护进程() {
     );
 
     // 原 daemon 还在跑，状态文件没被改写。
-    let info = launch::read_info(&fixture.config_dir).unwrap();
+    let info = DaemonInfo::read(&fixture.config_dir).unwrap();
     assert_eq!(info.pid, daemon.info.pid);
     assert_eq!(info.token, daemon.info.token);
     let mut client = client::connect(&info, Duration::from_secs(5)).unwrap();
@@ -152,7 +161,7 @@ fn 重复拉起复用同一个守护进程() {
 
 /// 握手负路径：令牌不对要被明确拒绝，且拒绝之后真令牌照样能用。
 #[test]
-fn 令牌不匹配会被拒绝() {
+fn rejects_a_mismatched_token() {
     let fixture = Fixture::new("token");
     let daemon = Spawned::start(&fixture);
 

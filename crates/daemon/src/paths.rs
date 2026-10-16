@@ -1,7 +1,7 @@
 //! 运行期落点与命名（Windows）。
 //!
 //! 生产落点（REQUIREMENTS.md §5.4 / §15）：
-//! - 状态：`%LOCALAPPDATA%\Ageminal\daemon.json`
+//! - 状态：`%LOCALAPPDATA%\Ageminal\daemon.json`（格式在 [`crate::DaemonInfo`]）
 //! - 日志：`%LOCALAPPDATA%\Ageminal\logs\daemon.log`
 //!
 //! `…_in(config_dir)` 版本是给集成测试用的：测试把配置根挪到临时目录，免得和用户机器上真在跑的
@@ -11,20 +11,12 @@ use std::path::{Path, PathBuf};
 
 use crate::{win, DaemonError};
 
-/// 状态文件名（配置根下）。
-pub const STATE_FILE_NAME: &str = "daemon.json";
-
 /// 配置根：`%LOCALAPPDATA%\Ageminal`。
 pub fn config_dir() -> Result<PathBuf, DaemonError> {
     let local = std::env::var_os("LOCALAPPDATA").ok_or(DaemonError::MissingEnv {
         name: "LOCALAPPDATA",
     })?;
     Ok(PathBuf::from(local).join("Ageminal"))
-}
-
-/// 状态文件：`<config>/daemon.json`。
-pub fn state_file_in(config_dir: &Path) -> PathBuf {
-    config_dir.join(STATE_FILE_NAME)
 }
 
 /// 日志文件：`<config>/logs/daemon.log`。
@@ -57,9 +49,8 @@ mod tests {
     }
 
     #[test]
-    fn paths_hang_off_the_config_dir() {
+    fn logs_hang_off_the_config_dir() {
         let config = Path::new(r"C:\Users\me\AppData\Local\Ageminal");
-        assert_eq!(state_file_in(config), config.join("daemon.json"));
         assert_eq!(log_file_in(config), config.join("logs").join("daemon.log"));
     }
 }

@@ -24,15 +24,9 @@ const RETRY_WAIT_MS: u32 = 250;
 pub struct Client {
     reader: BufReader<File>,
     writer: File,
-    welcome: ServerMessage,
 }
 
 impl Client {
-    /// 握手结果（daemon 的 `welcome`）。
-    pub fn welcome(&self) -> &ServerMessage {
-        &self.welcome
-    }
-
     /// 存活探测：发 `ping`，核对回显的 `nonce`。
     pub fn ping(&mut self, nonce: u64) -> Result<(), DaemonError> {
         wire::write_message(&mut self.writer, &ClientMessage::Ping { nonce })?;
@@ -82,11 +76,7 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
         }
     }
 
-    Ok(Client {
-        reader,
-        writer,
-        welcome: response,
-    })
+    Ok(Client { reader, writer })
 }
 
 /// 打开管道客户端句柄；`ERROR_PIPE_BUSY` 时重试到 `timeout`。

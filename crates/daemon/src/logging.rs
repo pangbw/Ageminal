@@ -19,14 +19,16 @@ pub fn append(path: &Path, message: &str) {
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
-    let _ = writeln!(file, "{} {message}", timestamp_ms());
+    let _ = writeln!(file, "{} {message}", now_ms());
 }
 
-/// Unix 毫秒。跨进程对齐够用；可读的格式化留给 #88 的 `tracing` 栈。
-fn timestamp_ms() -> u128 {
+/// 当前 Unix 毫秒。日志与 [`crate::DaemonInfo::started_at_ms`] 共用这一个时间来源。
+///
+/// 可读的格式化留给 #88 的 `tracing` 栈。
+pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
+        .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
 }
 
