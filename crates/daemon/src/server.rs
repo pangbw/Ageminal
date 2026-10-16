@@ -1,7 +1,9 @@
 //! 命名管道服务端：单例守卫 + token 握手 + ping/pong（issue #64）。
 //!
-//! 单例靠 `FILE_FLAG_FIRST_PIPE_INSTANCE`：**第二个** `CreateNamedPipeW` 会以
-//! `ERROR_ACCESS_DENIED` 失败——这是内核级的原子守卫，不需要锁文件或 `Mutex`。
+//! 单例：`FILE_FLAG_FIRST_PIPE_INSTANCE` 让**第二个** `CreateNamedPipeW` 直接失败——内核级守卫，
+//! 不需要锁文件或 `Mutex`。**但「名字被占」的错误码各家实现口径不一**（CI 实测是
+//! `ERROR_PIPE_BUSY`，文档却写 `ERROR_ACCESS_DENIED`），所以不认错误码，改**探测**：建不上管道
+//! 就去问一句「这条管道上有人应答吗」。是则「已在运行」，否则如实报错。
 //!
 //! 管道 DACL 只放当前用户（[`crate::acl`]），所以「非当前用户被拒绝」由内核完成，不靠应用层判断。
 
@@ -15,8 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use ageminal_protocol::{ClientMessage, ServerMessage, PROTOCOL_VERSION};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_NO_DATA,
-    ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
@@ -85,7 +86,20 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
 
     // 先建管道：这一步同时完成单例判定（第二个实例会失败）。
     let security = acl::CurrentUserSecurity::build()?;
-    let pipe = create_pipe(&config.pipe, &security)?;
+    let pipe = match create_pipe(&config.pipe, &security) {
+        Ok(pipe) => pipe,
+        Err(DaemonError::Pipe { pipe, reason }) => {
+            // 管道名已被占用时 **Windows 给的错误码并不稳定**（实测是 `ERROR_PIPE_BUSY`，
+            // 文档却写 `ERROR_ACCESS_DENIED`）。所以不猜错误码，直接**探测**：
+            // 真有 daemon 在这条管道上应答 → 「已在运行」（复用即可）；否则如实报错，
+            // 别把真正的失败伪装成单例。
+            if launch::try_reuse(&config.config_dir).is_some() {
+                return Err(DaemonError::AlreadyRunning { pipe });
+            }
+            return Err(DaemonError::Pipe { pipe, reason });
+        }
+        Err(other) => return Err(other),
+    };
 
     let info = DaemonInfo {
         pid: std::process::id(),
@@ -121,7 +135,10 @@ impl Drop for PipeHandle {
     }
 }
 
-/// 创建管道实例。第二个进程走到这里会拿到 [`DaemonError::AlreadyRunning`]。
+/// 创建管道实例（`FILE_FLAG_FIRST_PIPE_INSTANCE`：名字被占就直接失败）。
+///
+/// 失败一律包成 [`DaemonError::Pipe`]——「是不是别的 daemon 占着」由调用方用**探测**判断，
+/// 不靠错误码（见 [`serve`]）。
 fn create_pipe(pipe: &str, security: &acl::CurrentUserSecurity) -> Result<PipeHandle, DaemonError> {
     let name = win::to_wide(pipe);
     let handle = unsafe {
@@ -138,13 +155,6 @@ fn create_pipe(pipe: &str, security: &acl::CurrentUserSecurity) -> Result<PipeHa
     };
     if handle == INVALID_HANDLE_VALUE {
         let error = unsafe { GetLastError() };
-        // `FILE_FLAG_FIRST_PIPE_INSTANCE`：管道名已被占用时就是 ERROR_ACCESS_DENIED
-        // （个别实现口径也提 ERROR_ALREADY_EXISTS，一并当作「已在运行」）。
-        if error == ERROR_ACCESS_DENIED || error == ERROR_ALREADY_EXISTS {
-            return Err(DaemonError::AlreadyRunning {
-                pipe: pipe.to_owned(),
-            });
-        }
         return Err(DaemonError::Pipe {
             pipe: pipe.to_owned(),
             reason: format!("GetLastError={error}"),
