@@ -79,6 +79,7 @@ impl Outbound {
                 queue.pop().expect("非空队列")
             };
             let kind = frame.kind;
+            let encoded = frame.encoded_len();
             if let Err(error) = frame.write_to(writer) {
                 logging::append(&self.log_path, &format!("写出失败（{kind:?}）：{error}"));
                 return Err(match error {
@@ -87,6 +88,10 @@ impl Outbound {
                         reason: other.to_string(),
                     },
                 });
+            }
+            // 控制面留痕（数据面太吵，不记）：daemon 的 stdio 是 NUL，日志是唯一线索。
+            if !kind.is_raw_payload() {
+                logging::append(&self.log_path, &format!("-> {kind:?} {encoded}B"));
             }
         }
     }
