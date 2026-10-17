@@ -310,9 +310,11 @@ fn read_loop(
             // 对端在帧边界处正常关闭。
             Ok(None) => return Ok(()),
             Ok(Some(message)) => {
-                // TODO(#67 诊断)：定位完删掉。
-                logging::append(log_path, &format!("<- {:?}", message.kind()));
-                dispatch(message, sessions, outbound, handles, log_path)?
+                // 控制面留一条审计痕迹（数据面太吵，不记）：daemon 的 stdio 是 NUL，日志是唯一线索。
+                if !message.kind().is_raw_payload() {
+                    logging::append(log_path, &format!("<- {:?}", message.kind()));
+                }
+                dispatch(message, sessions, outbound, handles)?
             }
             Err(error) => return Err(error),
         }
@@ -328,15 +330,9 @@ fn dispatch(
     sessions: &Arc<SessionTable>,
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
-    log_path: &Path,
 ) -> Result<(), DaemonError> {
     match message {
-        Message::Ping => {
-            // TODO(#67 诊断)：定位「握手过、pong 不到」后删掉这两行。
-            let sent = outbound.send_control(&Message::Pong);
-            logging::append(log_path, &format!("-> pong ok={}", sent.is_ok()));
-            sent
-        }
+        Message::Ping => outbound.send_control(&Message::Pong),
         Message::CreateSession(request) => {
             let handle = handles.handle_for(&request.sid);
             let result = sessions.create(&request, handle, Arc::clone(outbound));

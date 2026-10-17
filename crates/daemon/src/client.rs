@@ -3,18 +3,22 @@
 //! 这是 app-core 侧唯一的对话入口（Tauri 命令面在 #68）。**只经 `ageminal-protocol` 的类型收发**
 //! （#65 验收 4），不自己碰字节。
 //!
-//! 握手之后读端交给一条后台线程，把所有入站消息送进 channel；请求-响应型方法从 channel 里挑自己
-//! 要的那条，其余（`Data` / `SessionExited` 等事件）进**待取队列**，由 [`Client::next_event`] 取。
+//! # 为什么没有后台读线程
 //!
-//! ⚠️ 待取队列目前是**无界**的：这一层还没有背压（#73）与按会话分发的 Channel（#68）。#67 的用途
-//! 是无 UI 的集成测试，量小；#68 会换成每会话一条通道。
+//! 曾经有过：读端交给线程、消息进 channel。**它会死锁**——那条线程一直握着管道句柄，调用方
+//! `drop(Client)` 之后 daemon 仍然看不到 EOF，于是不会 `DisconnectNamedPipe`，下一次连接就永远
+//! `ERROR_PIPE_BUSY`；而 daemon 不关连接，读线程也永远等不到 EOF。（CI 上真踩过：握手能过、
+//! `ping` 拿不到回复，随后所有连接都连不上。）
+//!
+//! 所以这里是**单线程 + `PeekNamedPipe` 轮询**：没有常驻线程，`drop` 时两个句柄一起关，daemon
+//! 立刻看到 EOF。轮询间隔 5 ms，对无 UI 的集成测试完全够用；#68 的 app-core 需要真正的异步读
+//! （Tauri Channel），届时再按那边的生命周期重做，别把读线程塞进一个「随时可能被 drop」的对象里。
 
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
-use std::os::windows::io::FromRawHandle;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::thread::JoinHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
+use std::ptr;
 use std::time::{Duration, Instant};
 
 use ageminal_protocol::{
@@ -25,7 +29,7 @@ use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
-use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
+use windows_sys::Win32::System::Pipes::{PeekNamedPipe, WaitNamedPipeW};
 
 use crate::pty::PtySize;
 use crate::{framed, win, DaemonError, DaemonInfo};
@@ -38,16 +42,16 @@ const RETRY_WAIT_MS: u32 = 250;
 /// **不能无限等**：daemon 一旦卡住，调用方（乃至 CI）会一起挂死，而且什么线索都不留。
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// 等管道可读时的轮询间隔。
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
+
 /// 与 daemon 的一条**已握手**连接。
 #[derive(Debug)]
 pub struct Client {
+    reader: BufReader<File>,
     writer: File,
-    /// 后台读线程送来的所有入站消息。
-    incoming: Receiver<Message>,
     /// 请求-响应时「抢跑」收到的事件，留给 [`Client::next_event`]。
     pending: VecDeque<Message>,
-    /// 读线程；drop 即分离（写端关掉后它自己会退出）。
-    _reader: JoinHandle<()>,
 }
 
 impl Client {
@@ -151,12 +155,63 @@ impl Client {
         if let Some(message) = self.pending.pop_front() {
             return Ok(Some(message));
         }
-        match self.incoming.recv_timeout(timeout) {
-            Ok(message) => Ok(Some(message)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(DaemonError::Protocol {
+        if !self.await_readable(Instant::now() + timeout)? {
+            return Ok(None);
+        }
+        self.read_incoming()
+    }
+
+    /// 下一条入站消息（待取队列优先）；等到 `deadline` 还没有就返回 `None`。
+    fn next_incoming_before(&mut self, deadline: Instant) -> Result<Option<Message>, DaemonError> {
+        if let Some(message) = self.pending.pop_front() {
+            return Ok(Some(message));
+        }
+        if !self.await_readable(deadline)? {
+            return Ok(None);
+        }
+        self.read_incoming()
+    }
+
+    /// 读一条（调用前应已确认可读）。
+    fn read_incoming(&mut self) -> Result<Option<Message>, DaemonError> {
+        match framed::read_message(&mut self.reader)? {
+            Some(message) => Ok(Some(message)),
+            None => Err(DaemonError::Protocol {
                 reason: "daemon 关闭了连接".to_owned(),
             }),
+        }
+    }
+
+    /// 等管道里有字节可读；`deadline` 前没有就返回 `false`。
+    ///
+    /// 用 `PeekNamedPipe` 而不是后台读线程，原因见模块文档（读线程会把「关连接」这件事卡死）。
+    fn await_readable(&self, deadline: Instant) -> Result<bool, DaemonError> {
+        loop {
+            let mut available: u32 = 0;
+            let ok = unsafe {
+                PeekNamedPipe(
+                    self.reader.get_ref().as_raw_handle(),
+                    ptr::null_mut(),
+                    0,
+                    ptr::null_mut(),
+                    &mut available,
+                    ptr::null_mut(),
+                )
+            };
+            if ok == 0 {
+                return Err(DaemonError::NotRunning {
+                    reason: format!("PeekNamedPipe 失败：GetLastError={}", unsafe {
+                        GetLastError()
+                    }),
+                });
+            }
+            if available > 0 {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(POLL_INTERVAL);
         }
     }
 
@@ -169,17 +224,13 @@ impl Client {
         accept: impl Fn(&Message) -> bool,
     ) -> Result<Message, DaemonError> {
         framed::send(&mut self.writer, message)?;
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            let incoming = match self.incoming.recv_timeout(RESPONSE_TIMEOUT) {
-                Ok(message) => message,
-                Err(RecvTimeoutError::Timeout) => {
+            let incoming = match self.next_incoming_before(deadline)? {
+                Some(incoming) => incoming,
+                None => {
                     return Err(DaemonError::Protocol {
                         reason: format!("daemon 在 {RESPONSE_TIMEOUT:?} 内没有回应 {message:?}"),
-                    })
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(DaemonError::Protocol {
-                        reason: "daemon 关闭了连接".to_owned(),
                     })
                 }
             };
@@ -240,24 +291,10 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
         }
     }
 
-    // 握手完成后，读端交给后台线程：会话输出与事件都是异步来的，读线程不能只服务一次请求。
-    let (sender, incoming) = mpsc::channel();
-    let reader_thread = std::thread::spawn(move || loop {
-        match framed::read_message(&mut reader) {
-            Ok(Some(message)) => {
-                if sender.send(message).is_err() {
-                    return;
-                }
-            }
-            Ok(None) | Err(_) => return,
-        }
-    });
-
     Ok(Client {
+        reader,
         writer,
-        incoming,
         pending: VecDeque::new(),
-        _reader: reader_thread,
     })
 }
 
