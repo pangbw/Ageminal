@@ -334,3 +334,105 @@ fn open_pipe(pipe: &str, timeout: Duration) -> Result<HANDLE, DaemonError> {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::windows::io::FromRawHandle;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use ageminal_protocol::{Caps, Message, Welcome};
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_WAIT,
+    };
+
+    use super::*;
+    use crate::framed;
+
+    /// **事件帧比响应帧先到**时，请求也必须返回。
+    ///
+    /// 真机上踩过：`request` 把不匹配的消息塞进 `pending`（`next_event` 的事件队列），再回到循环时
+    /// 又**优先从 `pending` 取**，于是同一条 `Data` 帧被「取出 → 不匹配 → 塞回」无限循环，既不读管道
+    /// 也不返回，20 s 的请求超时也不会触发（它只在等可读时检查）。CI 因时序恰好躲开，这里用假 daemon
+    /// 把它变成确定性的：**先发一条 `Data`，再回 `Pong`**。
+    #[test]
+    fn a_response_is_not_starved_by_an_event_that_arrives_first() {
+        let pipe = format!(r"\\.\pipe\ageminal-client-test-{}", std::process::id());
+        let name = crate::win::to_wide(&pipe);
+        let handle = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                1,
+                8 * 1024,
+                8 * 1024,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        assert!(!handle.is_null(), "建测试管道失败");
+
+        // 裸 HANDLE 是 `*mut c_void`（不是 Send）。这里只把它交给**一条**线程用，包一层就够了。
+        struct SendHandle(isize);
+        unsafe impl Send for SendHandle {}
+        let raw = SendHandle(handle as isize);
+
+        // 假 daemon：握手 → **先**发事件 → **再**回 ping。
+        let daemon = std::thread::spawn(move || {
+            let handle = raw.0 as windows_sys::Win32::Foundation::HANDLE;
+            unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+            let file = unsafe { File::from_raw_handle(handle) };
+            let mut reader = &file;
+            let mut writer = &file;
+            assert!(matches!(
+                framed::read_message(&mut reader).expect("握手"),
+                Some(Message::Hello(_))
+            ));
+            framed::send(
+                &mut writer,
+                &Message::Welcome(Welcome {
+                    proto: PROTOCOL_VERSION,
+                    caps: Caps::supported(),
+                    daemon_version: "test".to_owned(),
+                }),
+            )
+            .expect("welcome");
+            framed::send(
+                &mut writer,
+                &Message::Data {
+                    handle: 1,
+                    seq: 0,
+                    bytes: b"banner".to_vec(),
+                },
+            )
+            .expect("data");
+            framed::send(&mut writer, &Message::Pong).expect("pong");
+            // 别急着断：断开会变成「连接关闭」，把「被饿死」这个失败模式掩盖成另一个错误。
+            std::thread::sleep(Duration::from_millis(500));
+        });
+
+        let info = DaemonInfo {
+            pid: 1,
+            pipe,
+            token: "test".to_owned(),
+            protocol: PROTOCOL_VERSION,
+            daemon_version: "test".to_owned(),
+            started_at_ms: 0,
+        };
+
+        // 请求放进线程 + 超时：回归时测试要**失败**，而不是把测试二进制一起挂住。
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result =
+                connect(&info, Duration::from_secs(5)).and_then(|mut client| client.ping());
+            let _ = sender.send(result.is_ok());
+        });
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(ok) => assert!(ok, "ping 应当成功"),
+            Err(_) => panic!("请求被先到的事件帧饿死了（回归）"),
+        }
+        let _ = daemon.join();
+    }
+}
