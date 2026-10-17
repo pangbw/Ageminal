@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::BufReader;
 use std::mem::ManuallyDrop;
 use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
@@ -241,7 +240,10 @@ fn serve_connection(
     // **只借用**句柄：`ManuallyDrop` 防止 `File` 析构时把它关掉——这个管道实例还要复用。
     let owned = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
     let stream: &File = &owned;
-    let mut reader = BufReader::new(stream);
+    // **不要 `BufReader`**：读之前要先 `PeekNamedPipe` 看管道，而 `BufReader` 会把后续帧吞进
+    // 用户态缓冲——管道看着是空的，peek 就永远等下去（#67 的 CI 实测：`<- Ack` 之后再也读不到
+    // 下一帧）。`Frame::read_from` 本来就按帧长精确读，不需要额外缓冲。
+    let mut reader = stream;
     let mut writer = stream;
 
     let Some(Message::Hello(hello)) = framed::read_message(&mut reader)? else {

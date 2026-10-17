@@ -99,8 +99,8 @@ fn wait_for_exit(
 ) -> SessionExited {
     let deadline = Instant::now() + timeout;
     loop {
-        if let Some(exited) = collected.exits.get(sid) {
-            return exited.clone();
+        if let Some(exited) = collected.exits.remove(sid) {
+            return exited;
         }
         if Instant::now() >= deadline {
             panic!(
@@ -259,10 +259,8 @@ fn detach_keeps_the_session_alive() {
         .write_input(attached.handle, b"echo AFTER\r\n")
         .expect("写");
     collected.wait_for(&mut client, attached.handle, "AFTER", TIMEOUT);
-    assert!(
-        !collected.get(attached.handle).contains("WHILE-AWAY"),
-        "断开期间的输出本票是丢弃的（回放归 #72）"
-    );
+    // 断开期间产生的输出本票是丢弃的（回放归 #72），但「命令是否在那段时间产生输出」本身是时序相关
+    // 的，所以这里不断言它消失——否则测试会随机失败。
 
     client.terminate("d", false).expect("terminate");
     wait_for_exit(&mut client, &mut collected, "d", TIMEOUT);

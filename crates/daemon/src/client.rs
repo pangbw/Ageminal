@@ -24,7 +24,6 @@
 
 use std::collections::VecDeque;
 use std::fs::File;
-use std::io::BufReader;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::ptr;
 use std::time::{Duration, Instant};
@@ -54,7 +53,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// 与 daemon 的一条**已握手**连接。
 #[derive(Debug)]
 pub struct Client {
-    reader: BufReader<File>,
+    reader: File,
     writer: File,
     /// 请求-响应时「抢跑」收到的事件，留给 [`Client::next_event`]。
     pending: VecDeque<Message>,
@@ -194,7 +193,7 @@ impl Client {
             let mut available: u32 = 0;
             let ok = unsafe {
                 PeekNamedPipe(
-                    self.reader.get_ref().as_raw_handle(),
+                    self.reader.as_raw_handle(),
                     ptr::null_mut(),
                     0,
                     ptr::null_mut(),
@@ -254,7 +253,8 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
     let stream = unsafe { File::from_raw_handle(handle) };
     // 读走 `BufReader`、写留副本：`File` 不能同时被两处可变借用，而管道句柄可以 `DuplicateHandle`。
     let mut writer = stream.try_clone().map_err(DaemonError::from)?;
-    let mut reader = BufReader::new(stream);
+    // 与 daemon 侧同理：**不套 `BufReader`**，否则 peek 看不到被缓冲的帧（见模块文档）。
+    let mut reader = stream;
 
     framed::send(
         &mut writer,
