@@ -112,6 +112,9 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
         Err(other) => return Err(other),
     };
 
+    // 脱离 stdout 的进程里，panic 默认写到 NUL 里——完全不可见。装个钩子把它落进 daemon.log。
+    install_panic_hook(&log_path);
+
     let info = DaemonInfo {
         pid: std::process::id(),
         pipe: config.pipe.clone(),
@@ -137,6 +140,17 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
         &format!("停止：{}", if result.is_ok() { "正常" } else { "异常" }),
     );
     result
+}
+
+/// 把所有线程的 panic 记进 daemon 日志。
+///
+/// daemon 的 stdio 三句柄全是 NUL（§5.1 的硬性要求），所以不装这个钩子的话，任何线程 panic 都是
+/// **完全静默**的——排查起来连线索都没有。
+fn install_panic_hook(log_path: &Path) {
+    let log_path = log_path.to_path_buf();
+    std::panic::set_hook(Box::new(move |info| {
+        logging::append(&log_path, &format!("panic：{info}"));
+    }));
 }
 
 /// 拥有管道 HANDLE；析构即 `CloseHandle`。
@@ -270,7 +284,7 @@ fn serve_connection(
     });
 
     let handles = HandleMap::new();
-    let result = read_loop(&mut reader, sessions, &outbound, &handles);
+    let result = read_loop(&mut reader, sessions, &outbound, &handles, log_path);
 
     outbound.close();
     match writer_thread.join() {
@@ -289,12 +303,17 @@ fn read_loop(
     sessions: &Arc<SessionTable>,
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
+    log_path: &Path,
 ) -> Result<(), DaemonError> {
     loop {
         match framed::read_message(reader) {
             // 对端在帧边界处正常关闭。
             Ok(None) => return Ok(()),
-            Ok(Some(message)) => dispatch(message, sessions, outbound, handles)?,
+            Ok(Some(message)) => {
+                // TODO(#67 诊断)：定位完删掉。
+                logging::append(log_path, &format!("<- {:?}", message.kind()));
+                dispatch(message, sessions, outbound, handles, log_path)?
+            }
             Err(error) => return Err(error),
         }
     }
@@ -309,9 +328,15 @@ fn dispatch(
     sessions: &Arc<SessionTable>,
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
+    log_path: &Path,
 ) -> Result<(), DaemonError> {
     match message {
-        Message::Ping => outbound.send_control(&Message::Pong),
+        Message::Ping => {
+            // TODO(#67 诊断)：定位「握手过、pong 不到」后删掉这两行。
+            let sent = outbound.send_control(&Message::Pong);
+            logging::append(log_path, &format!("-> pong ok={}", sent.is_ok()));
+            sent
+        }
         Message::CreateSession(request) => {
             let handle = handles.handle_for(&request.sid);
             let result = sessions.create(&request, handle, Arc::clone(outbound));

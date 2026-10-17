@@ -63,7 +63,14 @@ impl Spawned {
     pub fn start(fixture: &Fixture) -> Self {
         let child =
             launch::spawn_detached(fixture.exe(), &fixture.pipe, &fixture.config_dir).unwrap();
-        let info = launch::wait_ready(&fixture.config_dir, launch::READY_TIMEOUT).unwrap();
+        // 失败时把 daemon 自己的日志一起打出来——脱离 stdout 的进程，日志是唯一线索。
+        let info = match launch::wait_ready(&fixture.config_dir, launch::READY_TIMEOUT) {
+            Ok(info) => info,
+            Err(error) => panic!(
+                "daemon 没就绪：{error}\n--- daemon.log ---\n{}",
+                daemon_log(fixture)
+            ),
+        };
         Self { child, info }
     }
 }
