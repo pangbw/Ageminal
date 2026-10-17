@@ -14,11 +14,15 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
+
+use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
 use ageminal_protocol::{Attached, CreateSession, Message, SessionCreated, SessionExited};
 
@@ -45,8 +49,11 @@ struct Session {
     sid: String,
     /// 本次 spawn 的世代。**迟到 exit 靠它判**。
     incarnation_id: String,
-    /// PTY 控制端（resize / terminate / 等退出）。
-    control: Mutex<Box<dyn Pty>>,
+    /// PTY 控制端（resize / terminate）。**可取走**：`terminate` 把 PTY 交给独立线程去关，
+    /// 免得 `ClosePseudoConsole` 等 conout 排空时卡住连接线程。
+    control: Mutex<Option<Box<dyn Pty>>>,
+    /// 只用于「等退出」的进程句柄——**不经 `control` 锁**，否则 terminate 一卡，退出事件也发不出来。
+    exit: Option<OwnedHandle>,
     /// PTY 写端（键盘输入）。
     writer: Mutex<Box<dyn Write + Send>>,
     /// 输出用的累计字节偏移。
@@ -100,6 +107,8 @@ impl SessionTable {
 
         let mut control = pty::spawn(&spec_from(request))?;
         let pid = control.pid();
+        // 解耦「等退出」：自己开一个进程句柄，`terminate` 阻塞也不会影响退出事件。
+        let exit = crate::win::open_process(pid)?;
         let reader = control.take_reader().ok_or_else(|| DaemonError::Protocol {
             reason: "PTY 没有输出流".to_owned(),
         })?;
@@ -114,7 +123,8 @@ impl SessionTable {
         let session = Arc::new(Session {
             sid: request.sid.clone(),
             incarnation_id: incarnation_id.clone(),
-            control: Mutex::new(control),
+            control: Mutex::new(Some(control)),
+            exit: Some(exit),
             writer: Mutex::new(writer),
             seq: AtomicU64::new(0),
             acked_bytes: AtomicU64::new(0),
@@ -123,7 +133,9 @@ impl SessionTable {
 
         // spawn 期间表可能被别的连接塞进同名会话（单连接下不会，但别赌）。
         if let Some(existing) = self.insert(session.clone()) {
-            let _ = existing.control.lock().expect("pty").terminate();
+            if let Some(mut pty) = existing.control.lock().expect("control").take() {
+                let _ = pty.terminate();
+            }
             return Err(DaemonError::Session {
                 reason: format!("会话 {} 还活着；要重开请先 terminate", request.sid),
             });
@@ -193,14 +205,29 @@ impl SessionTable {
     /// （优雅路径要等 Agent 页签那批票）。
     pub fn terminate(&self, sid: &str, _force: bool) -> Result<(), DaemonError> {
         let session = self.get(sid)?;
-        session.control.lock().expect("pty").terminate()?;
+        // 把 PTY **取出来**（锁只持有一瞬），再交给独立线程去关：
+        // `ClosePseudoConsole` 要等 conout 排空，会话刚创建就终止时这一步可能很久。
+        let pty = session.control.lock().expect("control").take();
+        let Some(mut pty) = pty else {
+            return Ok(()); // 已经终止过：幂等。
+        };
+        std::thread::spawn(move || {
+            let _ = pty.terminate();
+            drop(pty);
+        });
         Ok(())
     }
 
     /// 改尺寸。
     pub fn resize(&self, sid: &str, size: PtySize) -> Result<(), DaemonError> {
         let session = self.get(sid)?;
-        session.control.lock().expect("pty").resize(size)?;
+        let control = session.control.lock().expect("control");
+        let Some(pty) = control.as_ref() else {
+            return Err(DaemonError::Session {
+                reason: format!("会话 {sid} 已终止"),
+            });
+        };
+        pty.resize(size)?;
         Ok(())
     }
 
@@ -281,32 +308,41 @@ fn spawn_output_pump(session: Arc<Session>, mut reader: Box<dyn Read + Send>) {
 
 /// exit 监视线程：轮询（不是阻塞 `wait`——同一个 `Pty` 还要被 resize / terminate 用）。
 fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
-    thread::spawn(move || loop {
-        let status = {
-            let mut control = session.control.lock().expect("pty");
-            control.try_wait()
+    thread::spawn(move || {
+        // 句柄在 `session` 里（`OwnedHandle`，Send）；裸 HANDLE 是 `*mut c_void`，不能直接跨线程。
+        let Some(exit) = session.exit.as_ref() else {
+            return;
         };
-        match status {
-            Ok(Some(status)) => {
-                if table.remove_if_current(&session.sid, &session.incarnation_id) {
-                    let attachment = session.attachment.lock().expect("attachment").clone();
-                    if let Some(attachment) = attachment {
-                        let _ = attachment.outbound.send_control(&Message::SessionExited(
-                            SessionExited {
-                                sid: session.sid.clone(),
-                                incarnation_id: session.incarnation_id.clone(),
-                                // Windows 退出码是 u32；按位转 i32（0xC000_0005 显示成负数，
-                                // 与任务管理器的惯例一致）。
-                                exit_code: Some(status.code as i32),
-                            },
-                        ));
+        let handle = exit.as_raw_handle();
+        loop {
+            match unsafe { WaitForSingleObject(handle, 0) } {
+                WAIT_OBJECT_0 => {
+                    let mut code: u32 = 0;
+                    if unsafe { GetExitCodeProcess(handle, &mut code) } == 0 {
+                        return;
                     }
+
+                    // 只有「表里当前这一代」才上报（迟到 exit 按 incarnationId 丢弃）。
+                    if table.remove_if_current(&session.sid, &session.incarnation_id) {
+                        let attachment = session.attachment.lock().expect("attachment").clone();
+                        if let Some(attachment) = attachment {
+                            let _ = attachment.outbound.send_control(&Message::SessionExited(
+                                SessionExited {
+                                    sid: session.sid.clone(),
+                                    incarnation_id: session.incarnation_id.clone(),
+                                    // Windows 退出码是 u32；按位转 i32（0xC000_0005 显示成负数，
+                                    // 与任务管理器的惯例一致）。
+                                    exit_code: Some(code as i32),
+                                },
+                            ));
+                        }
+                    }
+                    return;
                 }
-                return;
+                WAIT_TIMEOUT => thread::sleep(EXIT_POLL),
+                // 句柄失效：没什么可上报的。
+                _ => return,
             }
-            Ok(None) => thread::sleep(EXIT_POLL),
-            // PTY 已经问不动了（被 drop / 句柄失效）：没什么可上报的。
-            Err(_) => return,
         }
     });
 }
@@ -439,7 +475,8 @@ mod tests {
         Arc::new(Session {
             sid: sid.to_owned(),
             incarnation_id: incarnation_id.to_owned(),
-            control: Mutex::new(Box::new(FakePty)),
+            control: Mutex::new(Some(Box::new(FakePty))),
+            exit: None,
             writer: Mutex::new(Box::new(std::io::sink())),
             seq: AtomicU64::new(0),
             acked_bytes: AtomicU64::new(0),

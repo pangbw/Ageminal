@@ -5,6 +5,7 @@
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
+use std::os::windows::io::{FromRawHandle, OwnedHandle};
 
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
 use windows_sys::Win32::Security::Cryptography::{
@@ -40,6 +41,26 @@ pub fn hex(bytes: &[u8]) -> String {
 }
 
 /// 当前进程用户的 SID 字节（`Revision | SubAuthorityCount | Authority(6) | SubAuthority×n`）。
+///
+/// 按 pid 打开进程句柄，只用于「等它退出」。
+///
+/// 会话层用它把「观察退出」和「控制 PTY」解耦：`terminate` 里的 `ClosePseudoConsole` 可能长时间
+/// 阻塞，观察者不该被同一把锁卡住（#67 的 CI 实测：刚创建就终止时，退出事件永远发不出来）。
+pub fn open_process(pid: u32) -> Result<OwnedHandle, DaemonError> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    /// 标准访问权限，`WaitForSingleObject` 要它。windows-sys 没导出这个名字，按 SDK 的取值写死。
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+    if handle.is_null() {
+        return Err(windows_error("OpenProcess"));
+    }
+    // SAFETY：句柄所有权交给 `OwnedHandle`，由它负责关闭。
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
+/// 当前用户的 SID（字节串）。
 ///
 /// 用字节而不是 `ConvertSidToStringSidW` 的字符串形式：我们只需要一个**稳定、按用户隔离**
 /// 的标识（喂给管道名与 DACL），不追求可读。
