@@ -10,15 +10,19 @@
 //! `ERROR_PIPE_BUSY`；而 daemon 不关连接，读线程也永远等不到 EOF。（CI 上真踩过：握手能过、
 //! `ping` 拿不到回复，随后所有连接都连不上。）
 //!
-//! 所以这里是**单线程 + `PeekNamedPipe` 轮询**：没有常驻线程，`drop` 时两个句柄一起关，daemon
-//! 立刻看到 EOF。轮询间隔 5 ms，对无 UI 的集成测试完全够用；#68 的 app-core 需要真正的异步读
-//! （Tauri Channel），届时再按那边的生命周期重做，别把读线程塞进一个「随时可能被 drop」的对象里。
+//! 所以这里是**单线程 + 阻塞读**：没有常驻线程，`drop` 时两个句柄一起关，daemon 立刻看到 EOF。
+//!
+//! 也试过用 `PeekNamedPipe` 轮询来加读超时——**不可行**：daemon 侧写一帧时，`WriteFile` 要等
+//! 对端**读**才完成，而 peek 在写完成前看不到数据，于是「客户端等 peek 有数据、daemon 等客户端读」
+//! 互锁（CI 实测：daemon 收到了 Ping，写调用一直不返回，客户端 20 s 一点数据都没看到）。
+//!
+//! 结论：读就是阻塞读。真要超时/取消，得把客户端句柄开成 `FILE_FLAG_OVERLAPPED` 并全程走
+//! `OVERLAPPED`——那是 #68 的事（那边本来就需要按 Tauri Channel 的生命周期做异步读）。
 
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::BufReader;
-use std::os::windows::io::{AsRawHandle, FromRawHandle};
-use std::ptr;
+use std::os::windows::io::FromRawHandle;
 use std::time::{Duration, Instant};
 
 use ageminal_protocol::{
@@ -29,21 +33,13 @@ use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING};
-use windows_sys::Win32::System::Pipes::{PeekNamedPipe, WaitNamedPipeW};
+use windows_sys::Win32::System::Pipes::WaitNamedPipeW;
 
 use crate::pty::PtySize;
 use crate::{framed, win, DaemonError, DaemonInfo};
 
 /// 管道忙时的单次重试等待（`WaitNamedPipeW` 的毫秒数）。
 const RETRY_WAIT_MS: u32 = 250;
-
-/// 请求-响应的等待上限。
-///
-/// **不能无限等**：daemon 一旦卡住，调用方（乃至 CI）会一起挂死，而且什么线索都不留。
-const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// 等管道可读时的轮询间隔。
-const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// 与 daemon 的一条**已握手**连接。
 #[derive(Debug)]
@@ -150,68 +146,29 @@ impl Client {
         )
     }
 
-    /// 等下一条**事件**（`Data` / `SessionExited`）；超时返回 `None`。
-    pub fn next_event(&mut self, timeout: Duration) -> Result<Option<Message>, DaemonError> {
+    /// 等下一条**事件**（`Data` / `SessionExited`）。**阻塞**，见模块文档。
+    pub fn next_event(&mut self) -> Result<Message, DaemonError> {
         if let Some(message) = self.pending.pop_front() {
-            return Ok(Some(message));
-        }
-        if !self.await_readable(Instant::now() + timeout)? {
-            return Ok(None);
+            return Ok(message);
         }
         self.read_incoming()
     }
 
-    /// 下一条入站消息（待取队列优先）；等到 `deadline` 还没有就返回 `None`。
-    fn next_incoming_before(&mut self, deadline: Instant) -> Result<Option<Message>, DaemonError> {
+    /// 下一条入站消息（待取队列优先；否则阻塞读）。
+    fn next_incoming(&mut self) -> Result<Message, DaemonError> {
         if let Some(message) = self.pending.pop_front() {
-            return Ok(Some(message));
-        }
-        if !self.await_readable(deadline)? {
-            return Ok(None);
+            return Ok(message);
         }
         self.read_incoming()
     }
 
-    /// 读一条（调用前应已确认可读）。
-    fn read_incoming(&mut self) -> Result<Option<Message>, DaemonError> {
+    /// 阻塞读一条。
+    fn read_incoming(&mut self) -> Result<Message, DaemonError> {
         match framed::read_message(&mut self.reader)? {
-            Some(message) => Ok(Some(message)),
+            Some(message) => Ok(message),
             None => Err(DaemonError::Protocol {
                 reason: "daemon 关闭了连接".to_owned(),
             }),
-        }
-    }
-
-    /// 等管道里有字节可读；`deadline` 前没有就返回 `false`。
-    ///
-    /// 用 `PeekNamedPipe` 而不是后台读线程，原因见模块文档（读线程会把「关连接」这件事卡死）。
-    fn await_readable(&self, deadline: Instant) -> Result<bool, DaemonError> {
-        loop {
-            let mut available: u32 = 0;
-            let ok = unsafe {
-                PeekNamedPipe(
-                    self.reader.get_ref().as_raw_handle(),
-                    ptr::null_mut(),
-                    0,
-                    ptr::null_mut(),
-                    &mut available,
-                    ptr::null_mut(),
-                )
-            };
-            if ok == 0 {
-                return Err(DaemonError::NotRunning {
-                    reason: format!("PeekNamedPipe 失败：GetLastError={}", unsafe {
-                        GetLastError()
-                    }),
-                });
-            }
-            if available > 0 {
-                return Ok(true);
-            }
-            if Instant::now() >= deadline {
-                return Ok(false);
-            }
-            std::thread::sleep(POLL_INTERVAL);
         }
     }
 
@@ -224,16 +181,8 @@ impl Client {
         accept: impl Fn(&Message) -> bool,
     ) -> Result<Message, DaemonError> {
         framed::send(&mut self.writer, message)?;
-        let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            let incoming = match self.next_incoming_before(deadline)? {
-                Some(incoming) => incoming,
-                None => {
-                    return Err(DaemonError::Protocol {
-                        reason: format!("daemon 在 {RESPONSE_TIMEOUT:?} 内没有回应 {message:?}"),
-                    })
-                }
-            };
+            let incoming = self.next_incoming()?;
             if let Message::Error(ProtocolError { code, message }) = &incoming {
                 return Err(DaemonError::Rejected {
                     reason: format!("{code:?}：{message}"),

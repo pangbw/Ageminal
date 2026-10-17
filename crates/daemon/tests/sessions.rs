@@ -76,12 +76,7 @@ impl Collected {
                     self.text.get(&handle)
                 );
             }
-            if let Some(message) = client
-                .next_event(Duration::from_millis(200))
-                .expect("next_event")
-            {
-                self.absorb(message);
-            }
+            self.absorb(client.next_event().expect("next_event"));
         }
     }
 
@@ -90,7 +85,7 @@ impl Collected {
     }
 }
 
-/// 等某个会话的退出事件。
+/// 等某个会话的退出事件（先看已经攒下的，再继续收）。
 fn wait_for_exit(
     client: &mut client::Client,
     collected: &mut Collected,
@@ -98,25 +93,18 @@ fn wait_for_exit(
     timeout: Duration,
 ) -> SessionExited {
     let deadline = Instant::now() + timeout;
-    let mut other_exits = Vec::new();
-    while Instant::now() < deadline {
-        let Some(message) = client
-            .next_event(Duration::from_millis(200))
-            .expect("next_event")
-        else {
-            continue;
-        };
-        match message {
-            Message::SessionExited(exited) if exited.sid == sid => return exited,
-            other => {
-                collected.absorb(other.clone());
-                if let Message::SessionExited(exited) = other {
-                    other_exits.push(exited.sid);
-                }
-            }
+    loop {
+        if let Some(exited) = collected.exits.get(sid) {
+            return exited.clone();
         }
+        if Instant::now() >= deadline {
+            panic!(
+                "没等到 {sid} 的 sessionExited；已收到的退出：{:?}",
+                collected.exits.keys().collect::<Vec<_>>()
+            );
+        }
+        collected.absorb(client.next_event().expect("next_event"));
     }
-    panic!("没等到 {sid} 的 sessionExited；期间别的退出：{other_exits:?}");
 }
 
 /// 验收 1：create → 执行命令拿到字节 → ack → terminate 成功。
@@ -280,11 +268,8 @@ fn unknown_session_is_an_error_not_a_disconnect() {
     client
         .terminate("nope", false)
         .expect("terminate 本身只是发送");
-    let error = match client
-        .next_event(Duration::from_secs(10))
-        .expect("next_event")
-    {
-        Some(Message::Error(error)) => error,
+    let error = match client.next_event().expect("next_event") {
+        Message::Error(error) => error,
         other => panic!("应当回一条 Error，收到 {other:?}"),
     };
     assert!(
