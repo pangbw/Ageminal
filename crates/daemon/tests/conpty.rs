@@ -127,25 +127,47 @@ fn size_between(text: &str, tag: &str) -> Option<(u16, u16)> {
 /// 从 `mode con` 的输出里读 (列, 行)。
 ///
 /// `mode con` 的输出**是本地化**的（CI 上是英文、本机是中文），所以认两套标签：`Column`/`列` 与
-/// `Line`/`行`。值一律取最后一个冒号之后（中英文冒号都认）。
+/// `Line`/`行`。值取「冒号之后的第一串数字」——**不能要求整段都是数字**：ConPTY 在 resize 之后
+/// 重绘屏幕时，每行尾部都会带 `\x1b[K`（erase-line），`"43\x1b[K"` 是解析不出来的（CI 上真踩过）。
+///
+/// 万一两套标签都没认出来（别的语言），按位置兜底：`mode con` 的字段顺序是 **Lines → Columns**。
 fn parse_console_size(body: &str) -> Option<(u16, u16)> {
     let mut columns = None;
     let mut lines = None;
     for line in body.lines() {
         let lower = line.to_lowercase();
-        let value = || {
-            line.rsplit([':', '：'])
-                .next()
-                .map(str::trim)
-                .and_then(|tail| tail.parse::<u16>().ok())
-        };
+        let value = || number_after_colon(line);
         if columns.is_none() && (lower.contains("column") || line.contains('列')) {
             columns = value();
         } else if lines.is_none() && (lower.contains("line") || line.contains('行')) {
             lines = value();
         }
     }
-    Some((columns?, lines?))
+    if let (Some(columns), Some(lines)) = (columns, lines) {
+        return Some((columns, lines));
+    }
+
+    // 位置兜底：前两个数字依次是行数、列数。
+    let numbers: Vec<u16> = body
+        .lines()
+        .filter_map(number_after_colon)
+        .take(2)
+        .collect();
+    match numbers.as_slice() {
+        [lines, columns] => Some((*columns, *lines)),
+        _ => None,
+    }
+}
+
+/// 取冒号之后的第一串数字（中英文冒号都认）。
+fn number_after_colon(line: &str) -> Option<u16> {
+    let tail = line.rsplit([':', '：']).next().unwrap_or(line);
+    let start = tail.find(|character: char| character.is_ascii_digit())?;
+    let digits: String = tail[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
 }
 
 fn cmd_spec(size: PtySize) -> PtySpec {
@@ -362,4 +384,35 @@ fn injected_environment_reaches_the_child() {
     );
 
     let _ = session.terminate();
+}
+
+/// 解析器的回归锁。
+///
+/// 形状**逐字取自 CI 日志**：resize 之后 ConPTY 会重绘屏幕，每行尾部都带 `\x1b[K`
+/// （erase-line）——第一版解析器就是被它坑的（`"43\x1b[K".parse()` 失败，断言拿到 `None`）。
+#[test]
+fn parses_mode_con_output_with_erase_sequences_and_both_locales() {
+    let english = concat!(
+        "\r\nStatus for device CON:\r\n",
+        "----------------------\r\n",
+        "    Lines:          43\u{1b}[K\r\n",
+        "    Columns:        132\u{1b}[K\r\n",
+        "    Keyboard rate:  31\u{1b}[K\r\n",
+        "    Keyboard delay: 1\u{1b}[K\r\n",
+        "    Code page:      437\u{1b}[K\r\n",
+    );
+    assert_eq!(parse_console_size(english), Some((132, 43)));
+
+    let chinese = concat!(
+        "\r\n设备 CON 的状态:\r\n",
+        "----------------------\r\n",
+        "    行:             43\r\n",
+        "    列:            132\r\n",
+        "    键盘速率:        31\r\n",
+    );
+    assert_eq!(parse_console_size(chinese), Some((132, 43)));
+
+    // 标签完全不认识（别的语言）：按位置兜底——`mode con` 的顺序是 Lines → Columns。
+    let positional = "X:\r\n  1: 43\r\n  2: 132\r\n";
+    assert_eq!(parse_console_size(positional), Some((132, 43)));
 }
