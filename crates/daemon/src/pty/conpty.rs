@@ -3,29 +3,30 @@
 //! # 三条硬约束
 //!
 //! 全部来自 `REQUIREMENTS.md` §5.1（#40 真机实测，已与 MS 官方样例 / `portable-pty` 一手实现
-//! 核对）。**每一条都是「沉默失败」型**：写错了不报错，只是终端里什么都没有。
+//! 核对）。三条都**不靠返回值报错**——写错了 `CreateProcessW` 往往照样成功，只是行为不对：
 //!
 //! 1. [`UpdateProcThreadAttribute`] 的 `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`，`lpValue` 必须是
 //!    **句柄值本身**，不是 `&hpc`。传地址会让 Windows **另开一个控制台窗口**，子进程跑到那个
 //!    控制台上——pty 管道里一个字节都收不到。
-//! 2. [`CreatePipe`] 的两端要等 **`CreateProcessW` 之后**才释放。
+//! 2. [`CreatePipe`] 的两端要等 **`CreateProcessW` 之后**才释放，否则 ConPTY 的通道是断的。
 //! 3. 子进程必须显式 `STARTF_USESTDHANDLES` + **三句柄 NULL**。否则 `CreateProcessW` 会把
 //!    daemon 的 NUL std handle 复制给子进程 → `cmd` 读 stdin 立刻 EOF → **干净退 0**
-//!    （只有一段开场序列，没有任何错误）。
+//!    （只有一段开场序列，没有任何错误）——三条里最阴的一条。
 //!
 //! 回归测试的对应关系写在 `tests/conpty.rs` 顶部。
 //!
 //! # 关闭顺序
 //!
-//! `ClosePseudoConsole` 会**终止整棵进程树**，但它要等 conout 排空——所以调用
-//! [`Pty::terminate`] 时，输出流必须已经取走并有人持续在读，否则会卡住
-//! （`docs/research/zed-terminal.md` §3.2）。
+//! `ClosePseudoConsole` 会**终止整棵进程树**，但它要等 conout 排空；MS 文档的原话是
+//! 「failure to either close or drain the output pipe may cause `ClosePseudoConsole` to wait
+//! indefinitely」。所以调用 [`Pty::terminate`] 时，输出流必须已经取走并有人持续在读。
+//! [`Drop`] 只能对**还没被取走**的那一半兜底（自己起线程排空）；取走的那一半归调用方。
 
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::mem::size_of;
-use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr;
 
 use windows_sys::Win32::Foundation::{
@@ -34,7 +35,6 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::Console::{
     ClosePseudoConsole, CreatePseudoConsole, ResizePseudoConsole, COORD, HPCON,
 };
-use windows_sys::Win32::System::Environment::{FreeEnvironmentStringsW, GetEnvironmentStringsW};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
@@ -43,12 +43,15 @@ use windows_sys::Win32::System::Threading::{
     PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
-use super::{ExitStatus, Pty, PtyError, PtySize, PtySpec};
+use super::wincmd::{command_line, environment_block};
+use super::{windows_error, ExitStatus, Pty, PtyError, PtySize, PtySpec};
 
 /// 建伪控制台时**不开任何 flag**。
 ///
-/// - `PSEUDOCONSOLE_INHERIT_CURSOR` 是把父控制台的光标位置抄给子会话——daemon 没有父控制台。
-/// - `PSEUDOCONSOLE_RESIZE_QUIRK` 是给「不支持 resize 的老程序」打的兼容补丁，我们不需要。
+/// - `PSEUDOCONSOLE_INHERIT_CURSOR` 是把父控制台的光标位置抄给子会话——daemon 是
+///   `DETACHED_PROCESS`（§5.1），没有父控制台。
+/// - `PSEUDOCONSOLE_RESIZE_QUIRK` 是给「不支持 resize 的老程序」打的兼容补丁；本票验收只要
+///   「resize 生效」，真遇到老程序再说。
 /// - `PSEUDOCONSOLE_WIN32_INPUT_MODE` 会把输入按 Win32 控制台语义翻译；我们要的是 **VT 输入**
 ///   （xterm.js 发上来的是原始字节），所以不能开。
 const PSEUDOCONSOLE_FLAGS: u32 = 0;
@@ -80,8 +83,9 @@ pub fn spawn(spec: &PtySpec) -> Result<Box<dyn Pty>, PtyError> {
             reason: format!("HRESULT=0x{:08X}", result as u32),
         });
     }
+    let mut hpc = Hpcon(hpc);
 
-    let child = spawn_child(hpc, spec);
+    let child = spawn_child(hpc.get(), spec);
 
     // **约束②**：`CreateProcessW` 已经返回，这时候才能放掉控制台侧的两端。
     // 提前放会断掉 ConPTY 的通道（子进程起来也收不到/发不出字节）。
@@ -91,7 +95,7 @@ pub fn spawn(spec: &PtySpec) -> Result<Box<dyn Pty>, PtyError> {
         Ok(child) => child,
         Err(error) => {
             // 先关控制台，再放剩下的管道：反过来可能撞上「排空等待」而卡住。
-            unsafe { ClosePseudoConsole(hpc) };
+            hpc.close();
             close_handles(&[conin_write, conout_read]);
             return Err(error);
         }
@@ -101,33 +105,55 @@ pub fn spawn(spec: &PtySpec) -> Result<Box<dyn Pty>, PtyError> {
         hpc,
         process,
         pid,
-        // SAFETY：这两个句柄的所有权从此刻起归 `File`；`ConPty` 只持有 HPCON 与进程句柄。
+        // SAFETY：这两个句柄的所有权从此刻起归 `File`。
         reader: Some(Box::new(unsafe { File::from_raw_handle(conout_read) })),
         writer: Some(Box::new(unsafe { File::from_raw_handle(conin_write) })),
-        terminated: false,
     }))
+}
+
+/// 伪控制台句柄的薄包装：`close()` 幂等，`Drop` 兜底再关一次。
+///
+/// 单独建类型是为了让所有权显式——`HPCON` 只是个 `isize` 句柄值，裸放着很容易漏关，也容易被
+/// 当成普通整数传错。
+struct Hpcon(isize);
+
+impl Hpcon {
+    /// 关掉伪控制台（= 终止整棵进程树）。幂等。
+    fn close(&mut self) {
+        if self.0 != 0 {
+            unsafe { ClosePseudoConsole(self.0) };
+            self.0 = 0;
+        }
+    }
+
+    fn get(&self) -> HPCON {
+        self.0
+    }
+
+    fn is_open(&self) -> bool {
+        self.0 != 0
+    }
+}
+
+impl Drop for Hpcon {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 /// ConPTY 会话。
 struct ConPty {
     /// 持有它 = 持有终端；`ClosePseudoConsole` 即终止整棵进程树。
-    hpc: HPCON,
-    /// 子进程句柄（等退出用）。
-    process: HANDLE,
+    hpc: Hpcon,
+    /// 子进程句柄（等退出用）；`OwnedHandle` 负责关闭。
+    process: OwnedHandle,
     /// 子进程 pid。
     pid: u32,
     /// conout 读端（取走后归调用方）。
     reader: Option<Box<dyn Read + Send>>,
     /// conin 写端（取走后归调用方）。
     writer: Option<Box<dyn Write + Send>>,
-    /// 是否已关过控制台（让 `terminate` 幂等、`Drop` 不重复关）。
-    terminated: bool,
 }
-
-// SAFETY：`HANDLE` 是裸指针，只是**进程级句柄表里的索引**，内核对象本身不属于任何线程。
-// 把会话的所有权移交给另一个线程是安全的（与 `std::fs::File` 同理）；并发访问仍受 `&mut self`
-// 约束（`resize` / `pid` 是只读，`terminate` / `wait` 要独占）。
-unsafe impl Send for ConPty {}
 
 impl Pty for ConPty {
     fn pid(&self) -> u32 {
@@ -135,10 +161,10 @@ impl Pty for ConPty {
     }
 
     fn resize(&self, size: PtySize) -> Result<(), PtyError> {
-        if self.terminated {
+        if !self.hpc.is_open() {
             return Err(PtyError::Terminated);
         }
-        let result = unsafe { ResizePseudoConsole(self.hpc, coord(size)) };
+        let result = unsafe { ResizePseudoConsole(self.hpc.get(), coord(size)) };
         if result < 0 {
             return Err(PtyError::Windows {
                 call: "ResizePseudoConsole",
@@ -157,28 +183,24 @@ impl Pty for ConPty {
     }
 
     fn wait(&mut self) -> Result<ExitStatus, PtyError> {
-        if unsafe { WaitForSingleObject(self.process, INFINITE) } != WAIT_OBJECT_0 {
+        let process = self.process.as_raw_handle();
+        if unsafe { WaitForSingleObject(process, INFINITE) } != WAIT_OBJECT_0 {
             return Err(windows_error("WaitForSingleObject"));
         }
-        exit_status(self.process)
+        exit_status(process)
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitStatus>, PtyError> {
-        match unsafe { WaitForSingleObject(self.process, 0) } {
-            WAIT_OBJECT_0 => exit_status(self.process).map(Some),
+        let process = self.process.as_raw_handle();
+        match unsafe { WaitForSingleObject(process, 0) } {
+            WAIT_OBJECT_0 => exit_status(process).map(Some),
             WAIT_TIMEOUT => Ok(None),
             _ => Err(windows_error("WaitForSingleObject")),
         }
     }
 
     fn terminate(&mut self) -> Result<(), PtyError> {
-        if self.terminated {
-            return Ok(());
-        }
-        self.terminated = true;
-        unsafe { ClosePseudoConsole(self.hpc) };
-        // 句柄已经关了，别再拿着这个值去调 API。
-        self.hpc = 0;
+        self.hpc.close();
         Ok(())
     }
 }
@@ -186,13 +208,33 @@ impl Pty for ConPty {
 impl Drop for ConPty {
     fn drop(&mut self) {
         // 兜底：谁忘了 terminate，也别把会话泄漏在后台。
-        let _ = self.terminate();
-        unsafe { CloseHandle(self.process) };
+        //
+        // 关控制台要等 conout 排空，而 `Drop` 里没法同步去读（会把自己卡死）。所以：
+        // **输出流还在我们手上**就起个后台线程把它读到 EOF；已经取走的那一半归调用方
+        // （见 [`Pty::terminate`] 的约定）。
+        if let Some(reader) = self.reader.take() {
+            drain_in_background(reader);
+        }
+        self.hpc.close();
     }
 }
 
+/// 把输出流读到 EOF（后台线程），只为让 `ClosePseudoConsole` 能排空。
+fn drain_in_background(mut reader: Box<dyn Read + Send>) {
+    std::thread::spawn(move || {
+        let mut buffer = [0u8; 4096];
+        while matches!(reader.read(&mut buffer), Ok(read) if read > 0) {}
+    });
+}
+
 /// 建属性列表 → 挂上伪控制台 → `CreateProcessW`。返回 `(进程句柄, pid)`。
-fn spawn_child(hpc: HPCON, spec: &PtySpec) -> Result<(HANDLE, u32), PtyError> {
+fn spawn_child(hpc: HPCON, spec: &PtySpec) -> Result<(OwnedHandle, u32), PtyError> {
+    // 先把**可能失败**的东西都造好：命令行、环境块。放在属性列表之前，免得 `?` 早退时
+    // 要记得 `DeleteProcThreadAttributeList`（第一版就漏了这条）。
+    let mut command_line = to_wide(&command_line(&spec.program, &spec.args));
+    let current_directory = to_wide(&spec.cwd.to_string_lossy());
+    let environment = environment_block(&spec.env)?;
+
     // 属性列表的大小要先问一次：用 NULL 调用必然失败（`ERROR_INSUFFICIENT_BUFFER`），
     // 但 `*size` 会被填上需要多少字节——这是官方规定的用法。
     let mut attribute_bytes: usize = 0;
@@ -235,10 +277,6 @@ fn spawn_child(hpc: HPCON, spec: &PtySpec) -> Result<(HANDLE, u32), PtyError> {
     startup.StartupInfo.hStdOutput = ptr::null_mut();
     startup.StartupInfo.hStdError = ptr::null_mut();
 
-    let mut command_line = to_wide(&command_line(&spec.program, &spec.args));
-    let current_directory = to_wide(&spec.cwd.to_string_lossy());
-    let environment = environment_block(&spec.env)?;
-
     let mut info = PROCESS_INFORMATION::default();
     let created = unsafe {
         CreateProcessW(
@@ -271,14 +309,19 @@ fn spawn_child(hpc: HPCON, spec: &PtySpec) -> Result<(HANDLE, u32), PtyError> {
         }),
         None => {
             unsafe { CloseHandle(info.hThread) };
-            Ok((info.hProcess, info.dwProcessId))
+            // SAFETY：`hProcess` 的所有权交给 `OwnedHandle`，之后只由它关。
+            Ok((
+                unsafe { OwnedHandle::from_raw_handle(info.hProcess) },
+                info.dwProcessId,
+            ))
         }
     }
 }
 
 /// 硬约束①的实现点：把 HPCON **当作值**塞进指针槽位。
 ///
-/// 单独抽成函数是为了能被回归测试盯住（见 `tests/conpty.rs`）。
+/// 注意：这个单测只盯住**本函数**；调用点若改传 `&hpc`，抓它的是
+/// `tests/conpty.rs` 里那条真进程测试（传地址会让子进程跑到另一个控制台上，pty 里收不到字节）。
 fn pseudo_console_attribute_value(hpc: HPCON) -> *const c_void {
     hpc as *const c_void
 }
@@ -320,116 +363,9 @@ fn exit_status(process: HANDLE) -> Result<ExitStatus, PtyError> {
     Ok(ExitStatus { code })
 }
 
-/// 取 `GetLastError` 并包成 [`PtyError`]。
-fn windows_error(call: &'static str) -> PtyError {
-    PtyError::Windows {
-        call,
-        reason: format!("GetLastError={}", unsafe { GetLastError() }),
-    }
-}
-
 /// 拼成以 NUL 结尾的 UTF-16。
 fn to_wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-/// 拼命令行（`CreateProcessW` 的 `lpCommandLine`）。
-fn command_line(program: &str, args: &[String]) -> String {
-    let mut line = String::new();
-    append_argument(&mut line, program);
-    for arg in args {
-        line.push(' ');
-        append_argument(&mut line, arg);
-    }
-    line
-}
-
-/// 按 `CommandLineToArgvW` 的反解析规则追加一个参数。
-///
-/// 三件事：需要时整体加引号；引号内的 `"` 用 `\"` 转义、紧邻引号的反斜杠要翻倍；结尾的反斜杠
-/// 也要翻倍，否则会把**收尾**引号转义掉（`"C:\a b\"` 会被解析成未闭合）。
-fn append_argument(line: &mut String, argument: &str) {
-    let needs_quotes = argument.is_empty() || argument.contains([' ', '\t', '"']);
-
-    if !needs_quotes {
-        line.push_str(argument);
-        return;
-    }
-
-    line.push('"');
-    let mut backslashes = 0usize;
-    for character in argument.chars() {
-        match character {
-            '\\' => backslashes += 1,
-            '"' => {
-                // 2n 个反斜杠 + 引号 → n 个反斜杠 + 转义引号。
-                line.extend(std::iter::repeat('\\').take(backslashes * 2 + 1));
-                line.push('"');
-                backslashes = 0;
-            }
-            other => {
-                line.extend(std::iter::repeat('\\').take(backslashes));
-                line.push(other);
-                backslashes = 0;
-            }
-        }
-    }
-    // 结尾反斜杠若紧贴收尾引号，必须翻倍。
-    line.extend(std::iter::repeat('\\').take(backslashes * 2));
-    line.push('"');
-}
-
-/// 构造 `CREATE_UNICODE_ENVIRONMENT` 要的环境块：继承 daemon 的环境 + `overrides`，
-/// 按 Windows 的要求**按名字排序**、**双 NUL 结尾**。
-fn environment_block(overrides: &[(String, String)]) -> Result<Vec<u16>, PtyError> {
-    let mut entries = inherited_environment()?;
-
-    for (name, value) in overrides {
-        // Windows 的环境变量名**不区分大小写**：覆盖时要连不同大小写的同名项一起删掉。
-        entries.retain(|(existing, _)| !existing.eq_ignore_ascii_case(name));
-        entries.push((name.clone(), value.clone()));
-    }
-
-    // 官方要求按名字排序（不区分大小写），否则 `CreateProcessW` 建出来的块不符合约定。
-    entries.sort_by_key(|(name, _)| name.to_uppercase());
-
-    let mut block = Vec::new();
-    for (name, value) in entries {
-        block.extend(name.encode_utf16());
-        block.push(u16::from(b'='));
-        block.extend(value.encode_utf16());
-        block.push(0);
-    }
-    block.push(0); // 双 NUL 结尾。
-    Ok(block)
-}
-
-/// 读 daemon 自己的环境，拆成 `(名字, 值)`。
-fn inherited_environment() -> Result<Vec<(String, String)>, PtyError> {
-    let block = unsafe { GetEnvironmentStringsW() };
-    if block.is_null() {
-        return Err(windows_error("GetEnvironmentStringsW"));
-    }
-
-    let mut entries = Vec::new();
-    let mut cursor = block;
-    loop {
-        let length = unsafe { (0..).take_while(|offset| *cursor.add(*offset) != 0).count() };
-        if length == 0 {
-            break;
-        }
-        let line = unsafe { std::slice::from_raw_parts(cursor, length) };
-        if let Some((name, value)) = String::from_utf16_lossy(line).split_once('=') {
-            // `=C:=C:\...` 这类伪变量名字是空串，跳过。
-            if !name.is_empty() {
-                entries.push((name.to_owned(), value.to_owned()));
-            }
-        }
-        cursor = unsafe { cursor.add(length + 1) };
-    }
-    unsafe { FreeEnvironmentStringsW(block) };
-
-    Ok(entries)
+    crate::win::to_wide(text)
 }
 
 #[cfg(test)]
@@ -453,72 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn command_line_quotes_like_command_line_to_argv_w() {
-        let args = |items: &[&str]| {
-            items
-                .iter()
-                .map(|item| item.to_string())
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(command_line("cmd.exe", &[]), "cmd.exe");
-        assert_eq!(
-            command_line(
-                r"C:\Program Files\Git\bin\bash.exe",
-                &args(&["--login", "-i"])
-            ),
-            r#""C:\Program Files\Git\bin\bash.exe" --login -i"#
-        );
-        // 空格 → 加引号。
-        assert_eq!(command_line("x", &args(&["a b"])), r#"x "a b""#);
-        // 空参数 → 一个空引号对。
-        assert_eq!(command_line("x", &args(&[""])), r#"x """#);
-        // 引号本身 → `\"`。
-        assert_eq!(command_line("x", &args(&[r#"a"b"#])), r#"x "a\"b""#);
-        // 结尾反斜杠必须翻倍，否则会转义掉收尾引号。
-        assert_eq!(
-            command_line("x", &args(&[r"C:\dir with space\"])),
-            r#"x "C:\dir with space\\""#
-        );
-        // 制表符也算需要引号。
-        assert_eq!(command_line("x", &args(&["a\tb"])), "x \"a\tb\"");
-        // 纯反斜杠且无空格 → 不用引号，也不转义。
-        assert_eq!(command_line("x", &args(&[r"C:\dir\"])), r"x C:\dir\");
-    }
-
-    #[test]
-    fn environment_block_overrides_case_insensitively_and_ends_with_two_nuls() {
-        let block =
-            environment_block(&[(String::from("AgeminalTestVar"), String::from("v1"))]).unwrap();
-        assert_eq!(block.last(), Some(&0));
-        assert_eq!(
-            block.get(block.len().wrapping_sub(2)),
-            Some(&0),
-            "必须双 NUL 结尾"
-        );
-
-        // 再塞一个同名但大小写不同的值：应该只剩后者。
-        let overridden = environment_block(&[
-            (String::from("AgeminalTestVar"), String::from("v1")),
-            (String::from("AGEMINALTESTVAR"), String::from("v2")),
-        ])
-        .unwrap();
-        let pairs = parse_block(&overridden);
-        let hits: Vec<_> = pairs
-            .iter()
-            .filter(|(name, _)| name.eq_ignore_ascii_case("AgeminalTestVar"))
-            .collect();
-        assert_eq!(hits.len(), 1, "同名项必须只剩一个：{hits:?}");
-        assert_eq!(hits[0].1, "v2", "后写的覆盖先写的");
-
-        // 排序：逐个比较相邻项。
-        let names: Vec<String> = pairs.iter().map(|(name, _)| name.to_uppercase()).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted, "环境块必须按名字排序");
-    }
-
-    #[test]
     fn coordinates_are_clamped_into_a_valid_range() {
         let normal = coord(PtySize { cols: 80, rows: 24 });
         assert_eq!((normal.X, normal.Y), (80, 24));
@@ -531,24 +401,5 @@ mod tests {
             rows: u16::MAX,
         });
         assert_eq!((huge.X, huge.Y), (i16::MAX, i16::MAX));
-    }
-
-    /// 把双 NUL 结尾的块拆回 `(名字, 值)`（测试用）。
-    fn parse_block(block: &[u16]) -> Vec<(String, String)> {
-        let mut pairs = Vec::new();
-        let mut start = 0;
-        while start < block.len() && block[start] != 0 {
-            let end = block[start..]
-                .iter()
-                .position(|&unit| unit == 0)
-                .map(|offset| start + offset)
-                .unwrap();
-            let line = String::from_utf16_lossy(&block[start..end]);
-            if let Some((name, value)) = line.split_once('=') {
-                pairs.push((name.to_owned(), value.to_owned()));
-            }
-            start = end + 1;
-        }
-        pairs
     }
 }

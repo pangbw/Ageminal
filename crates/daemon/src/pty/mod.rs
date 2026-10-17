@@ -6,6 +6,10 @@
 //! 这一层只做四件事：**起进程、收发字节、改尺寸、杀掉整棵树**。会话表、输出路由、ack 流控都是
 //! #67 的事——所以这里没有 `sid`，也不认识协议。
 //!
+//! **不含 VT 语义**：ConPTY 会朝终端侧发 `CSI 6n`（光标位置报告）之类的查询并等回复，没人应答
+//! 会把上游程序卡住（`docs/research/session-daemon.md` §5.2）。应答它需要屏幕模型，属服务端 VT
+//! 内核的职责，不在这一层。
+//!
 //! 读端与写端**分开取走**（[`Pty::take_reader`] / [`Pty::take_writer`]）：daemon 里「收 PTY
 //! 输出」与「喂键盘输入」必须跑在不同线程，一条 `&mut self` 会让两边互相阻塞。
 
@@ -14,9 +18,22 @@ use std::path::PathBuf;
 
 #[cfg(windows)]
 mod conpty;
+#[cfg(windows)]
+mod wincmd;
 
 #[cfg(windows)]
 pub use conpty::spawn;
+
+/// 取 `GetLastError` 并包成 [`PtyError`]。
+#[cfg(windows)]
+fn windows_error(call: &'static str) -> PtyError {
+    PtyError::Windows {
+        call,
+        reason: format!("GetLastError={}", unsafe {
+            windows_sys::Win32::Foundation::GetLastError()
+        }),
+    }
+}
 
 /// 终端尺寸（列 / 行）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,7 +70,10 @@ pub struct ExitStatus {
     pub code: u32,
 }
 
-/// 一个**已启动**的 PTY 会话（主端）。
+/// 一个**已启动**的 PTY 实例（主端）。
+///
+/// 注意它不是 `CONTEXT.md` 里的「会话（Session）」——那是有 `sid`、归 daemon 会话表管的东西
+/// （#67）。这里只是「一个进程 + 一对管道 + 一个伪控制台」。
 ///
 /// 实现方负责：持有伪控制台（HPCON）与子进程；`Drop` 时若还没终止，兜底终止。
 pub trait Pty: Send {
@@ -78,7 +98,10 @@ pub trait Pty: Send {
     /// 终止**整棵进程树**（关 HPCON）；幂等。
     ///
     /// **调用前先把输出流取走并持续读**：关控制台要等 conout 排空，没人读会卡住
-    /// （研究稿 `docs/research/zed-terminal.md` §3.2 记的那条死锁）。
+    /// （`docs/research/zed-terminal.md` §3.2 记的那条死锁；MS 文档也写了
+    /// 「failure to either close or drain the output pipe may cause `ClosePseudoConsole` to wait
+    /// indefinitely」）。实现会在 `Drop` 里对**还没被取走**的输出流自行排空兜底，但已经取走的
+    /// 那一半必须由调用方负责读到 EOF。
     fn terminate(&mut self) -> Result<(), PtyError>;
 }
 

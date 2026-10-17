@@ -2,16 +2,17 @@
 //!
 //! # 三条硬约束 ↔ 回归测试
 //!
-//! 三条约束都属「沉默失败」：写错了不报错，只是终端里什么都没有。对应关系：
+//! 三条都不是「返回值报错」型的：写错了 `CreateProcessW` 往往照样成功，只是终端里什么都没有。
 //!
 //! | 约束（`REQUIREMENTS.md` §5.1） | 谁盯着它 |
 //! | --- | --- |
-//! | ① `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 传**句柄值本身** | `conpty.rs` 的 `pseudo_console_attribute_value_is_the_handle_itself`（白盒）+ `runs_a_shell_and_carries_bytes_both_ways`（功能：传地址会另开控制台，pty 里收不到字节） |
-//! | ② `CreatePipe` 两端在 `CreateProcess` **之后**才释放 | `runs_a_shell_and_carries_bytes_both_ways`（提前放会断掉 ConPTY 通道：shell 起不来，或一个字节都收发不到） |
+//! | ① `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` 传**句柄值本身** | `conpty.rs` 的 `pseudo_console_attribute_value_is_the_handle_itself` 只盯住那个助手函数本身（改坏**调用点**它抓不住）；真正压住行为的是 `runs_a_shell_and_carries_bytes_both_ways`——传地址会让子进程跑到另一个控制台上，pty 里一个字节都收不到 |
+//! | ② `CreatePipe` 两端在 `CreateProcess` **之后**才释放 | `runs_a_shell_and_carries_bytes_both_ways`（提前放会断掉 ConPTY 通道：shell 起不来，或一个字节都收发不到）；错误路径由 `a_program_that_cannot_start_is_an_error` 覆盖 |
 //! | ③ `STARTF_USESTDHANDLES` + **三句柄 NULL** | `runs_a_shell_and_carries_bytes_both_ways` 的 `exit 7`（被破坏时 cmd 会立刻**干净退 0**，退不到 7） |
 //!
-//! 其余两个验收：resize 生效（`resize_takes_effect`）、terminate 杀掉整棵树
-//! （`terminate_kills_the_whole_process_tree`）。
+//! 其余验收：resize 生效（`resize_takes_effect`）、terminate 杀掉整棵树
+//! （`terminate_kills_the_whole_process_tree`）、`Drop` 不会因为没人排空而卡死
+//! （`dropping_a_session_does_not_hang_on_a_never_read_console`）。
 
 #![cfg(windows)]
 
@@ -20,9 +21,11 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use ageminal_daemon::pty::{self, Pty, PtySize, PtySpec};
-use windows_sys::Win32::Foundation::CloseHandle;
-use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess};
+use ageminal_daemon::pty::{self, Pty, PtyError, PtySize, PtySpec};
+use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 /// PTY 输出泵：把**阻塞读**搬到辅助线程，测试侧就能带超时地等标记而不是裸卡在 read 上。
 struct Output {
@@ -61,26 +64,25 @@ impl Output {
 
     /// 等到 `needle` 出现。
     fn wait_for(&mut self, needle: &str, timeout: Duration) -> bool {
-        self.wait_until(timeout, |text| text.contains(needle).then_some(()))
+        self.wait_value(timeout, |text| text.contains(needle).then_some(()))
             .is_some()
     }
 
-    /// 等到出现「标记 + 数字」（标记本身也会被回显，所以要求**紧跟数字**）。
-    fn wait_for_number(&mut self, prefix: &str, timeout: Duration) -> Option<u32> {
-        self.wait_until(timeout, |text| scan_number(text, prefix))?;
-        scan_number(&self.text(), prefix)
+    /// 等到出现「标记 + 数字」。
+    fn wait_for_number(&mut self, marker: &str, timeout: Duration) -> Option<u32> {
+        self.wait_value(timeout, |text| number_after(text, marker))
     }
 
-    /// 反复收块直到 `matched` 为真或超时。
-    fn wait_until<T>(
+    /// 反复收块，直到 `matched` 给出值或超时。
+    fn wait_value<T>(
         &mut self,
         timeout: Duration,
         matched: impl Fn(&str) -> Option<T>,
-    ) -> Option<()> {
+    ) -> Option<T> {
         let deadline = Instant::now() + timeout;
         loop {
-            if matched(&self.text()).is_some() {
-                return Some(());
+            if let Some(value) = matched(&self.text()) {
+                return Some(value);
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -94,21 +96,29 @@ impl Output {
     }
 }
 
-/// 扫「标记 + 一串数字」，跳过回显里那些不跟数字的标记。
-fn scan_number(text: &str, prefix: &str) -> Option<u32> {
-    for (index, _) in text.match_indices(prefix) {
-        let rest = &text[index + prefix.len()..];
-        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        if let Ok(value) = digits.parse() {
+/// 标记**之后**的第一串数字。
+///
+/// 输入回显里也会有同一个标记（后面紧跟的不是数字），所以要扫所有出现位置。
+fn number_after(text: &str, marker: &str) -> Option<u32> {
+    for (index, _) in text.match_indices(marker) {
+        if let Some(value) = leading_number(&text[index + marker.len()..]) {
             return Some(value);
         }
     }
     None
 }
 
-/// 取 `[tag]` 与 `[/tag]` 之间的第一段**能解析出尺寸**的内容。
-///
-/// 输入回显里也有一份 `[tag]`（紧跟着就是 `[/tag]`，中间没有数字），所以不能只找第一对。
+/// 跳过非数字字符后的第一串数字。
+fn leading_number(text: &str) -> Option<u32> {
+    let start = text.find(|character: char| character.is_ascii_digit())?;
+    let digits: String = text[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// 取 `[tag]` 与 `[/tag]` 之间第一段**能解析出尺寸**的内容。
 fn size_between(text: &str, tag: &str) -> Option<(u16, u16)> {
     let open = format!("[{tag}]");
     let close = format!("[/{tag}]");
@@ -128,7 +138,7 @@ fn size_between(text: &str, tag: &str) -> Option<(u16, u16)> {
 ///
 /// `mode con` 的输出**是本地化**的（CI 上是英文、本机是中文），所以认两套标签：`Column`/`列` 与
 /// `Line`/`行`。值取「冒号之后的第一串数字」——**不能要求整段都是数字**：ConPTY 在 resize 之后
-/// 重绘屏幕时，每行尾部都会带 `\x1b[K`（erase-line），`"43\x1b[K"` 是解析不出来的（CI 上真踩过）。
+/// 重绘屏幕时，每行尾部会带 `\x1b[K`（erase-line），`"43\x1b[K"` 是解析不出来的（CI 上真踩过）。
 ///
 /// 万一两套标签都没认出来（别的语言），按位置兜底：`mode con` 的字段顺序是 **Lines → Columns**。
 fn parse_console_size(body: &str) -> Option<(u16, u16)> {
@@ -136,11 +146,10 @@ fn parse_console_size(body: &str) -> Option<(u16, u16)> {
     let mut lines = None;
     for line in body.lines() {
         let lower = line.to_lowercase();
-        let value = || number_after_colon(line);
         if columns.is_none() && (lower.contains("column") || line.contains('列')) {
-            columns = value();
+            columns = number_after_colon(line);
         } else if lines.is_none() && (lower.contains("line") || line.contains('行')) {
-            lines = value();
+            lines = number_after_colon(line);
         }
     }
     if let (Some(columns), Some(lines)) = (columns, lines) {
@@ -162,12 +171,7 @@ fn parse_console_size(body: &str) -> Option<(u16, u16)> {
 /// 取冒号之后的第一串数字（中英文冒号都认）。
 fn number_after_colon(line: &str) -> Option<u16> {
     let tail = line.rsplit([':', '：']).next().unwrap_or(line);
-    let start = tail.find(|character: char| character.is_ascii_digit())?;
-    let digits: String = tail[start..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect();
-    digits.parse().ok()
+    leading_number(tail).and_then(|value| u16::try_from(value).ok())
 }
 
 fn cmd_spec(size: PtySize) -> PtySpec {
@@ -179,6 +183,14 @@ fn cmd_spec(size: PtySize) -> PtySpec {
         size,
         env: Vec::new(),
     }
+}
+
+/// 起一个 `cmd`，把输出泵与写端都接好。
+fn spawn_cmd(size: PtySize) -> (Box<dyn Pty>, Output, Box<dyn Write + Send>) {
+    let mut session = pty::spawn(&cmd_spec(size)).expect("cmd 应该起得来");
+    let output = Output::start(session.take_reader().expect("输出流只能取一次"));
+    let input = session.take_writer().expect("输入流只能取一次");
+    (session, output, input)
 }
 
 fn await_exit(session: &mut dyn Pty, timeout: Duration) -> Option<u32> {
@@ -195,9 +207,6 @@ fn await_exit(session: &mut dyn Pty, timeout: Duration) -> Option<u32> {
 }
 
 fn is_alive(pid: u32) -> bool {
-    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-    const STILL_ACTIVE: u32 = 259;
-
     let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if process.is_null() {
         return false;
@@ -205,7 +214,7 @@ fn is_alive(pid: u32) -> bool {
     let mut code: u32 = 0;
     let read = unsafe { GetExitCodeProcess(process, &mut code) };
     unsafe { CloseHandle(process) };
-    read != 0 && code == STILL_ACTIVE
+    read != 0 && code == STILL_ACTIVE as u32
 }
 
 fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
@@ -258,6 +267,8 @@ fn runs_a_shell_and_carries_bytes_both_ways() {
         "cmd 应执行 exit 7；已收到：{}",
         output.text()
     );
+    // 进程已经退了，`wait`（阻塞版）应立刻返回同一个码——顺手把它也测了。
+    assert_eq!(session.wait().expect("wait").code, 7);
 
     let _ = std::fs::remove_dir_all(&cwd);
 }
@@ -268,10 +279,7 @@ fn runs_a_shell_and_carries_bytes_both_ways() {
 /// 三句柄都是 NULL（硬约束③）；`mode con` 是直接打开 `CONOUT$` 问控制台的，不受影响。
 #[test]
 fn resize_takes_effect() {
-    let mut session =
-        pty::spawn(&cmd_spec(PtySize { cols: 80, rows: 24 })).expect("cmd 应该起得来");
-    let mut output = Output::start(session.take_reader().unwrap());
-    let mut input = session.take_writer().unwrap();
+    let (session, mut output, mut input) = spawn_cmd(PtySize { cols: 80, rows: 24 });
 
     assert_eq!(
         probe_size(
@@ -315,17 +323,13 @@ fn probe_size(
     let command = format!("echo [{tag}] & mode con & echo [/{tag}]\r\n");
     input.write_all(command.as_bytes()).ok()?;
     input.flush().ok()?;
-    output.wait_until(timeout, |text| size_between(text, tag))?;
-    size_between(&output.text(), tag)
+    output.wait_value(timeout, |text| size_between(text, tag))
 }
 
 /// 验收 3「terminate 杀掉整棵进程树」。
 #[test]
 fn terminate_kills_the_whole_process_tree() {
-    let mut session =
-        pty::spawn(&cmd_spec(PtySize { cols: 80, rows: 24 })).expect("cmd 应该起得来");
-    let mut output = Output::start(session.take_reader().unwrap());
-    let mut input = session.take_writer().unwrap();
+    let (mut session, mut output, mut input) = spawn_cmd(PtySize { cols: 80, rows: 24 });
 
     // 在会话里再起一个**孙进程**：`-NoNewWindow` 让它留在同一个控制台上，才会被一起收走。
     input
@@ -384,6 +388,39 @@ fn injected_environment_reaches_the_child() {
     );
 
     let _ = session.terminate();
+}
+
+/// `Drop` 的兜底路径：**输出流从没被取走**（没人排空 conout）时也不能卡死。
+///
+/// 这是 `ClosePseudoConsole` 最阴的一条：MS 文档写明「不关也不排空输出管道，可能无限等」，
+/// 而 24H2 起它改成立即返回——`windows-latest` 恰好是 26100，**CI 天然掩盖**这个 bug。
+#[test]
+fn dropping_a_session_does_not_hang_on_a_never_read_console() {
+    let session = pty::spawn(&cmd_spec(PtySize { cols: 80, rows: 24 })).expect("cmd 应该起得来");
+
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        drop(session);
+        let _ = sender.send(());
+    });
+
+    assert!(
+        receiver.recv_timeout(Duration::from_secs(20)).is_ok(),
+        "Drop 卡住了：没人读 conout 时 ClosePseudoConsole 会无限等"
+    );
+}
+
+/// 起不来时要**报错**，而不是漏句柄或卡住（错误路径先关控制台、再放管道）。
+#[test]
+fn a_program_that_cannot_start_is_an_error() {
+    let mut spec = cmd_spec(PtySize { cols: 80, rows: 24 });
+    spec.program = String::from("ageminal-no-such-program-xyz.exe");
+
+    match pty::spawn(&spec) {
+        Err(PtyError::Windows { call, .. }) => assert_eq!(call, "CreateProcessW"),
+        Err(other) => panic!("错误类型不对：{other:?}"),
+        Ok(_) => panic!("不存在的程序不该起得来"),
+    }
 }
 
 /// 解析器的回归锁。
