@@ -26,7 +26,7 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, PIPE_READMODE_BYTE,
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
@@ -40,6 +40,9 @@ const BUFFER_BYTES: u32 = 8 * 1024;
 
 /// 建管道失败后，给「上一个 daemon 已建好管道、状态文件还没落盘」这个窗口留的宽限时间。
 const COLLISION_GRACE: Duration = Duration::from_secs(2);
+
+/// 等对端数据时的轮询间隔（见 [`wait_for_incoming`]）。
+const READ_POLL: Duration = Duration::from_millis(2);
 
 /// 服务端配置。
 pub struct ServerConfig {
@@ -284,7 +287,7 @@ fn serve_connection(
     let result = std::thread::scope(|scope| {
         let writer_thread = scope.spawn(|| outbound.run(&mut writer));
 
-        let result = read_loop(&mut reader, sessions, &outbound, &handles, log_path);
+        let result = read_loop(&mut reader, handle, sessions, &outbound, &handles, log_path);
 
         outbound.close();
         match writer_thread.join() {
@@ -303,12 +306,16 @@ fn serve_connection(
 /// 读循环：把客户端来的控制消息分发给会话层。
 fn read_loop(
     reader: &mut impl std::io::Read,
+    handle: HANDLE,
     sessions: &Arc<SessionTable>,
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
     log_path: &Path,
 ) -> Result<(), DaemonError> {
     loop {
+        if !wait_for_incoming(handle) {
+            return Ok(());
+        }
         match framed::read_message(reader) {
             // 对端在帧边界处正常关闭。
             Ok(None) => return Ok(()),
@@ -321,6 +328,38 @@ fn read_loop(
             }
             Err(error) => return Err(error),
         }
+    }
+}
+
+/// 等到管道里有数据可读。
+///
+/// **不能直接阻塞在 `ReadFile` 上**：同步（未开 `FILE_FLAG_OVERLAPPED`）的管道句柄上，读和写会
+/// 互相串行——读线程一旦挂起，另一个线程的 `WriteFile` 就写不出去（#67 的 CI 实测：握手能写，
+/// 之后写线程的每一帧都卡住，客户端也永远收不到）。
+/// 所以这里先 `PeekNamedPipe` 探一下，有数据才进 `ReadFile`——这时读是立即返回的，不会占着句柄。
+///
+/// 代价是空闲时每 [`READ_POLL`] 醒一次；换真正的 overlapped IO 就没这个轮询，留给 #68。
+fn wait_for_incoming(handle: HANDLE) -> bool {
+    loop {
+        let mut available: u32 = 0;
+        let ok = unsafe {
+            PeekNamedPipe(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            // 对端断了（ERROR_BROKEN_PIPE / ERROR_NO_DATA）——正常收尾。
+            return false;
+        }
+        if available > 0 {
+            return true;
+        }
+        std::thread::sleep(READ_POLL);
     }
 }
 

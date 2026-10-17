@@ -80,6 +80,9 @@ impl Outbound {
             };
             let kind = frame.kind;
             let encoded = frame.encoded_len();
+            if !kind.is_raw_payload() {
+                logging::append(&self.log_path, &format!("写前 {kind:?} {encoded}B"));
+            }
             if let Err(error) = frame.write_to(writer) {
                 logging::append(&self.log_path, &format!("写出失败（{kind:?}）：{error}"));
                 return Err(match error {
