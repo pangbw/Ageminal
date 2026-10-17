@@ -2,14 +2,21 @@ name: ci
 
 # PR / push 门禁（REQUIREMENTS.md §21 / G4 #34）。
 #
+# **只有 `main` 与 PR 才跑**：开发期的 `dev` 推送不触发。一张票往往要推 3–5 次，而 Windows 上
+# 一次全量门禁 3–4 分钟——迭代期等不起。开发期靠本地门禁兜底（`pnpm check` + windows-target 的
+# check/clippy），合入 main 时再让这套 Gate 把全量（含真进程集成测试）跑一遍。
+#
+# 需要在 dev 上临时验证：`gh workflow run ci.yml --ref dev`（workflow_dispatch）。
+#
 # `check` 跑仓库的单一本地门禁 `pnpm check`：Rust fmt/clippy/test + 前端 lint/tsc/vitest +
 # 四道校验（i18n 中文字面量、i18n key 结构一致、git check-ignore 保真度、specta 生成物无 diff）
 # + 前端许可审计。
 # `licenses` 单独跑 Rust 许可审计（cargo-deny），与平台无关。
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
