@@ -7,12 +7,14 @@
 //!
 //! 管道 DACL 只放当前用户（[`crate::acl`]），所以「非当前用户被拒绝」由内核完成，不靠应用层判断。
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::mem::ManuallyDrop;
 use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ageminal_protocol::{
@@ -28,6 +30,9 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
+use crate::outbound::Outbound;
+use crate::pty::PtySize;
+use crate::session::SessionTable;
 use crate::{acl, framed, launch, logging, paths, win, DaemonError, DaemonInfo};
 
 /// 管道的内核缓冲（控制流量很小；这不是我们自己的读缓冲）。
@@ -122,7 +127,9 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
         &format!("启动：pid={} pipe={}", info.pid, info.pipe),
     );
 
-    let result = accept_loop(&pipe, &info, &log_path);
+    // 会话表是 **daemon 全局**的：会话要活过连接（live reattach，REQUIREMENTS.md §5.2）。
+    let sessions = Arc::new(SessionTable::new());
+    let result = accept_loop(&pipe, &info, &sessions, &log_path);
 
     let _ = DaemonInfo::remove(&config.config_dir);
     logging::append(
@@ -171,10 +178,15 @@ fn create_pipe(pipe: &str, security: &acl::CurrentUserSecurity) -> Result<PipeHa
 
 /// 顺序接受连接。每个连接处理完就 `DisconnectNamedPipe`，把**同一个实例**留给下一个客户端
 /// （单例下只有一个实例，REQUIREMENTS.md §5.1 的「单连接」）。
-fn accept_loop(pipe: &PipeHandle, info: &DaemonInfo, log_path: &Path) -> Result<(), DaemonError> {
+fn accept_loop(
+    pipe: &PipeHandle,
+    info: &DaemonInfo,
+    sessions: &Arc<SessionTable>,
+    log_path: &Path,
+) -> Result<(), DaemonError> {
     loop {
         wait_for_client(pipe.0, log_path)?;
-        if let Err(error) = serve_connection(pipe.0, info, log_path) {
+        if let Err(error) = serve_connection(pipe.0, info, sessions, log_path) {
             logging::append(log_path, &format!("连接结束：{error}"));
         }
         unsafe { DisconnectNamedPipe(pipe.0) };
@@ -202,8 +214,13 @@ fn wait_for_client(handle: HANDLE, log_path: &Path) -> Result<(), DaemonError> {
     })
 }
 
-/// 招呼一个连接：握手 → 进入 ping/pong 循环，直到对端关闭。
-fn serve_connection(handle: HANDLE, info: &DaemonInfo, log_path: &Path) -> Result<(), DaemonError> {
+/// 招呼一个连接：握手（同步）→ 写线程 + 读循环（直到对端关闭）。
+fn serve_connection(
+    handle: HANDLE,
+    info: &DaemonInfo,
+    sessions: &Arc<SessionTable>,
+    log_path: &Path,
+) -> Result<(), DaemonError> {
     // **只借用**句柄：`ManuallyDrop` 防止 `File` 析构时把它关掉——这个管道实例还要复用。
     let owned = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
     let stream: &File = &owned;
@@ -243,19 +260,175 @@ fn serve_connection(handle: HANDLE, info: &DaemonInfo, log_path: &Path) -> Resul
     )?;
     logging::append(log_path, "握手通过");
 
+    // —— 握手之后：写端交给一条**专门的写线程**（多个会话的输出线程都要往里塞），读端留在本线程。
+    // 帧边界只有写线程一个人在维护，所以不会写花。
+    let outbound = Arc::new(Outbound::new());
+    let mut pipe_writer = stream.try_clone()?;
+    let writer_thread = std::thread::spawn({
+        let outbound = Arc::clone(&outbound);
+        move || outbound.run(&mut pipe_writer)
+    });
+
+    let handles = HandleMap::new();
+    let result = read_loop(&mut reader, sessions, &outbound, &handles);
+
+    outbound.close();
+    match writer_thread.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => logging::append(log_path, &format!("写出失败：{error}")),
+        Err(_) => logging::append(log_path, "写线程 panic"),
+    }
+    // 连接断了：把这个连接挂着的会话都摘掉，免得它们的输出线程继续往死连接里塞。
+    sessions.detach_all(&outbound);
+    result
+}
+
+/// 读循环：把客户端来的控制消息分发给会话层。
+fn read_loop(
+    reader: &mut impl std::io::Read,
+    sessions: &Arc<SessionTable>,
+    outbound: &Arc<Outbound>,
+    handles: &HandleMap,
+) -> Result<(), DaemonError> {
     loop {
-        match framed::read_message(&mut reader) {
+        match framed::read_message(reader) {
             // 对端在帧边界处正常关闭。
             Ok(None) => return Ok(()),
-            Ok(Some(Message::Ping)) => framed::send(&mut writer, &Message::Pong)?,
-            // 会话层（create / resize / ack…）归 #67；此刻收到就说明对端跑在了 daemon 前面。
-            Ok(Some(other)) => {
-                return Err(DaemonError::Unexpected(format!(
-                    "daemon 尚未实现的消息：{other:?}"
-                )))
-            }
+            Ok(Some(message)) => dispatch(message, sessions, outbound, handles)?,
             Err(error) => return Err(error),
         }
+    }
+}
+
+/// 一条控制消息 → 会话层动作。
+///
+/// **业务错误回一条 `Error{badFrame}`，不断连接**（协议里 `Error` 就是干这个的）；只有协议被打破
+/// （收到 daemon 不认识的消息）才结束连接。
+fn dispatch(
+    message: Message,
+    sessions: &Arc<SessionTable>,
+    outbound: &Arc<Outbound>,
+    handles: &HandleMap,
+) -> Result<(), DaemonError> {
+    match message {
+        Message::Ping => outbound.send_control(&Message::Pong),
+        Message::CreateSession(request) => {
+            let handle = handles.handle_for(&request.sid);
+            let result = sessions.create(&request, handle, Arc::clone(outbound));
+            reply(outbound, result.map(Message::SessionCreated))
+        }
+        Message::Attach(attach) => {
+            let handle = handles.handle_for(&attach.sid);
+            let result =
+                sessions.attach(&attach.sid, attach.last_seq, handle, Arc::clone(outbound));
+            reply(outbound, result.map(Message::Attached))
+        }
+        Message::Detach(detach) => {
+            // 断开**不是**终止：会话继续活在 daemon 里（§5.2）。
+            sessions.detach(&detach.sid);
+            Ok(())
+        }
+        Message::Terminate(terminate) => acknowledge(
+            outbound,
+            sessions.terminate(&terminate.sid, terminate.force),
+        ),
+        Message::Resize(resize) => acknowledge(
+            outbound,
+            sessions.resize(
+                &resize.sid,
+                PtySize {
+                    cols: resize.cols,
+                    rows: resize.rows,
+                },
+            ),
+        ),
+        Message::Ack(ack) => acknowledge(outbound, sessions.ack(&ack.sid, ack.acked_bytes)),
+        Message::Input { handle, bytes, .. } => {
+            let Some(sid) = handles.sid_of(handle) else {
+                return outbound.send_control(&Message::Error(ProtocolError {
+                    code: ErrorCode::BadFrame,
+                    message: format!("未知的会话句柄 {handle}"),
+                }));
+            };
+            acknowledge(outbound, sessions.write(&sid, &bytes))
+        }
+        other => Err(DaemonError::Unexpected(format!(
+            "daemon 不认识的消息：{other:?}"
+        ))),
+    }
+}
+
+/// 请求-响应型：成功回响应，失败回 `Error`。
+fn reply(
+    outbound: &Arc<Outbound>,
+    result: Result<Message, DaemonError>,
+) -> Result<(), DaemonError> {
+    match result {
+        Ok(message) => outbound.send_control(&message),
+        Err(error) => failure(outbound, error),
+    }
+}
+
+/// 无响应型（terminate / resize / ack / input）：成功什么都不回，失败回 `Error`。
+fn acknowledge(
+    outbound: &Arc<Outbound>,
+    result: Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => failure(outbound, error),
+    }
+}
+
+fn failure(outbound: &Arc<Outbound>, error: DaemonError) -> Result<(), DaemonError> {
+    outbound.send_control(&Message::Error(ProtocolError {
+        code: ErrorCode::BadFrame,
+        message: error.to_string(),
+    }))
+}
+
+/// 连接内的 handle ↔ `sid` 映射。
+///
+/// 帧头只能放 `u32`（#65 定的「连接内句柄」），逻辑 `sid` 是字符串；这个映射就是两者之间的桥。
+/// handle 只在**本条连接**内唯一，重连后重新分配（客户端从 `SessionCreated` / `Attached` 拿新的）。
+#[derive(Default)]
+struct HandleMap {
+    inner: Mutex<Handles>,
+}
+
+#[derive(Default)]
+struct Handles {
+    by_handle: HashMap<u32, String>,
+    by_sid: HashMap<String, u32>,
+    next: u32,
+}
+
+impl HandleMap {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// 某个 `sid` 的句柄；没有就分配一个（同一会话重复 create / attach 会复用它）。
+    fn handle_for(&self, sid: &str) -> u32 {
+        let mut handles = self.inner.lock().expect("handles poisoned");
+        if let Some(handle) = handles.by_sid.get(sid) {
+            return *handle;
+        }
+        handles.next += 1;
+        let handle = handles.next;
+        handles.by_sid.insert(sid.to_owned(), handle);
+        handles.by_handle.insert(handle, sid.to_owned());
+        handle
+    }
+
+    /// 句柄 → `sid`。
+    fn sid_of(&self, handle: u32) -> Option<String> {
+        self.inner
+            .lock()
+            .expect("handles poisoned")
+            .by_handle
+            .get(&handle)
+            .cloned()
     }
 }
 

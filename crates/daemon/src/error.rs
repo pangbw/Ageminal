@@ -31,6 +31,14 @@ pub enum DaemonError {
     #[error("意外的消息：{0}")]
     Unexpected(String),
 
+    /// 会话层拒绝（会话不存在 / 名字冲突 / 暂不支持的参数）——会以 `Error{badFrame}` 回给客户端。
+    #[error("会话操作被拒：{reason}")]
+    Session { reason: String },
+
+    /// PTY 层失败。
+    #[error(transparent)]
+    Pty(#[from] crate::pty::PtyError),
+
     /// 线协议层面的失败（帧编解码 / 消息解析）。
     #[error("协议错误：{reason}")]
     Protocol { reason: String },

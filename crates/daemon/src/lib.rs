@@ -36,8 +36,12 @@ pub mod launch;
 #[cfg(windows)]
 mod logging;
 #[cfg(windows)]
+mod outbound;
+#[cfg(windows)]
 pub mod paths;
 #[cfg(windows)]
 pub mod server;
+#[cfg(windows)]
+mod session;
 #[cfg(windows)]
 mod win;

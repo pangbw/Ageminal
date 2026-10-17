@@ -11,91 +11,14 @@
 
 #![cfg(windows)]
 
-use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::{Duration, Instant};
+mod support;
 
-use ageminal_daemon::launch::{self, READY_TIMEOUT};
+use std::time::Duration;
+
+use ageminal_daemon::launch;
 use ageminal_daemon::{client, DaemonError, DaemonInfo};
 
-/// `cargo test` 编出来的 daemon 可执行文件。
-const DAEMON_EXE: &str = env!("CARGO_BIN_EXE_ageminal-daemon");
-
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// 每个用例专属的夹具：配置根与管道名都**不与用户机器上真在跑的 daemon 冲突**。
-struct Fixture {
-    config_dir: PathBuf,
-    pipe: String,
-}
-
-impl Fixture {
-    fn new(tag: &str) -> Self {
-        let unique = format!(
-            "{}-{tag}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let config_dir = std::env::temp_dir().join(format!("ageminal-daemon-{unique}"));
-        let _ = std::fs::remove_dir_all(&config_dir);
-        std::fs::create_dir_all(&config_dir).unwrap();
-        Self {
-            config_dir,
-            pipe: format!(r"\\.\pipe\ageminal-test-{unique}"),
-        }
-    }
-
-    fn exe(&self) -> &Path {
-        Path::new(DAEMON_EXE)
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.config_dir);
-    }
-}
-
-/// 拉起的 daemon：握过手的发现信息 + 进程句柄。**析构一定杀掉**，坏了也不留孤儿进程。
-struct Spawned {
-    child: Child,
-    info: DaemonInfo,
-}
-
-impl Spawned {
-    fn start(fixture: &Fixture) -> Self {
-        let child =
-            launch::spawn_detached(fixture.exe(), &fixture.pipe, &fixture.config_dir).unwrap();
-        let info = launch::wait_ready(&fixture.config_dir, READY_TIMEOUT).unwrap();
-        Self { child, info }
-    }
-}
-
-impl Drop for Spawned {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-/// 轮询等进程退出。
-fn wait_for_exit(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        match child.try_wait().unwrap() {
-            Some(status) => return Some(status),
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    }
-    None
-}
-
-/// 把 daemon 自己的日志拼进断言消息——CI 上红了要一眼能看出原因。
-fn daemon_log(fixture: &Fixture) -> String {
-    std::fs::read_to_string(fixture.config_dir.join("logs").join("daemon.log"))
-        .unwrap_or_else(|_| "<没有 daemon.log>".to_owned())
-}
+use support::{daemon_log, wait_for_exit, Fixture, Spawned};
 
 /// 验收 1 + 3：真进程拉起 → 握手 → ping/pong。
 ///
