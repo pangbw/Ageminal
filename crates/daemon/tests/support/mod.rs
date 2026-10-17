@@ -56,6 +56,7 @@ impl Drop for Fixture {
 pub struct Spawned {
     pub child: Child,
     pub info: DaemonInfo,
+    log_path: PathBuf,
 }
 
 impl Spawned {
@@ -84,12 +85,22 @@ impl Spawned {
                 daemon_log(fixture)
             ),
         };
-        Self { child, info }
+        Self {
+            child,
+            info,
+            log_path: fixture.config_dir.join("logs").join("daemon.log"),
+        }
     }
 }
 
 impl Drop for Spawned {
     fn drop(&mut self) {
+        // 用例失败时把 daemon 的日志自动打出来：脱离 stdout 的进程，日志是唯一线索。
+        if std::thread::panicking() {
+            let text = std::fs::read_to_string(&self.log_path)
+                .unwrap_or_else(|_| "<没有 daemon.log>".to_owned());
+            eprintln!("--- daemon.log ---\n{text}");
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

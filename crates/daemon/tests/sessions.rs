@@ -76,7 +76,12 @@ impl Collected {
                     self.text.get(&handle)
                 );
             }
-            self.absorb(client.next_event().expect("next_event"));
+            if let Some(message) = client
+                .next_event(Duration::from_millis(100))
+                .expect("next_event")
+            {
+                self.absorb(message);
+            }
         }
     }
 
@@ -103,7 +108,12 @@ fn wait_for_exit(
                 collected.exits.keys().collect::<Vec<_>>()
             );
         }
-        collected.absorb(client.next_event().expect("next_event"));
+        if let Some(message) = client
+            .next_event(Duration::from_millis(100))
+            .expect("next_event")
+        {
+            collected.absorb(message);
+        }
     }
 }
 
@@ -268,8 +278,11 @@ fn unknown_session_is_an_error_not_a_disconnect() {
     client
         .terminate("nope", false)
         .expect("terminate 本身只是发送");
-    let error = match client.next_event().expect("next_event") {
-        Message::Error(error) => error,
+    let error = match client
+        .next_event(Duration::from_secs(10))
+        .expect("next_event")
+    {
+        Some(Message::Error(error)) => error,
         other => panic!("应当回一条 Error，收到 {other:?}"),
     };
     assert!(
