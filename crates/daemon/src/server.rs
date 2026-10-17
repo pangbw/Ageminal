@@ -276,7 +276,7 @@ fn serve_connection(
 
     // —— 握手之后：写端交给一条**专门的写线程**（多个会话的输出线程都要往里塞），读端留在本线程。
     // 帧边界只有写线程一个人在维护，所以不会写花。
-    let outbound = Arc::new(Outbound::new());
+    let outbound = Arc::new(Outbound::new(log_path.to_path_buf()));
     let mut pipe_writer = stream.try_clone()?;
     let writer_thread = std::thread::spawn({
         let outbound = Arc::clone(&outbound);

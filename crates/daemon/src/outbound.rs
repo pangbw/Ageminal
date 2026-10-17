@@ -8,25 +8,33 @@
 //! 出队——否则持续输出会把 `SessionExited` / 响应这类控制消息饿死（研究稿 §五 记的 WezTerm 翻车）。
 
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use ageminal_protocol::{ControlFirstQueue, Frame, Message};
 
-use crate::DaemonError;
+use crate::{logging, DaemonError};
 
 /// 一条连接的出站口。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Outbound {
     queue: Mutex<ControlFirstQueue>,
     wake: Condvar,
     closed: AtomicBool,
+    /// 写失败/退出要立刻落日志——只在 `join` 时记的话，连接可能还挂着，线索就丢了。
+    log_path: PathBuf,
 }
 
 impl Outbound {
     /// 新建（未关闭）。
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(log_path: PathBuf) -> Self {
+        Self {
+            queue: Mutex::default(),
+            wake: Condvar::new(),
+            closed: AtomicBool::new(false),
+            log_path,
+        }
     }
 
     /// 投一条**控制**消息（响应 / 事件）。
@@ -58,6 +66,7 @@ impl Outbound {
 
     /// 写线程主体：队列空了就睡，关了就（排空后）退。
     pub fn run(&self, writer: &mut impl Write) -> Result<(), DaemonError> {
+        logging::append(&self.log_path, "写线程启动");
         loop {
             let frame = {
                 let mut queue = self.queue.lock().expect("outbound queue poisoned");
@@ -69,12 +78,16 @@ impl Outbound {
                 }
                 queue.pop().expect("非空队列")
             };
-            frame.write_to(writer).map_err(|error| match error {
-                ageminal_protocol::FrameError::Io(source) => DaemonError::Io(source),
-                other => DaemonError::Protocol {
-                    reason: other.to_string(),
-                },
-            })?;
+            let kind = frame.kind;
+            if let Err(error) = frame.write_to(writer) {
+                logging::append(&self.log_path, &format!("写出失败（{kind:?}）：{error}"));
+                return Err(match error {
+                    ageminal_protocol::FrameError::Io(source) => DaemonError::Io(source),
+                    other => DaemonError::Protocol {
+                        reason: other.to_string(),
+                    },
+                });
+            }
         }
     }
 
@@ -110,7 +123,9 @@ mod tests {
     /// 控制消息要能从写线程里**先**出去，哪怕数据帧先入队；`close` 之后排空再退。
     #[test]
     fn control_frames_leave_before_data_and_close_drains() {
-        let outbound = Arc::new(Outbound::new());
+        let outbound = Arc::new(Outbound::new(
+            std::env::temp_dir().join("ageminal-outbound-test.log"),
+        ));
         let sink = Arc::new(Mutex::new(Vec::new()));
 
         let writer = {
@@ -153,7 +168,7 @@ mod tests {
     /// 关掉之后投递的消息直接丢弃——不能给死连接攒内存。
     #[test]
     fn pushing_after_close_is_dropped() {
-        let outbound = Outbound::new();
+        let outbound = Outbound::new(std::env::temp_dir().join("ageminal-outbound-test.log"));
         outbound.close();
         outbound.send_control(&Message::Ping).unwrap();
         outbound.send_data(&Message::Ping);
