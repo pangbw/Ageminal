@@ -96,12 +96,15 @@ impl Output {
     }
 }
 
-/// 标记**之后**的第一串数字。
+/// 标记**紧跟着**的数字。
 ///
-/// 输入回显里也会有同一个标记（后面紧跟的不是数字），所以要扫所有出现位置。
+/// 输入回显里也有同一个标记，但后面跟的是别的东西（如 `GC:' + $p.Id)`）——所以必须**严格紧跟**，
+/// 不能跳过非数字去「找」一个远处数字（那样会跨行抓到无关的数）。
 fn number_after(text: &str, marker: &str) -> Option<u32> {
     for (index, _) in text.match_indices(marker) {
-        if let Some(value) = leading_number(&text[index + marker.len()..]) {
+        let rest = &text[index + marker.len()..];
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if let Ok(value) = digits.parse() {
             return Some(value);
         }
     }
@@ -452,4 +455,15 @@ fn parses_mode_con_output_with_erase_sequences_and_both_locales() {
     // 标签完全不认识（别的语言）：按位置兜底——`mode con` 的顺序是 Lines → Columns。
     let positional = "X:\r\n  1: 43\r\n  2: 132\r\n";
     assert_eq!(parse_console_size(positional), Some((132, 43)));
+}
+
+/// 标记后面的数字必须**紧跟**：不能跨行去抓远处的数字。
+///
+/// 真实翻车：输入回显是 `Write-Output ('GC:' + $p.Id)`，宽松解析会跳到下一行抓到一个无关的
+/// `0`，于是拿「pid 0」去判活。
+#[test]
+fn marker_numbers_must_be_adjacent() {
+    let text = "powershell ... Write-Output ('GC:' + $p.Id)\r\nGC:1234\r\n";
+    assert_eq!(number_after(text, "GC:"), Some(1234));
+    assert_eq!(number_after("GC:' + $p.Id)", "GC:"), None);
 }
