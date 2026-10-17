@@ -20,6 +20,11 @@ mod error;
 pub use ageminal_protocol::DaemonInfo;
 pub use error::DaemonError;
 
+/// PTY 层（`Pty` trait + Windows ConPTY 实现）。
+///
+/// 类型与 trait 跨平台可见（Linux 上也能编译），实现只在 Windows 上存在。
+pub mod pty;
+
 #[cfg(windows)]
 mod acl;
 #[cfg(windows)]
