@@ -11,6 +11,18 @@
 //! 不该卡住窗口创建。
 
 /// 在后台确保 daemon 在跑。失败只记录——daemon 起不来不应该让 app 起不来。
+///
+/// # ⚠️ 开发期：daemon 会锁住构建产物
+///
+/// daemon 拉起的是 `<主程序目录>\ageminal-daemon.exe`，在 dev 布局里就是
+/// `target\<profile>\ageminal-daemon.exe`；而 `tauri-build` 每次构建都会把 sidecar **先删再拷**
+/// 到同一个路径（`copy_binaries`）。Windows 上**运行中的 exe 删不掉**，于是构建会以
+/// `Os { code: 5, PermissionDenied }` 失败（panic 在 build script 里，看起来像 cargo 的错）。
+///
+/// **重新构建前先结束它**：`taskkill /IM ageminal-daemon.exe /F`。
+///
+/// 装机后 daemon 跑在安装目录、构建产物在 `target\`，互不影响；跨 NSIS 更新的同类问题由镜像目录
+/// `%LOCALAPPDATA%\Ageminal\daemon-host\<version>\` 解决（REQUIREMENTS.md §5.4 / #89）。
 pub fn spawn_ensure() {
     std::thread::spawn(ensure_running);
 }

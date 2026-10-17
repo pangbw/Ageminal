@@ -7,7 +7,7 @@
 - **运行环境**：纯 Windows（默认 Git Bash，回退 PowerShell）；WSL 延后
 - **形态**：Tauri 2 桌面应用（待开发）
 - **许可**：完全开源，**Apache-2.0**
-- **当前阶段**：实现进行中——骨架 / i18n / 持久化内核 / git worktree 发现 / 应用外壳与侧栏 / 文件树（忽略过滤、懒加载、搜索、只读预览、fs watch 刷新、右键操作）/ CI 门禁（#63）已就位；下一张是 #64（daemon 生命周期与握手）
+- **当前阶段**：实现进行中——骨架 / i18n / 持久化内核 / git worktree 发现 / 应用外壳与侧栏 / 文件树（忽略过滤、懒加载、搜索、只读预览、fs watch 刷新、右键操作）/ CI 门禁（#63）/ daemon 生命周期与握手（#64）/ 协议帧层（#65：分帧 + 控制优先 + 版本协商）已就位；下一张是 #66（ConPTY 实现）
 
 ## 目录
 
@@ -50,6 +50,18 @@ pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts
 
 `pnpm check` 是**平台感知**的：Windows 上检查整个 workspace 与绑定一致性；
 其他平台跳过 `src-tauri`（它需要 GTK / WebKit 系统库），只检查 `crates/` 下的核心 crate。
+
+> ⚠️ **daemon 会锁住构建产物**：app 启动即拉起 daemon（#64），它跑的是
+> `target\<profile>\ageminal-daemon.exe`；而 `tauri-build` 每次构建都会把 sidecar **先删再拷**
+> 到同一路径。Windows 上运行中的 exe 删不掉，构建会以 `Os { code: 5, PermissionDenied }`
+> 失败。**重新构建前先结束它**：
+>
+> ```powershell
+> taskkill /IM ageminal-daemon.exe /F
+> ```
+>
+> 装机后 daemon 跑在安装目录、构建产物在 `target\`，互不影响；跨 NSIS 更新的同类问题由镜像目录
+> `%LOCALAPPDATA%\Ageminal\daemon-host\<version>\` 解决（REQUIREMENTS.md §5.4 / #89）。
 
 ## 分发
 
