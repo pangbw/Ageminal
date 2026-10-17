@@ -60,14 +60,27 @@ pub struct Spawned {
 
 impl Spawned {
     /// 拉起并等到握手信息就绪。
+    ///
+    /// 「等就绪」放在**另一条线程 + 超时**里：daemon 真卡住时（CI 上挂过 20 分钟），测试要失败并
+    /// 把 daemon.log 打出来，而不是把整个测试二进制一起挂死。
     pub fn start(fixture: &Fixture) -> Self {
         let child =
             launch::spawn_detached(fixture.exe(), &fixture.pipe, &fixture.config_dir).unwrap();
-        // 失败时把 daemon 自己的日志一起打出来——脱离 stdout 的进程，日志是唯一线索。
-        let info = match launch::wait_ready(&fixture.config_dir, launch::READY_TIMEOUT) {
-            Ok(info) => info,
-            Err(error) => panic!(
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let config_dir = fixture.config_dir.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(launch::wait_ready(&config_dir, launch::READY_TIMEOUT));
+        });
+
+        let info = match receiver.recv_timeout(launch::READY_TIMEOUT + Duration::from_secs(10)) {
+            Ok(Ok(info)) => info,
+            Ok(Err(error)) => panic!(
                 "daemon 没就绪：{error}\n--- daemon.log ---\n{}",
+                daemon_log(fixture)
+            ),
+            Err(_) => panic!(
+                "等就绪超时（daemon 卡住？）\n--- daemon.log ---\n{}",
                 daemon_log(fixture)
             ),
         };

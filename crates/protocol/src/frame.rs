@@ -246,11 +246,13 @@ impl Frame {
     }
 
     /// 编码并整帧写出。
+    ///
+    /// **不调 `flush`**：在管道上 `FlushFileBuffers` 有「等对端读完才返回」的语义（MS 文档），
+    /// 会在「写方等读、读方等数据」之间造出不必要的耦合。`write_all` 完成后数据已经在管道里了。
     pub fn write_to(&self, writer: &mut impl Write) -> Result<(), FrameError> {
         let mut bytes = Vec::with_capacity(self.encoded_len());
         self.encode(&mut bytes)?;
         writer.write_all(&bytes)?;
-        writer.flush()?;
         Ok(())
     }
 

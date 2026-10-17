@@ -277,21 +277,24 @@ fn serve_connection(
     // —— 握手之后：写端交给一条**专门的写线程**（多个会话的输出线程都要往里塞），读端留在本线程。
     // 帧边界只有写线程一个人在维护，所以不会写花。
     let outbound = Arc::new(Outbound::new(log_path.to_path_buf()));
-    let mut pipe_writer = stream.try_clone()?;
-    let writer_thread = std::thread::spawn({
-        let outbound = Arc::clone(&outbound);
-        move || outbound.run(&mut pipe_writer)
+    let handles = HandleMap::new();
+
+    // 写线程**借用同一个句柄**，不 `try_clone()`：管道上出现过「原始句柄直写正常、复制句柄的写
+    // 调用一直不返回」的现象（#67 的 CI 实测）。`thread::scope` 让线程只活到本连接结束，不用复制。
+    let result = std::thread::scope(|scope| {
+        let writer_thread = scope.spawn(|| outbound.run(&mut writer));
+
+        let result = read_loop(&mut reader, sessions, &outbound, &handles, log_path);
+
+        outbound.close();
+        match writer_thread.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => logging::append(log_path, &format!("写出失败：{error}")),
+            Err(_) => logging::append(log_path, "写线程 panic"),
+        }
+        result
     });
 
-    let handles = HandleMap::new();
-    let result = read_loop(&mut reader, sessions, &outbound, &handles, log_path);
-
-    outbound.close();
-    match writer_thread.join() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => logging::append(log_path, &format!("写出失败：{error}")),
-        Err(_) => logging::append(log_path, "写线程 panic"),
-    }
     // 连接断了：把这个连接挂着的会话都摘掉，免得它们的输出线程继续往死连接里塞。
     sessions.detach_all(&outbound);
     result
