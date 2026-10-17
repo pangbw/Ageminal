@@ -169,17 +169,6 @@ impl Client {
         self.read_incoming().map(Some)
     }
 
-    /// 下一条入站消息（待取队列优先）；到 `deadline` 还没有就返回 `None`。
-    fn next_incoming_before(&mut self, deadline: Instant) -> Result<Option<Message>, DaemonError> {
-        if let Some(message) = self.pending.pop_front() {
-            return Ok(Some(message));
-        }
-        if !self.await_readable(deadline)? {
-            return Ok(None);
-        }
-        self.read_incoming().map(Some)
-    }
-
     /// 读一条（调用前应已确认可读）。
     fn read_incoming(&mut self) -> Result<Message, DaemonError> {
         match framed::read_message(&mut self.reader)? {
@@ -232,11 +221,16 @@ impl Client {
         framed::send(&mut self.writer, message)?;
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         loop {
-            let Some(incoming) = self.next_incoming_before(deadline)? else {
+            // ⚠️ **只从管道读，绝不从 `pending` 取**：`pending` 是留给 `next_event` 的事件队列。
+            // 从里面取会把自己刚塞进去的事件原样再拿出来，`accept` 永远不成立——死循环空转。
+            // （真机实测：第二个 `createSession` 撞上第一个会话的启动横幅时，100% CPU 打转不返回；
+            //   CI 只是时序恰好躲开了。）
+            if !self.await_readable(deadline)? {
                 return Err(DaemonError::Protocol {
                     reason: format!("daemon 在 {RESPONSE_TIMEOUT:?} 内没有回应 {message:?}"),
                 });
-            };
+            }
+            let incoming = self.read_incoming()?;
             if let Message::Error(ProtocolError { code, message }) = &incoming {
                 return Err(DaemonError::Rejected {
                     reason: format!("{code:?}：{message}"),
