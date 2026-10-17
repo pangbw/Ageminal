@@ -38,13 +38,16 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
     CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
-    InitializeProcThreadAttributeList, UpdateProcThreadAttribute, WaitForSingleObject,
-    CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    InitializeProcThreadAttributeList, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject, CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, INFINITE,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 use super::wincmd::{command_line, environment_block};
 use super::{windows_error, ExitStatus, Pty, PtyError, PtySize, PtySpec};
+
+/// 关控制台之后等进程退出的宽限；超时就强杀。
+const TERMINATE_GRACE: u32 = 2_000;
 
 /// 建伪控制台时**不开任何 flag**。
 ///
@@ -200,7 +203,16 @@ impl Pty for ConPty {
     }
 
     fn terminate(&mut self) -> Result<(), PtyError> {
+        // 先礼：关控制台。它会终止**已挂上去**的进程树，并等 conout 排空。
         self.hpc.close();
+
+        // 后兵：控制台刚建好、子进程还没来得及挂上去时，`ClosePseudoConsole` 可能什么都没杀——
+        // 进程会漏在后台，退出事件也永远不会来（#67 的 CI 实测：刚创建就 terminate 必挂）。
+        // 等不到就强杀根进程；整棵树通常已经被关控制台带走，这里只兜根。
+        let process = self.process.as_raw_handle();
+        if unsafe { WaitForSingleObject(process, TERMINATE_GRACE) } == WAIT_TIMEOUT {
+            unsafe { TerminateProcess(process, 1) };
+        }
         Ok(())
     }
 }
