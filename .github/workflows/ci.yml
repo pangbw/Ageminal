@@ -24,6 +24,8 @@ permissions:
 jobs:
   check:
     runs-on: windows-latest
+    # 兜底：门禁正常 3–4 分钟。挂住时要在 20 分钟内失败并留下日志，而不是耗到 6 小时的默认上限。
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

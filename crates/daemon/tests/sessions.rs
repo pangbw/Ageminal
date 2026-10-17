@@ -35,6 +35,8 @@ fn request(sid: &str) -> CreateSession {
 #[derive(Default)]
 struct Collected {
     text: HashMap<u32, String>,
+    /// 各会话的退出事件。**必须记下来**：两个会话同时终止时，先到的退出很可能不是你在等的那条。
+    exits: HashMap<String, SessionExited>,
 }
 
 impl Collected {
@@ -45,6 +47,9 @@ impl Collected {
                 .entry(handle)
                 .or_default()
                 .push_str(&String::from_utf8_lossy(&bytes)),
+            Message::SessionExited(exited) => {
+                self.exits.insert(exited.sid.clone(), exited);
+            }
             Message::Error(error) => panic!("daemon 报错：{error:?}"),
             _ => {}
         }

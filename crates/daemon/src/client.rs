@@ -33,6 +33,11 @@ use crate::{framed, win, DaemonError, DaemonInfo};
 /// 管道忙时的单次重试等待（`WaitNamedPipeW` 的毫秒数）。
 const RETRY_WAIT_MS: u32 = 250;
 
+/// 请求-响应的等待上限。
+///
+/// **不能无限等**：daemon 一旦卡住，调用方（乃至 CI）会一起挂死，而且什么线索都不留。
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// 与 daemon 的一条**已握手**连接。
 #[derive(Debug)]
 pub struct Client {
@@ -165,7 +170,19 @@ impl Client {
     ) -> Result<Message, DaemonError> {
         framed::send(&mut self.writer, message)?;
         loop {
-            let incoming = self.next_incoming()?;
+            let incoming = match self.incoming.recv_timeout(RESPONSE_TIMEOUT) {
+                Ok(message) => message,
+                Err(RecvTimeoutError::Timeout) => {
+                    return Err(DaemonError::Protocol {
+                        reason: format!("daemon 在 {RESPONSE_TIMEOUT:?} 内没有回应 {message:?}"),
+                    })
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(DaemonError::Protocol {
+                        reason: "daemon 关闭了连接".to_owned(),
+                    })
+                }
+            };
             if let Message::Error(ProtocolError { code, message }) = &incoming {
                 return Err(DaemonError::Rejected {
                     reason: format!("{code:?}：{message}"),
@@ -176,16 +193,6 @@ impl Client {
             }
             self.pending.push_back(incoming);
         }
-    }
-
-    /// 下一条入站消息（阻塞；待取队列优先）。
-    fn next_incoming(&mut self) -> Result<Message, DaemonError> {
-        if let Some(message) = self.pending.pop_front() {
-            return Ok(message);
-        }
-        self.incoming.recv().map_err(|_| DaemonError::Protocol {
-            reason: "daemon 关闭了连接".to_owned(),
-        })
     }
 }
 
