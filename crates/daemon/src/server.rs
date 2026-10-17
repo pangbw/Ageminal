@@ -21,7 +21,8 @@ use ageminal_protocol::{
     PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE,
+    INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
@@ -315,15 +316,21 @@ fn read_loop(
     log_path: &Path,
 ) -> Result<(), DaemonError> {
     loop {
-        if !wait_for_incoming(handle) {
+        if !wait_for_incoming(handle, log_path) {
             return Ok(());
         }
         match framed::read_message(reader) {
             // 对端在帧边界处正常关闭。
             Ok(None) => return Ok(()),
             Ok(Some(message)) => {
-                // 控制面留一条审计痕迹（数据面太吵，不记）：daemon 的 stdio 是 NUL，日志是唯一线索。
-                if !message.kind().is_raw_payload() {
+                // 控制面留一条审计痕迹。`Ack` 是流控热路径、`Input`/`Data` 是数据面，都不记；
+                // daemon 的 stdio 是 NUL，剩下的日志是唯一线索。
+                if !matches!(
+                    message.kind(),
+                    ageminal_protocol::FrameKind::Ack
+                        | ageminal_protocol::FrameKind::Data
+                        | ageminal_protocol::FrameKind::Input
+                ) {
                     logging::append(log_path, &format!("<- {:?}", message.kind()));
                 }
                 dispatch(message, sessions, outbound, handles)?
@@ -341,7 +348,7 @@ fn read_loop(
 /// 所以这里先 `PeekNamedPipe` 探一下，有数据才进 `ReadFile`——这时读是立即返回的，不会占着句柄。
 ///
 /// 代价是空闲时每 [`READ_POLL`] 醒一次；换真正的 overlapped IO 就没这个轮询，留给 #68。
-fn wait_for_incoming(handle: HANDLE) -> bool {
+fn wait_for_incoming(handle: HANDLE, log_path: &Path) -> bool {
     loop {
         let mut available: u32 = 0;
         let ok = unsafe {
@@ -355,7 +362,14 @@ fn wait_for_incoming(handle: HANDLE) -> bool {
             )
         };
         if ok == 0 {
-            // 对端断了（ERROR_BROKEN_PIPE / ERROR_NO_DATA）——正常收尾。
+            let error = unsafe { GetLastError() };
+            // ERROR_BROKEN_PIPE / ERROR_NO_DATA 是对端正常收尾；其余情况至少留个痕迹。
+            if error != ERROR_BROKEN_PIPE && error != ERROR_NO_DATA {
+                logging::append(
+                    log_path,
+                    &format!("读循环结束：PeekNamedPipe 失败 GetLastError={error}"),
+                );
+            }
             return false;
         }
         if available > 0 {

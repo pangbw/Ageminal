@@ -35,6 +35,8 @@ fn request(sid: &str) -> CreateSession {
 #[derive(Default)]
 struct Collected {
     text: HashMap<u32, String>,
+    /// 每个句柄收到的**字节数**（`ack` 记的是字节，不是字符）。
+    bytes: HashMap<u32, u64>,
     /// 各会话的退出事件。**必须记下来**：两个会话同时终止时，先到的退出很可能不是你在等的那条。
     exits: HashMap<String, SessionExited>,
 }
@@ -42,11 +44,13 @@ struct Collected {
 impl Collected {
     fn absorb(&mut self, message: Message) {
         match message {
-            Message::Data { handle, bytes, .. } => self
-                .text
-                .entry(handle)
-                .or_default()
-                .push_str(&String::from_utf8_lossy(&bytes)),
+            Message::Data { handle, bytes, .. } => {
+                *self.bytes.entry(handle).or_default() += bytes.len() as u64;
+                self.text
+                    .entry(handle)
+                    .or_default()
+                    .push_str(&String::from_utf8_lossy(&bytes));
+            }
             Message::SessionExited(exited) => {
                 self.exits.insert(exited.sid.clone(), exited);
             }
@@ -87,6 +91,10 @@ impl Collected {
 
     fn get(&self, handle: u32) -> String {
         self.text.get(&handle).cloned().unwrap_or_default()
+    }
+
+    fn bytes(&self, handle: u32) -> u64 {
+        self.bytes.get(&handle).copied().unwrap_or_default()
     }
 }
 
@@ -151,7 +159,7 @@ fn create_write_ack_and_terminate() {
 
     // ack（fire-and-forget；如果 daemon 不认，会回一条 Error，被 `absorb` 抓成 panic）。
     client
-        .ack("s1", collected.get(created.handle).len() as u64)
+        .ack("s1", collected.bytes(created.handle))
         .expect("ack");
 
     // terminate → 等到同世代的退出事件。

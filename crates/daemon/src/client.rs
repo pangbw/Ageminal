@@ -56,6 +56,9 @@ pub struct Client {
     reader: File,
     writer: File,
     /// 请求-响应时「抢跑」收到的事件，留给 [`Client::next_event`]。
+    ///
+    /// ⚠️ **无界**：这一层还没有背压（#73）与按会话分发的通道（#68）。本票的用途是无 UI 的集成
+    /// 测试（量小）；#68 会换成每会话一条通道，届时把这里删掉。
     pending: VecDeque<Message>,
 }
 
@@ -264,6 +267,8 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
             caps: Caps::supported(),
             token: info.token.clone(),
             client_instance_id: client_instance_id(),
+            // 握手里的 `resume` 目前**留空**：回放与对账归 #72。接上时这里要改成
+            // 「每条已 attach 会话的 sid + 最后 seq」，服务端按 §6.2 逐条 Attach。
             resume: Vec::new(),
         }),
     )?;

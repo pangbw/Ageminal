@@ -8,8 +8,10 @@
 //!
 //! # 这一层还没有的东西
 //!
-//! - **回放**：没有历史缓冲，`Attach` 从「当前进度」接上实时流；断开期间的输出**丢弃**。
-//!   `seq` 是**累计字节偏移**（不是帧号），所以 #72 的环形缓冲接上后可以直接用它当起点。
+//! - **回放**：没有历史缓冲，`Attach` 从「当前进度」接上实时流；断开期间的输出**丢弃**，
+//!   **断开期间产生的退出事件也丢弃**（`attachment` 为空时无处可送）——重连后只会得到「没有会话」，
+//!   分不清「从未存在」和「离开期间退了」。两件事都归 #72 的环形缓冲 + 对账。
+//!   `seq` 是**累计字节偏移**（不是帧号），所以 #72 接上后可以直接用它当起点。
 //! - **流控**：`Ack` 只记账（[`SessionTable::ack`]），高低水位暂停发送 / 停读 PTY 归 #73。
 
 use std::collections::HashMap;
@@ -131,14 +133,23 @@ impl SessionTable {
             attachment: Mutex::new(Some(Attachment { handle, outbound })),
         });
 
-        // spawn 期间表可能被别的连接塞进同名会话（单连接下不会，但别赌）。
-        if let Some(existing) = self.insert(session.clone()) {
-            if let Some(mut pty) = existing.control.lock().expect("control").take() {
-                let _ = pty.terminate();
+        // spawn 期间表可能被塞进同名会话（单连接下不会，但别赌）。**保住活着的那一个**，
+        // 把我们刚建的这个关掉——不能反过来杀掉别人的会话。
+        {
+            let mut sessions = self.sessions.lock().expect("sessions");
+            if sessions.contains_key(&session.sid) {
+                drop(sessions);
+                if let Some(mut pty) = session.control.lock().expect("control").take() {
+                    std::thread::spawn(move || {
+                        let _ = pty.terminate();
+                        drop(pty);
+                    });
+                }
+                return Err(DaemonError::Session {
+                    reason: format!("会话 {} 还活着；要重开请先 terminate", request.sid),
+                });
             }
-            return Err(DaemonError::Session {
-                reason: format!("会话 {} 还活着；要重开请先 terminate", request.sid),
-            });
+            sessions.insert(session.sid.clone(), session.clone());
         }
 
         spawn_output_pump(session.clone(), reader);
@@ -259,7 +270,8 @@ impl SessionTable {
             })
     }
 
-    /// 往表里放一个会话；返回被顶掉的旧值（正常情况下不会有）。
+    /// 往表里放一个会话；返回被顶掉的旧值（只给单测用——生产路径在 `create` 里原子地查+插）。
+    #[cfg(test)]
     fn insert(&self, session: Arc<Session>) -> Option<Arc<Session>> {
         self.sessions
             .lock()
@@ -306,7 +318,10 @@ fn spawn_output_pump(session: Arc<Session>, mut reader: Box<dyn Read + Send>) {
     });
 }
 
-/// exit 监视线程：轮询（不是阻塞 `wait`——同一个 `Pty` 还要被 resize / terminate 用）。
+/// exit 监视线程：在**自己的**进程句柄上轮询，不碰 `control` 锁。
+///
+/// 用轮询而不是阻塞 `wait`：关控制台那一步可能很久（`terminate` 已挪到独立线程），阻塞式等待会占着
+/// 一条线程直到进程真的退出，对「刚创建就终止」这类场景反而更容易叠住。
 fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
     thread::spawn(move || {
         // 句柄在 `session` 里（`OwnedHandle`，Send）；裸 HANDLE 是 `*mut c_void`，不能直接跨线程。
@@ -318,9 +333,8 @@ fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
             match unsafe { WaitForSingleObject(handle, 0) } {
                 WAIT_OBJECT_0 => {
                     let mut code: u32 = 0;
-                    if unsafe { GetExitCodeProcess(handle, &mut code) } == 0 {
-                        return;
-                    }
+                    // 拿不到退出码也要继续：否则这个会话会**永久留在表里**，同名重建永远被拒。
+                    let _ = unsafe { GetExitCodeProcess(handle, &mut code) };
 
                     // 只有「表里当前这一代」才上报（迟到 exit 按 incarnationId 丢弃）。
                     if table.remove_if_current(&session.sid, &session.incarnation_id) {
@@ -408,10 +422,15 @@ fn find_git_bash() -> Option<PathBuf> {
         .into_iter()
         .find(|path| path.is_file())
         .or_else(|| {
+            // PATH 上的 `bash.exe` 可能是 **WSL 的** `C:\Windows\System32\bash.exe`（打开的是 Linux），
+            // 与「不把 WSL 当运行目标」相悖。只认路径里带 `Git` 的那个。
             std::env::var_os("PATH").and_then(|path| {
                 std::env::split_paths(&path)
                     .map(|directory| directory.join("bash.exe"))
-                    .find(|candidate| candidate.is_file())
+                    .find(|candidate| {
+                        candidate.is_file()
+                            && candidate.to_string_lossy().to_lowercase().contains("git")
+                    })
             })
         })
 }
