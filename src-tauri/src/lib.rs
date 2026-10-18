@@ -454,7 +454,7 @@ pub fn run() {
             // 集成注入物使用稳定 shim 路径（#31 / #83）；复制失败只记录，不阻塞启动。
             integrations::ensure_shim();
             // 守护进程常驻（#64）：后台确保它在跑（复用优先），不阻塞窗口创建。
-            daemon::spawn_ensure();
+            daemon::spawn_ensure(app.package_info().version.to_string());
             // 终端服务（#68）：连接 daemon、按会话合批转发到前端 Channel。
             // 同一线程也归约 agent 状态（#80），并把更新作为 `agent-status` 全局事件推给 UI。
             app.manage(terminal::TerminalService::start(app.handle().clone()));
