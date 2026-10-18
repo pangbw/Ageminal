@@ -79,7 +79,7 @@
 | **集成状态** | `未启用` / `已启用` / `集成有更新` / `部分应用（X/Y 失败）` / `不受支持` |
 | **会话关联变量** | daemon 在 spawn 时写入的 `AGEMINAL_SESSION_ID` / `INCARNATION` / `PIPE` / `TOKEN` / `WORKTREE`，以及已知入口的 `AGENT`；子进程自动继承，#79。 |
 | **通知 shim** | 独立 `ageminal-notify.exe`：把 agent 原生事件经 Named Pipe 投给 daemon；payload 优先级 `--json` > 尾位 JSON > 非 TTY stdin，失败默认 exit 0 + 有界日志。稳定落点 `%LOCALAPPDATA%\Ageminal\bin\`。 |
-| **集成投放** | Claude / opencode / pi 的新增文件/目录，由设置页确认后写入；启用前 diff、既有文件备份、停用回滚、幂等；Codex 的 TOML 改写归 #84。 |
+| **集成投放** | Claude / opencode / pi 的新增文件/目录 + Codex 的 TOML `notify` 文本级改写；由设置页确认后写入；启用前 diff、既有文件备份、停用回滚、幂等。 |
 | **多客户端口** | daemon 的命名管道实例池：UI 长连接与 notify 短连接并发，不再串行阻塞；事件经 daemon 广播到 UI 连接。 |
 | **版本化状态** | 快照包含 `state + source + timestampMs + seq`；逻辑序号优先、时间戳兜底，状态机在 `crates/agent`（#80）。 |
 | **统一状态** | 由 agent 事件 + 进程事实归并出的会话状态：`running` / `idle` / `waiting` / `permission` / `done` / `error` / `exited`；纯逻辑在 `crates/agent`，app-core 通过 `agent-status` 全局事件推送（#80），前端投影为 worktree / 页签彩点与桌面通知（#82）。 |

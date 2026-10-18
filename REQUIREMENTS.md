@@ -331,7 +331,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   **优先级**：命令行显式参数 > 环境变量（`--session` / `--agent`）。**被 agent 自身配置覆盖时以覆盖值为准**；关键变量缺失时 shim 安全失败（exit 0 + 日志）。
   ~~`AGEMINAL_HOOK_PORT`~~ **废弃**（E2 #23 已改 `command`+`async`，不需要 HTTP hook）。
 - **不自动注入上下文** ✅：仅在启动时 `cd` 到 worktree 并暴露环境变量。
-- **注入方式** ✅（**E6 #27 取代 E2 #23 的按会话机制**）：**写全局配置，由用户在设置页手动开启**；未开启时走降级（E5 #26）。**#83 已落地** Claude / opencode / pi 三家：设置页 diff 预览 → 确认 → 自动备份 → 幂等投放；停用回滚；Codex TOML 归 #84。shim 先复制到稳定 `%LOCALAPPDATA%\Ageminal\bin\ageminal-notify.exe`，注入物用绝对路径，不写 PATH。
+- **注入方式** ✅（**E6 #27 取代 E2 #23 的按会话机制**）：**写全局配置，由用户在设置页手动开启**；未开启时走降级（E5 #26）。**#83 / #84 已落地** Claude / opencode / pi 三家新增文件投放 + Codex 的 TOML `notify` 文本级追加/替换：设置页 diff 预览 → 确认 → 自动备份 → 幂等投放；停用回滚。shim 先复制到稳定 `%LOCALAPPDATA%\Ageminal\bin\ageminal-notify.exe`，注入物用绝对路径，不写 PATH。
 
   | agent | 全局写法 | 卸载 |
   | --- | --- | --- |
