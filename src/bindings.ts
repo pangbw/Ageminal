@@ -38,6 +38,12 @@ export const commands = {
 	setProjectSettings: (input: ProjectSettingsInput) => typedError<ProjectSettingsView, string>(__TAURI_INVOKE("set_project_settings", { input })),
 	/**  打开日志目录（#86 通用入口）。 */
 	openLogsDir: () => typedError<null, string>(__TAURI_INVOKE("open_logs_dir")),
+	/**  列出可导出的日志文件（含滚动历史），不包含 terminal history。 */
+	diagnosticsPlan: () => __TAURI_INVOKE<DiagnosticsFileView[]>("diagnostics_plan"),
+	/**  导出 zip；返回导出路径。默认脱敏，`include_raw_paths` 只关闭路径替换。 */
+	diagnosticsExport: (includeRawPaths: boolean) => typedError<string, string>(__TAURI_INVOKE("diagnostics_export", { includeRawPaths })),
+	/**  重置本地指标采集文件（#88）。 */
+	metricsReset: () => typedError<null, string>(__TAURI_INVOKE("metrics_reset")),
 	/**  取全部 agent 配置（设置页 / 菜单初始化）。 */
 	getAgents: () => typedError<AgentConfig[], string>(__TAURI_INVOKE("get_agents")),
 	/**  保存一个 agent 的配置，返回合并后的完整清单。 */
@@ -285,6 +291,16 @@ export type CursorStyleView =
 "bar" | 
 /**  下划线。 */
 "underline";
+
+/**  导出前的一个文件。 */
+export type DiagnosticsFileView = {
+	/**  文件名。 */
+	name: string,
+	/**  绝对路径。 */
+	path: string,
+	/**  字节数；TS number。 */
+	size: number | null,
+};
 
 /**  目录里的一个条目（与 `ageminal-files::Entry` 字段一一对应）。 */
 export type DirEntryView = {

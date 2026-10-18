@@ -33,12 +33,12 @@ pub fn spawn_ensure() {
 #[cfg(windows)]
 fn ensure_running() {
     let Some(exe) = daemon_exe() else {
-        eprintln!("[daemon] 找不到 ageminal-daemon（sidecar 未就位？），跳过拉起");
+        tracing::warn!("[daemon] 找不到 ageminal-daemon（sidecar 未就位？），跳过拉起");
         return;
     };
     match ageminal_daemon::launch::ensure_running(&exe) {
-        Ok(info) => eprintln!("[daemon] 就绪：pid={} pipe={}", info.pid, info.pipe),
-        Err(error) => eprintln!("[daemon] 拉起失败：{error}"),
+        Ok(info) => tracing::warn!("[daemon] 就绪：pid={} pipe={}", info.pid, info.pipe),
+        Err(error) => tracing::warn!("[daemon] 拉起失败：{error}"),
     }
 }
 

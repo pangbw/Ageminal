@@ -387,7 +387,7 @@ impl TerminalService {
                 .name("terminal-service".to_owned())
                 .spawn(move || service_loop(receiver, app, worker_statuses))
             {
-                eprintln!("[terminal] 服务线程启动失败：{error}");
+                tracing::warn!("[terminal] 服务线程启动失败：{error}");
             }
             Self {
                 sender: worker,
@@ -624,7 +624,7 @@ fn resolve_launch(
             ) {
                 Ok(command) => Some(command),
                 Err(error) => {
-                    eprintln!("[terminal] resume 命令生成失败，回退重建：{error}");
+                    tracing::warn!("[terminal] resume 命令生成失败，回退重建：{error}");
                     None
                 }
             }
@@ -739,7 +739,7 @@ fn ensure_launch_spec(store: &Mutex<Store>, sid: &str, cwd: &str, resolution: &L
         Instant::now(),
     );
     if let Err(error) = result {
-        eprintln!("[terminal] 写入占位 launch spec 失败：{error}");
+        tracing::warn!("[terminal] 写入占位 launch spec 失败：{error}");
     }
 }
 
@@ -752,7 +752,7 @@ fn record_launch(
     opened: &TerminalOpened,
 ) {
     let Ok(mut store) = store.lock() else {
-        eprintln!("[terminal] 状态锁已被污染，跳过 launch spec 写入");
+        tracing::warn!("[terminal] 状态锁已被污染，跳过 launch spec 写入");
         return;
     };
     let now = crate::now_ms();
@@ -819,7 +819,7 @@ fn record_launch(
         Instant::now(),
     );
     if let Err(error) = result {
-        eprintln!("[terminal] 写入 launch spec 失败：{error}");
+        tracing::warn!("[terminal] 写入 launch spec 失败：{error}");
     }
 }
 
@@ -965,7 +965,7 @@ pub fn terminal_close(
                 Instant::now(),
             );
             if let Err(error) = removed {
-                eprintln!("[terminal] 清理关闭页签的持久状态失败：{error}");
+                tracing::warn!("[terminal] 清理关闭页签的持久状态失败：{error}");
             }
         }
     }
@@ -1111,7 +1111,7 @@ fn heuristic_tick(
     let sessions = match client.list_sessions() {
         Ok(sessions) => sessions,
         Err(error) => {
-            eprintln!("[terminal] 降级轮询 ListSessions 失败：{error}");
+            tracing::warn!("[terminal] 降级轮询 ListSessions 失败：{error}");
             return Vec::new();
         }
     };
@@ -1121,6 +1121,7 @@ fn heuristic_tick(
         .collect();
     let nodes = scanner.scan();
     let mut updates = Vec::new();
+    crate::metrics::flush_throughput();
     for (sid, session) in runtime.sessions.iter_mut() {
         let info = by_sid.get(sid);
         if let Some(info) = info {
@@ -1154,6 +1155,15 @@ fn heuristic_tick(
 /// 把归约结果推给前端；`agent-status` 是全局低频事件（#80 / #82 消费）。
 #[cfg(windows)]
 fn emit_agent_status(app: &tauri::AppHandle, update: StatusUpdate) {
+    crate::metrics::record_status(&update);
+    tracing::info!(
+        sid = %update.current.sid,
+        incarnation = update.current.incarnation_id.as_deref().unwrap_or(""),
+        state = ?update.current.state,
+        source = ?update.current.source,
+        degraded = update.current.degraded,
+        "agent-status"
+    );
     crate::notifications::notify(app, &update);
     let previous = update.previous.map(AgentStatusState::from);
     let current = AgentStatusView::from(update.current);
@@ -1265,7 +1275,7 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
             if let Some(client) = runtime.client.as_mut() {
                 if let Err(error) = client.resize(&sid, pty_size(cols, rows)) {
                     // resize 失败通常只是会话已退出；别因此丢掉整条连接。
-                    eprintln!("[terminal] resize {sid} 失败：{error}");
+                    tracing::warn!("[terminal] resize {sid} 失败：{error}");
                 }
             }
         }
@@ -1275,7 +1285,7 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
             };
             if let Some(client) = runtime.client.as_mut() {
                 if let Err(error) = client.ack(&sid, base.saturating_add(acked_bytes)) {
-                    eprintln!("[terminal] ack {sid} 失败：{error}");
+                    tracing::warn!("[terminal] ack {sid} 失败：{error}");
                 }
             }
         }
@@ -1311,7 +1321,7 @@ fn shutdown_all(runtime: &mut Runtime, reply: mpsc::SyncSender<Result<(), String
             match ageminal_daemon::client::connect(info, Duration::from_secs(1)) {
                 Ok(client) => runtime.client = Some(client),
                 Err(error) => {
-                    eprintln!("[terminal] 停机前连接 daemon 失败：{error}");
+                    tracing::warn!("[terminal] 停机前连接 daemon 失败：{error}");
                     failure = Some(error.to_string());
                 }
             }
@@ -1332,7 +1342,7 @@ fn shutdown_all(runtime: &mut Runtime, reply: mpsc::SyncSender<Result<(), String
         if let Some(info) = info.as_ref() {
             let mut stopped = ageminal_daemon::launch::wait_stopped(info, Duration::from_secs(5));
             if !stopped {
-                eprintln!("[terminal] daemon 未在停机确认后退出，执行兜底终止");
+                tracing::warn!("[terminal] daemon 未在停机确认后退出，执行兜底终止");
                 let _ = ageminal_daemon::launch::terminate_process(info);
                 stopped = ageminal_daemon::launch::wait_stopped(info, Duration::from_secs(3));
                 if stopped {
@@ -1668,7 +1678,7 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
         }
         if let Some(client) = runtime.client.as_mut() {
             if let Err(error) = client.detach(sid) {
-                eprintln!("[terminal] detach {sid} 失败：{error}");
+                tracing::warn!("[terminal] detach {sid} 失败：{error}");
             }
         }
         if let Some(session) = runtime.sessions.get_mut(sid) {
@@ -1821,6 +1831,7 @@ fn handle_message(
 
     match message {
         Message::Data { handle, seq, bytes } => {
+            crate::metrics::add_bytes(bytes.len());
             let sid = runtime.by_handle.get(&handle).cloned();
             // 纯回放不是「现在有输出」；否则重新 attach 会把已经空闲很久的 agent 短暂显示成
             // running。混有实时字节的帧 / 实时帧仍立即更新。
@@ -1898,7 +1909,7 @@ fn handle_message(
         Message::Error(error) => {
             // 协议里的 `Error` 没有 sid；很可能是某条无响应命令（resize / ack / input）
             // 的失败。不能广播给所有会话，否则一个已退出的会话会让整屏终端都弹错误。
-            eprintln!("[terminal] daemon 错误：{error:?}");
+            tracing::warn!("[terminal] daemon 错误：{error:?}");
             None
         }
         // 请求-响应已经在 Client::request 里消化；这里只忽略心跳等。

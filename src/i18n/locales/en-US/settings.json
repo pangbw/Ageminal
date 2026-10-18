@@ -139,5 +139,17 @@
     "fontDerivation": "Ageminal Mono is derived from Maple Mono NF CN v7.9 and renamed; font assets are not distributed in this repository yet.",
     "dependencies": "Dependency licenses",
     "dependencyHint": "Major direct dependencies are listed here; the full audit runs in scripts/check-licenses.mjs."
+  },
+  "diagnostics": {
+    "title": "Diagnostics & logs",
+    "hint": "Review file sizes before export; redacted by default, no terminal history or conversations.",
+    "refresh": "Refresh files",
+    "empty": "No log files yet.",
+    "includeRawPaths": "Include raw paths (tokens are still removed)",
+    "redaction": "By default USERPROFILE becomes [user], project paths become [project-N], and daemon tokens are removed.",
+    "export": "Export diagnostics zip",
+    "resetMetrics": "Reset local metrics",
+    "exported": "Diagnostics exported: {path}",
+    "metricsReset": "Local metrics reset."
   }
 }

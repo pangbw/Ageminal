@@ -14,6 +14,7 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 import type {
   AgentConfig,
   AppInfo,
+  DiagnosticsFileView,
   IntegrationAction,
   IntegrationPreview,
   IntegrationStatus,
@@ -80,6 +81,12 @@ const integrationTestAgent = ref<string | null>(null);
 const savingGeneral = ref(false);
 const savingAppearance = ref(false);
 const appInfo = ref<AppInfo | null>(null);
+const diagnosticsFiles = ref<DiagnosticsFileView[]>([]);
+const includeRawPaths = ref(false);
+const diagnosticsBusy = ref(false);
+const diagnosticsNotice = ref<string | null>(null);
+const diagnosticsError = ref<string | null>(null);
+const metricsNotice = ref<string | null>(null);
 const generalDraft = reactive({
   defaultShell: "",
   confirmClose: true,
@@ -117,6 +124,7 @@ const ACTION_LABEL: Record<IntegrationAction, MessagePath> = {
 
 onMounted(() => {
   void commands.appInfo().then((info) => { appInfo.value = info; }).catch(() => undefined);
+  void loadDiagnostics();
   void agents.ensureLoaded();
   void integrations.refresh().catch((failure: unknown) => {
     integrationError.value = failure instanceof Error ? failure.message : String(failure);
@@ -297,6 +305,46 @@ async function testIntegration(agentId: string): Promise<void> {
     integrationError.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     integrationBusy.value = null;
+  }
+}
+
+async function loadDiagnostics(): Promise<void> {
+  try {
+    diagnosticsFiles.value = await commands.diagnosticsPlan();
+  } catch (failure) {
+    diagnosticsError.value = failure instanceof Error ? failure.message : String(failure);
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return Math.round(bytes) + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
+}
+
+async function exportDiagnostics(): Promise<void> {
+  diagnosticsBusy.value = true;
+  diagnosticsError.value = null;
+  diagnosticsNotice.value = null;
+  try {
+    const path = await commands.diagnosticsExport(includeRawPaths.value).then(unwrap);
+    diagnosticsNotice.value = t("settings.diagnostics.exported", { path });
+    await loadDiagnostics();
+  } catch (failure) {
+    diagnosticsError.value = failure instanceof Error ? failure.message : String(failure);
+  } finally {
+    diagnosticsBusy.value = false;
+  }
+}
+
+async function resetMetrics(): Promise<void> {
+  metricsNotice.value = null;
+  try {
+    await commands.metricsReset().then(unwrap);
+    metricsNotice.value = t("settings.diagnostics.metricsReset");
+    await loadDiagnostics();
+  } catch (failure) {
+    diagnosticsError.value = failure instanceof Error ? failure.message : String(failure);
   }
 }
 
@@ -756,6 +804,89 @@ async function openLogs(): Promise<void> {
           >
             {{ error }}
           </p>
+
+          <section class="diagnostics">
+            <div class="diagnostics__head">
+              <div>
+                <h3 class="setting__title">
+                  {{ t("settings.diagnostics.title") }}
+                </h3>
+                <p class="setting__hint">
+                  {{ t("settings.diagnostics.hint") }}
+                </p>
+              </div>
+              <button
+                class="button"
+                type="button"
+                :disabled="diagnosticsBusy"
+                @click="loadDiagnostics"
+              >
+                {{ t("settings.diagnostics.refresh") }}
+              </button>
+            </div>
+            <ul class="diagnostics__files">
+              <li
+                v-for="file in diagnosticsFiles"
+                :key="file.path"
+              >
+                <code>{{ file.name }}</code><span>{{ formatBytes(file.size ?? 0) }}</span>
+              </li>
+            </ul>
+            <p
+              v-if="diagnosticsFiles.length === 0"
+              class="setting__hint"
+            >
+              {{ t("settings.diagnostics.empty") }}
+            </p>
+            <label class="diagnostics__check">
+              <input
+                v-model="includeRawPaths"
+                type="checkbox"
+              >
+              <span>{{ t("settings.diagnostics.includeRawPaths") }}</span>
+            </label>
+            <p class="setting__hint">
+              {{ t("settings.diagnostics.redaction") }}
+            </p>
+            <div class="diagnostics__actions">
+              <button
+                class="button button--primary"
+                type="button"
+                :disabled="diagnosticsBusy"
+                @click="exportDiagnostics"
+              >
+                {{ t("settings.diagnostics.export") }}
+              </button>
+              <button
+                class="button"
+                type="button"
+                @click="resetMetrics"
+              >
+                {{ t("settings.diagnostics.resetMetrics") }}
+              </button>
+            </div>
+            <p
+              v-if="diagnosticsNotice"
+              class="setting__notice"
+              role="status"
+            >
+              {{ diagnosticsNotice }}
+            </p>
+            <p
+              v-if="metricsNotice"
+              class="setting__notice"
+              role="status"
+            >
+              {{ metricsNotice }}
+            </p>
+            <p
+              v-if="diagnosticsError"
+              class="setting__error"
+              role="alert"
+            >
+              {{ diagnosticsError }}
+            </p>
+          </section>
         </template>
 
         <template v-else-if="section === 'appearance'">
@@ -1718,5 +1849,49 @@ kbd {
 .license-table td:last-child {
   width: 180px;
   color: var(--color-faint);
+}
+
+.diagnostics {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.diagnostics__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.diagnostics__files {
+  margin: var(--space-3) 0;
+  padding: 0;
+  list-style: none;
+  color: var(--color-muted);
+  font-size: var(--font-size-xs);
+}
+
+.diagnostics__files li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 2px 0;
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.diagnostics__check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+}
+
+.diagnostics__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 </style>

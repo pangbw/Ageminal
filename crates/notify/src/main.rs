@@ -299,7 +299,13 @@ fn log_failure(reason: &str) {
         return;
     };
     let logs = PathBuf::from(local).join("Ageminal").join("logs");
-    let _ = append_failure(&logs, reason);
+    let _ = append_failure(&logs, &format!("{} {reason}", session_tag()));
+}
+
+fn session_tag() -> String {
+    let sid = std::env::var("AGEMINAL_SESSION_ID").unwrap_or_default();
+    let incarnation = std::env::var("AGEMINAL_INCARNATION").unwrap_or_default();
+    format!("sid={sid} inc={incarnation}")
 }
 
 fn append_failure(logs: &Path, reason: &str) -> std::io::Result<()> {
@@ -312,7 +318,11 @@ fn log_success() {
         return;
     };
     let logs = PathBuf::from(local).join("Ageminal").join("logs");
-    let _ = append_log(&logs, "notify-success.log", "delivered");
+    let _ = append_log(
+        &logs,
+        "notify-success.log",
+        &format!("delivered {}", session_tag()),
+    );
 }
 
 fn append_log(logs: &Path, name: &str, message: &str) -> std::io::Result<()> {
@@ -322,9 +332,15 @@ fn append_log(logs: &Path, name: &str, message: &str) -> std::io::Result<()> {
         .map(|metadata| metadata.len() > FAILURE_LOG_LIMIT)
         .unwrap_or(false)
     {
-        let rotated = logs.join(format!("{name}.1"));
-        let _ = std::fs::remove_file(&rotated);
-        let _ = std::fs::rename(&path, &rotated);
+        let base = path.to_string_lossy();
+        let _ = std::fs::remove_file(logs.join(format!("{name}.5")));
+        for generation in (1..5).rev() {
+            let _ = std::fs::rename(
+                logs.join(format!("{name}.{generation}")),
+                logs.join(format!("{name}.{}", generation + 1)),
+            );
+        }
+        let _ = std::fs::rename(&path, PathBuf::from(format!("{base}.1")));
     }
     use std::io::Write;
     let mut file = std::fs::OpenOptions::new()

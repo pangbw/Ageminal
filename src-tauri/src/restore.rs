@@ -333,11 +333,11 @@ pub async fn restore_tabs(
             .collect::<Vec<_>>(),
         Ok(Err(error)) => {
             // list 失败 ≠ 进程死亡：按「仅 UI 有」恢复，真正建会话前 terminal_open 还会再查一次。
-            eprintln!("[restore] 枚举 daemon 会话失败，按持久骨架恢复：{error}");
+            tracing::warn!("[restore] 枚举 daemon 会话失败，按持久骨架恢复：{error}");
             Vec::new()
         }
         Err(error) => {
-            eprintln!("[restore] 枚举会话的线程失败：{error}");
+            tracing::warn!("[restore] 枚举会话的线程失败：{error}");
             Vec::new()
         }
     };

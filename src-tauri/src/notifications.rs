@@ -105,7 +105,7 @@ pub fn notify(app: &tauri::AppHandle, update: &StatusUpdate) {
     };
     let title = format!("{name} · {label}");
     if let Err(error) = app.notification().builder().title(title).body(body).show() {
-        eprintln!("[notification] 发送失败：{error}");
+        tracing::warn!("[notification] 发送失败：{error}");
     }
 }
 

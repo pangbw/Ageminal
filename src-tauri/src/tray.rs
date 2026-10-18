@@ -129,7 +129,7 @@ pub fn exit_all(app: &AppHandle) {
             None => Err("终端服务不存在".to_owned()),
         };
         if let Err(error) = result {
-            eprintln!("[tray] 结束所有会话失败：{error}；尝试强制结束 daemon");
+            tracing::warn!("[tray] 结束所有会话失败：{error}；尝试强制结束 daemon");
             crate::daemon::force_stop();
         }
         app.exit(0);

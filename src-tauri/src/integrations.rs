@@ -972,8 +972,8 @@ fn failure_count(local: &Path) -> u32 {
 /// 应用启动时把 sidecar 复制到稳定路径；失败只记录，不影响启动。
 pub fn ensure_shim() {
     match IntegrationContext::load().and_then(|context| context.ensure_shim()) {
-        Ok(path) => eprintln!("[integration] shim ready: {}", path.display()),
-        Err(error) => eprintln!("[integration] shim 不可用：{error}"),
+        Ok(path) => tracing::warn!("[integration] shim ready: {}", path.display()),
+        Err(error) => tracing::warn!("[integration] shim 不可用：{error}"),
     }
 }
 

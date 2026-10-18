@@ -5,8 +5,13 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// 单个日志文件上限（与 app / notify 一致）。
+const MAX_LOG_BYTES: u64 = 10 * 1024 * 1024;
+/// 历史代数。
+const LOG_GENERATIONS: u32 = 5;
 
 /// 追加一行日志。**任何失败都静默**——日志系统不该反过来把 daemon 弄崩。
 pub fn append(path: &Path, message: &str) {
@@ -16,10 +21,29 @@ pub fn append(path: &Path, message: &str) {
     if std::fs::create_dir_all(parent).is_err() {
         return;
     }
+    rotate_if_needed(path);
     let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
         return;
     };
     let _ = writeln!(file, "{} {message}", now_ms());
+}
+
+fn rotate_if_needed(path: &Path) {
+    let too_large = std::fs::metadata(path)
+        .map(|metadata| metadata.len() >= MAX_LOG_BYTES)
+        .unwrap_or(false);
+    if !too_large {
+        return;
+    }
+    let base = path.to_string_lossy();
+    let _ = std::fs::remove_file(PathBuf::from(format!("{base}.{LOG_GENERATIONS}")));
+    for generation in (1..LOG_GENERATIONS).rev() {
+        let _ = std::fs::rename(
+            PathBuf::from(format!("{base}.{generation}")),
+            PathBuf::from(format!("{base}.{}", generation + 1)),
+        );
+    }
+    let _ = std::fs::rename(path, PathBuf::from(format!("{base}.1")));
 }
 
 /// 当前 Unix 毫秒。日志与 [`crate::DaemonInfo::started_at_ms`] 共用这一个时间来源。

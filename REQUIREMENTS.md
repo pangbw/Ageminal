@@ -394,13 +394,13 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   2. **退出 UI** → 只关界面，**守护进程与所有会话继续在后台跑**
   3. **托盘「结束所有会话并退出」** → 唯一真正结束守护进程与会话的入口
 - **自动更新** ✅：MVP 不接 updater（**手动更新**）——只有 stable 通道，下载新 NSIS **覆盖安装**；安装时**旧守护进程继续跑**（B4 #7 的镜像搬迁），新 app 启动按版本拉起新镜像（保留 2 版）；详见 §22
-- **日志与诊断** ✅（G6 #36）：本地日志在 **`%LOCALAPPDATA%\Ageminal\logs\`**
-  - **栈**：Rust `tracing` + `tracing-subscriber`；`tauri-plugin-log` 只负责把**前端 console 收口**到 Rust 日志（`tracing-log` 桥接）；**daemon 与 app 各自落盘，不走管道传日志**
-  - **文件**：`app.log` · `daemon.log` · `notify-failures.log`（shim 失败）；**按大小滚动 10 MB × 5 份** + 总上限 GC
-  - **跨进程关联**：日志带 **`sid` + `incarnation`**，关键 IPC 带 **`reqId`** → app 与 daemon 的日志可对齐
-  - **格式**：文本单行 + 结构化字段（`<ts> <level> <process> <target> <sid?> <msg> key=value…`）
-  - **「导出诊断」= 默认脱敏**：`%USERPROFILE%` → `<user>`、项目路径 → `<project-N>`（无映射表）、**令牌抹除**、**默认不含终端历史/对话内容**；另给「包含原始路径」勾选（默认关）；**导出前列出将包含的文件与体积供确认**
-  - **`metrics.jsonl`**：本地数据采集（静默时长分布 / 降级切换 / 吞吐计数），供 E5 #26 校准阈值；可重置、不参与 schema 迁移
+- **日志与诊断** ✅（G6 #36 / #88）：本地日志在 **`%LOCALAPPDATA%\Ageminal\logs\`**
+  - **栈**：app 侧 Rust `tracing` + `tracing-subscriber`；daemon / shim 各自落盘，不走管道传日志。
+  - **文件**：`app.log` · `daemon.log` · `notify-failures.log` · `notify-success.log`；**按大小滚动 10 MB × 5 份**（每类独立保留 5 代）。
+  - **跨进程关联**：`agent-status` 日志带 **`sid` + `incarnation`**，daemon 事件日志带 `sid`，shim 成功 / 失败日志带 `sid` + `inc`.
+  - **格式**：文本单行 + tracing 结构化字段。
+  - **「导出诊断」✅**：设置页先列出文件与体积；默认 `%USERPROFILE%` → `<user>`、项目路径 → `<project-N>`、daemon token → `<token>`；默认不含终端历史 / 对话内容；可勾选「包含原始路径」（仍抹 token）。
+  - **`metrics.jsonl` ✅**：本地采集状态迁移与 PTY 吞吐计数；可重置、不参与 schema 迁移。静默时长分布 / 前端 console 桥接 / `reqId` 精细关联归后续。
 - **外部集成** 🕓 **全部延后**：拖拽添加项目、命令行打开、资源管理器右键
 - **窗口标题** ✅：见 §6
 - **远端/命令面板** 🕓 延后

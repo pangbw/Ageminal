@@ -13,9 +13,12 @@ use tauri_specta::{collect_commands, Builder};
 
 pub mod agents;
 pub mod daemon;
+pub mod diagnostics;
 pub mod files;
 pub mod heuristic;
 pub mod integrations;
+pub mod logging;
+pub mod metrics;
 pub mod notifications;
 pub mod restore;
 pub mod settings_api;
@@ -161,6 +164,9 @@ pub fn builder() -> Builder<tauri::Wry> {
         settings_api::project_settings_view,
         settings_api::set_project_settings,
         settings_api::open_logs_dir,
+        diagnostics::diagnostics_plan,
+        diagnostics::diagnostics_export,
+        metrics::metrics_reset,
         agents::get_agents,
         agents::set_agent,
         integrations::integration_list,
@@ -222,11 +228,11 @@ fn spawn_state_flusher(handle: tauri::AppHandle) {
         match guarded {
             Ok(mut guard) => {
                 if let Err(error) = guard.flush_state_if_due(Instant::now()) {
-                    eprintln!("[storage] 状态落盘失败：{error}");
+                    tracing::warn!("[storage] 状态落盘失败：{error}");
                 }
             }
             Err(_) => {
-                eprintln!("[storage] 状态锁已被污染，停止巡检");
+                tracing::warn!("[storage] 状态锁已被污染，停止巡检");
                 break;
             }
         }
@@ -289,7 +295,7 @@ fn persist_window_geometry(window: &tauri::Window) {
         Instant::now(),
     );
     if let Err(error) = result {
-        eprintln!("[window] 保存窗口几何失败：{error}");
+        tracing::warn!("[window] 保存窗口几何失败：{error}");
     }
 }
 
@@ -318,21 +324,21 @@ fn restore_window_geometry(app: &tauri::AppHandle) {
         saved.height.round().clamp(200.0, 16_384.0) as u32,
     );
     if let Err(error) = window.set_size(size) {
-        eprintln!("[window] 恢复尺寸失败：{error}");
+        tracing::warn!("[window] 恢复尺寸失败：{error}");
     }
     if let (Some(x), Some(y)) = (saved.x, saved.y) {
         if x.is_finite() && y.is_finite() {
             let position = tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32);
             if window_position_visible(&window, position, size) {
                 if let Err(error) = window.set_position(position) {
-                    eprintln!("[window] 恢复位置失败：{error}");
+                    tracing::warn!("[window] 恢复位置失败：{error}");
                 }
             }
         }
     }
     if saved.maximized {
         if let Err(error) = window.maximize() {
-            eprintln!("[window] 恢复最大化失败：{error}");
+            tracing::warn!("[window] 恢复最大化失败：{error}");
         }
     }
 }
@@ -367,6 +373,7 @@ fn window_position_visible(
 /// 启动 Tauri 应用。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    logging::init();
     tauri::Builder::default()
         // 必须最先注册：重复启动时在进入 setup / 拉起 daemon 之前就聚焦已有窗口并退出。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -406,14 +413,14 @@ pub fn run() {
                 Ok(mut store) => {
                     // 损坏 / 迁移失败 / 高版本写入等提示，取走并只报一次（#88 接管日志）。
                     for notice in store.take_notices() {
-                        eprintln!("[storage] {notice:?}");
+                        tracing::warn!("[storage] {notice:?}");
                     }
                     acrylic = store.settings().appearance.acrylic;
                     app.manage(Mutex::new(store));
                     spawn_state_flusher(app.handle().clone());
                     restore_window_geometry(app.handle());
                 }
-                Err(error) => eprintln!("[storage] 初始化失败：{error}"),
+                Err(error) => tracing::warn!("[storage] 初始化失败：{error}"),
             }
             // git 启动定位一次；失败记在 GitTool 里，由快照转成每个项目的提示（§15）。
             app.manage(workspace::GitTool::locate());
@@ -431,7 +438,7 @@ pub fn run() {
                 Ok(watcher) => {
                     app.manage(watch::FileWatch(watcher));
                 }
-                Err(error) => eprintln!("[watch] 初始化失败：{error}"),
+                Err(error) => tracing::warn!("[watch] 初始化失败：{error}"),
             }
             // 窗口材质（#87）：transparent 是创建期属性；Acrylic 只在启动时按设置应用。
             #[cfg(windows)]
@@ -440,7 +447,7 @@ pub fn run() {
                     if let Err(error) =
                         window_vibrancy::apply_acrylic(&window, Some((8, 9, 9, 180)))
                     {
-                        eprintln!("[window] Acrylic 应用失败：{error}");
+                        tracing::warn!("[window] Acrylic 应用失败：{error}");
                     }
                 }
             }
@@ -453,7 +460,7 @@ pub fn run() {
             app.manage(terminal::TerminalService::start(app.handle().clone()));
             // 托盘（#76）：关窗 / 最小化隐藏，菜单承载两层显式退出。
             if let Err(error) = tray::setup(app.handle()) {
-                eprintln!("[tray] 初始化失败：{error}");
+                tracing::warn!("[tray] 初始化失败：{error}");
             }
             Ok(())
         })
@@ -464,7 +471,7 @@ pub fn run() {
                 if let Some(store) = app.try_state::<Mutex<storage::Store>>() {
                     if let Ok(mut store) = store.lock() {
                         if let Err(error) = store.flush() {
-                            eprintln!("[storage] 退出前 flush 失败：{error}");
+                            tracing::warn!("[storage] 退出前 flush 失败：{error}");
                         }
                     }
                 }
