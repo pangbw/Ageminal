@@ -1049,6 +1049,12 @@ async function openLogs(): Promise<void> {
             <p class="setting__hint">
               {{ t("settings.about.version", { version: appInfo?.version ?? "—" }) }}
             </p>
+            <p class="setting__hint">
+              {{ t("settings.about.channel") }}
+            </p>
+            <p class="setting__hint">
+              {{ t("settings.about.updateHint") }}
+            </p>
           </div>
 
           <details

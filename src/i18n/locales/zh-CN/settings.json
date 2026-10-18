@@ -145,7 +145,9 @@
     "font": "Ageminal Mono（OFL-1.1）",
     "fontDerivation": "Ageminal Mono 由 Maple Mono NF CN v7.9 派生并改名；字体资源尚未随仓库分发。",
     "dependencies": "依赖许可清单",
-    "dependencyHint": "这里列出主要直接依赖；完整清单由 scripts/check-licenses.mjs 审计。"
+    "dependencyHint": "这里列出主要直接依赖；完整清单由 scripts/check-licenses.mjs 审计。",
+    "channel": "更新通道：Stable（仅手动覆盖安装，不接自动更新）",
+    "updateHint": "下载新版安装器后直接覆盖安装；运行中的 daemon 与会话不会被卸载钩子结束，重开应用即可 reattach。"
   },
   "diagnostics": {
     "title": "诊断与日志",

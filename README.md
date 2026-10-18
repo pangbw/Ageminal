@@ -65,8 +65,13 @@ pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts
 
 ## 分发
 
-安装器为 **NSIS**，**未签名**（MVP 不签名）——首次运行 Windows SmartScreen 会提示
-「未知发布者」，选择「仍要运行」即可。正式发布后计划申请 SignPath Foundation。
+安装器为 **NSIS per-user**，默认装到 `%LOCALAPPDATA%\Programs\Ageminal`，**免 UAC**；
+**未签名**（MVP 不签名）——首次运行 Windows SmartScreen 会提示「未知发布者」，
+选择「更多信息」→「仍要运行」即可。正式发布后计划申请 SignPath Foundation。
+
+**更新 = 手动覆盖安装，仅 Stable 通道**（MVP 不接 updater）：下载新版安装器后直接运行覆盖安装。
+安装器不会执行卸载钩子，因此运行中的 daemon 与所有 agent 会话会继续存活；重开应用后按
+`daemon-host\<version>\` 镜像与既有会话恢复。版本号显示在「设置 → 关于 / 许可」。
 
 打 `v*` tag 触发 release 工作流：构建 sidecar → `tauri build` → 上传 NSIS 安装器与
 `SHA256SUMS`。
