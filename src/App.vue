@@ -51,6 +51,15 @@ const agentStatus = useAgentStatusStore();
 // 窗口标题跟着激活 worktree 走（§6）。
 useWindowTitle();
 
+// #87：Acrylic 通过窗口创建期 transparent + DWM 材质实现；CSS 只切换面板 alpha。
+watch(
+  () => preferences.appearance.acrylic,
+  (acrylic) => {
+    document.documentElement.dataset.acrylic = acrylic ? "true" : "false";
+  },
+  { immediate: true },
+);
+
 // 文件树的根 = 当前激活 worktree（§9）。换树时把旧状态整个丢掉（#59）。
 watch(() => workspace.activePath, (path) => files.setRoot(path), { immediate: true });
 
@@ -90,6 +99,11 @@ async function bootstrap(): Promise<void> {
     commands.windowsBuildNumber().then(setWindowsBuildNumber).catch(() => undefined),
   ]);
   // #78：Rust 会先按 state.json + daemon ListSessions 做四象限对账，再把骨架交回这里。
+  // #86：启动行为 = 空工作区时跳过恢复，只保留下一次用户主动打开的页签。
+  if (preferences.startupBehavior === "empty") {
+    tabsRestored = true;
+    return;
+  }
   try {
     await restoreWorkspaceTabs();
     // 恢复失败时宁可本次不落盘，也不要用空 store 覆盖 state.json 里的旧骨架。

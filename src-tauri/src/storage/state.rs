@@ -9,6 +9,7 @@
 
 use std::path::PathBuf;
 
+use ageminal_protocol::EnvVar;
 use ageminal_workspace::Project;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -135,6 +136,9 @@ pub struct LaunchSpec {
     /// 显式 shell；`None` = daemon 缺省（Git Bash / PowerShell）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<String>,
+    /// 项目级环境变量（#86）；恢复时重传。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<EnvVar>,
     /// 首次启动实际写入 PTY 的命令行（用于重建 / 展示；恢复时保留原值）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,

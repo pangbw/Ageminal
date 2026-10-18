@@ -5,8 +5,14 @@
  * 目前只有「关闭运行中的终端页签是否二次确认」。
  */
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
+import type {
+  AppearanceInput,
+  AppearanceView,
+  GeneralInput,
+  GeneralView,
+} from "../bindings";
 import { commands } from "../bindings";
 import { unwrap } from "../lib/ipc";
 
@@ -14,12 +20,33 @@ export const usePreferencesStore = defineStore("preferences", () => {
   /** 默认 `true`：设置还没读回来时也先保护用户。 */
   const confirmClose = ref(true);
   const loaded = ref(false);
+  const general = ref<GeneralView | null>(null);
+  const appearance = ref<AppearanceView>({
+    theme: "one-dark-pro-glass",
+    fontSize: 13,
+    lineHeight: 1.2,
+    cursorStyle: "block",
+    acrylic: false,
+  });
+  const startupBehavior = computed(() => general.value?.startupBehavior ?? "restore");
 
   /** 启动时拉一次；失败保持默认值，不影响使用。 */
   async function load(): Promise<void> {
     try {
-      confirmClose.value = await commands.getConfirmClose();
+      const [loadedGeneral, loadedAppearance] = await Promise.all([
+        commands.generalSettings().then(unwrap),
+        commands.appearanceSettings().then(unwrap),
+      ]);
+      general.value = loadedGeneral;
+      appearance.value = loadedAppearance;
+      confirmClose.value = loadedGeneral.confirmClose;
     } catch (failure) {
+      // 旧命令作为兜底：设置命令暂不可用时至少保留关闭确认默认值。
+      try {
+        confirmClose.value = await commands.getConfirmClose();
+      } catch {
+        // keep defaults
+      }
       console.warn("[preferences] failed to load settings", failure);
     } finally {
       loaded.value = true;
@@ -32,11 +59,35 @@ export const usePreferencesStore = defineStore("preferences", () => {
     confirmClose.value = enabled;
     try {
       await commands.setConfirmClose(enabled).then(unwrap);
+      if (general.value) general.value = { ...general.value, confirmClose: enabled };
     } catch (failure) {
       confirmClose.value = previous;
       throw failure;
     }
   }
 
-  return { confirmClose, loaded, load, setConfirmClose };
+  async function setGeneral(input: GeneralInput): Promise<GeneralView> {
+    const view = await commands.setGeneralSettings(input).then(unwrap);
+    general.value = view;
+    confirmClose.value = view.confirmClose;
+    return view;
+  }
+
+  async function setAppearance(input: AppearanceInput): Promise<AppearanceView> {
+    const view = await commands.setAppearanceSettings(input).then(unwrap);
+    appearance.value = view;
+    return view;
+  }
+
+  return {
+    confirmClose,
+    general,
+    appearance,
+    startupBehavior,
+    loaded,
+    load,
+    setConfirmClose,
+    setGeneral,
+    setAppearance,
+  };
 });

@@ -13,5 +13,5 @@
 pub mod model;
 pub mod view;
 
-pub use model::{Project, ProjectSettings, WorktreeName};
+pub use model::{Project, ProjectAgentOverride, ProjectSettings, WorktreeName};
 pub use view::{project_view, Discovery, ProjectView, WorktreeView};

@@ -386,6 +386,7 @@ fn state_round_trips_tab_skeleton_and_launch_spec() {
                         sid: "terminal:1".to_owned(),
                         cwd: PathBuf::from(r"D:\code\wt"),
                         shell: None,
+                        env: Vec::new(),
                         command: Some("claude".to_owned()),
                         program: Some("claude".to_owned()),
                         args: Some("--model sonnet".to_owned()),

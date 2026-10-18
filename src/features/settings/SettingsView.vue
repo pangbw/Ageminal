@@ -13,21 +13,33 @@ import { computed, onMounted, reactive, ref, watch } from "vue";
 
 import type {
   AgentConfig,
+  AppInfo,
   IntegrationAction,
   IntegrationPreview,
   IntegrationStatus,
   IntegrationTestResult,
 } from "../../bindings";
+import { commands } from "../../bindings";
+import { setLocale } from "../../i18n";
 import { translate as t, type MessagePath } from "../../i18n/translate";
+import { unwrap } from "../../lib/ipc";
 import { useAgentsStore } from "../../stores/agents";
 import { useIntegrationsStore } from "../../stores/integrations";
 import { usePreferencesStore } from "../../stores/preferences";
 import { useUiStore } from "../../stores/ui";
 import { useWorkspaceStore } from "../../stores/workspace";
 import WindowControls from "../shell/WindowControls.vue";
+import ProjectSettingsEditor from "./ProjectSettingsEditor.vue";
+import {
+  CC_BY_4_0,
+  CODICON_ATTRIBUTION,
+  DEPENDENCY_LICENSES,
+  FONT_ATTRIBUTION,
+  OFL_1_1,
+} from "./licenses";
 import ToggleSwitch from "./ToggleSwitch.vue";
 
-type Section = "general" | "appearance" | "shortcuts" | "agents" | "project";
+type Section = "general" | "appearance" | "shortcuts" | "agents" | "project" | "about";
 
 const SECTIONS = [
   { id: "general", label: "settings.nav.general" },
@@ -35,6 +47,7 @@ const SECTIONS = [
   { id: "shortcuts", label: "settings.nav.shortcuts" },
   { id: "agents", label: "settings.nav.agents" },
   { id: "project", label: "settings.nav.project" },
+  { id: "about", label: "settings.nav.about" },
 ] as const satisfies readonly { id: Section; label: MessagePath }[];
 
 const ui = useUiStore();
@@ -64,6 +77,30 @@ const integrationNotice = ref<string | null>(null);
 const integrationTest = ref<IntegrationTestResult | null>(null);
 const integrationTestAgent = ref<string | null>(null);
 
+const savingGeneral = ref(false);
+const savingAppearance = ref(false);
+const appInfo = ref<AppInfo | null>(null);
+const generalDraft = reactive({
+  defaultShell: "",
+  confirmClose: true,
+  startupBehavior: "restore" as "restore" | "empty",
+  language: "",
+});
+const appearanceDraft = reactive({
+  fontSize: 13,
+  lineHeight: 1.2,
+  cursorStyle: "block" as "block" | "bar" | "underline",
+  acrylic: false,
+});
+
+const SHORTCUTS: { keys: string; label: MessagePath }[] = [
+  { keys: "Ctrl+Shift+F", label: "settings.shortcuts.search" },
+  { keys: "Ctrl+Shift+C", label: "settings.shortcuts.copy" },
+  { keys: "Ctrl+Shift+V", label: "settings.shortcuts.paste" },
+  { keys: "Ctrl+Shift+A", label: "settings.shortcuts.selectAll" },
+  { keys: "Ctrl+C", label: "settings.shortcuts.interrupt" },
+];
+
 const STATUS_LABEL: Record<IntegrationStatus, MessagePath> = {
   notEnabled: "settings.integration.status.notEnabled",
   enabled: "settings.integration.status.enabled",
@@ -79,6 +116,7 @@ const ACTION_LABEL: Record<IntegrationAction, MessagePath> = {
 };
 
 onMounted(() => {
+  void commands.appInfo().then((info) => { appInfo.value = info; }).catch(() => undefined);
   void agents.ensureLoaded();
   void integrations.refresh().catch((failure: unknown) => {
     integrationError.value = failure instanceof Error ? failure.message : String(failure);
@@ -97,6 +135,29 @@ watch(
   () => agents.list,
   (list) => {
     for (const agent of list) agentDrafts[agent.id] = { ...agent };
+  },
+  { immediate: true },
+);
+
+watch(
+  () => preferences.general,
+  (view) => {
+    if (!view) return;
+    generalDraft.defaultShell = view.defaultShell ?? "";
+    generalDraft.confirmClose = view.confirmClose;
+    generalDraft.startupBehavior = view.startupBehavior;
+    generalDraft.language = view.language ?? "";
+  },
+  { immediate: true },
+);
+
+watch(
+  () => preferences.appearance,
+  (view) => {
+    appearanceDraft.fontSize = view.fontSize;
+    appearanceDraft.lineHeight = view.lineHeight ?? 1.2;
+    appearanceDraft.cursorStyle = view.cursorStyle;
+    appearanceDraft.acrylic = view.acrylic;
   },
   { immediate: true },
 );
@@ -239,15 +300,52 @@ async function testIntegration(agentId: string): Promise<void> {
   }
 }
 
-/** 通用分页目前只有「关闭确认」；其余项归 #86。 */
-async function setConfirmClose(enabled: boolean): Promise<void> {
+async function saveGeneral(): Promise<void> {
+  error.value = null;
+  savingGeneral.value = true;
+  try {
+    const view = await preferences.setGeneral({
+      defaultShell: generalDraft.defaultShell.trim() || null,
+      confirmClose: generalDraft.confirmClose,
+      startupBehavior: generalDraft.startupBehavior,
+      language: generalDraft.language || null,
+    });
+    generalDraft.language = view.language ?? "";
+    await setLocale(view.language ? "zh-CN" : null);
+  } catch (failure) {
+    error.value = failure instanceof Error ? failure.message : String(failure);
+  } finally {
+    savingGeneral.value = false;
+  }
+}
+
+async function saveAppearance(): Promise<void> {
+  error.value = null;
+  savingAppearance.value = true;
+  try {
+    await preferences.setAppearance({
+      theme: "one-dark-pro-glass",
+      fontSize: Math.min(32, Math.max(8, Math.round(appearanceDraft.fontSize))),
+      lineHeight: Math.min(2, Math.max(1, appearanceDraft.lineHeight)),
+      cursorStyle: appearanceDraft.cursorStyle,
+      acrylic: appearanceDraft.acrylic,
+    });
+  } catch (failure) {
+    error.value = failure instanceof Error ? failure.message : String(failure);
+  } finally {
+    savingAppearance.value = false;
+  }
+}
+
+async function openLogs(): Promise<void> {
   error.value = null;
   try {
-    await preferences.setConfirmClose(enabled);
+    await commands.openLogsDir().then(unwrap);
   } catch (failure) {
     error.value = failure instanceof Error ? failure.message : String(failure);
   }
 }
+
 </script>
 
 <template>
@@ -299,6 +397,30 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
               class="page__subtitle"
             >
               {{ t("settings.agents.subtitle") }}
+            </p>
+            <p
+              v-else-if="section === 'general'"
+              class="page__subtitle"
+            >
+              {{ t("settings.general.subtitle") }}
+            </p>
+            <p
+              v-else-if="section === 'appearance'"
+              class="page__subtitle"
+            >
+              {{ t("settings.appearance.subtitle") }}
+            </p>
+            <p
+              v-else-if="section === 'shortcuts'"
+              class="page__subtitle"
+            >
+              {{ t("settings.shortcuts.subtitle") }}
+            </p>
+            <p
+              v-else-if="section === 'about'"
+              class="page__subtitle"
+            >
+              {{ t("settings.about.subtitle") }}
             </p>
           </div>
           <button
@@ -522,6 +644,23 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
         </template>
 
         <template v-else-if="section === 'general'">
+          <div class="setting setting--form">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.general.shell") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.general.shellHint") }}
+              </p>
+            </div>
+            <input
+              v-model="generalDraft.defaultShell"
+              class="setting__input"
+              type="text"
+              :placeholder="t('settings.general.shellPlaceholder')"
+            >
+          </div>
+
           <div class="setting">
             <div class="setting__text">
               <h3 class="setting__title">
@@ -532,10 +671,83 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
               </p>
             </div>
             <ToggleSwitch
-              :model-value="preferences.confirmClose"
+              :model-value="generalDraft.confirmClose"
               :label="t('settings.general.confirmClose')"
-              @update:model-value="setConfirmClose"
+              @update:model-value="generalDraft.confirmClose = $event"
             />
+          </div>
+
+          <div class="setting setting--form">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.general.startup") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.general.startupHint") }}
+              </p>
+            </div>
+            <select
+              v-model="generalDraft.startupBehavior"
+              class="setting__input"
+            >
+              <option value="restore">
+                {{ t("settings.general.startupRestore") }}
+              </option>
+              <option value="empty">
+                {{ t("settings.general.startupEmpty") }}
+              </option>
+            </select>
+          </div>
+
+          <div class="setting setting--form">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.general.language") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.general.languageHint") }}
+              </p>
+            </div>
+            <select
+              v-model="generalDraft.language"
+              class="setting__input"
+            >
+              <option value="">
+                {{ t("settings.general.languageSystem") }}
+              </option>
+              <option value="zh-CN">
+                {{ t("settings.general.languageZh") }}
+              </option>
+            </select>
+          </div>
+
+          <div class="setting">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.general.logs") }}
+              </h3>
+              <p class="setting__hint">
+                {{ preferences.general?.logsDir ?? t("settings.general.logsHint") }}
+              </p>
+            </div>
+            <button
+              class="button"
+              type="button"
+              @click="openLogs"
+            >
+              {{ t("settings.general.openLogs") }}
+            </button>
+          </div>
+
+          <div class="setting__actions">
+            <button
+              class="button button--primary"
+              type="button"
+              :disabled="savingGeneral"
+              @click="saveGeneral"
+            >
+              {{ t("settings.general.save") }}
+            </button>
           </div>
           <p
             v-if="error"
@@ -546,12 +758,185 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
           </p>
         </template>
 
-        <p
-          v-else-if="section !== 'project'"
-          class="page__empty"
-        >
-          {{ t("settings.comingSoon") }}
-        </p>
+        <template v-else-if="section === 'appearance'">
+          <div class="setting">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.appearance.theme") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.appearance.themeHint") }}
+              </p>
+            </div>
+            <code>One Dark Pro Glass</code>
+          </div>
+
+          <div class="setting setting--form">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.appearance.fontSize") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.appearance.fontSizeHint") }}
+              </p>
+            </div>
+            <input
+              v-model.number="appearanceDraft.fontSize"
+              class="setting__input setting__input--number"
+              type="number"
+              min="8"
+              max="32"
+            >
+          </div>
+
+          <div class="setting setting--form">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.appearance.lineHeight") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.appearance.lineHeightHint") }}
+              </p>
+            </div>
+            <input
+              v-model.number="appearanceDraft.lineHeight"
+              class="setting__input setting__input--number"
+              type="number"
+              min="1"
+              max="2"
+              step="0.1"
+            >
+          </div>
+
+          <div class="setting setting--form">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.appearance.cursor") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.appearance.cursorHint") }}
+              </p>
+            </div>
+            <select
+              v-model="appearanceDraft.cursorStyle"
+              class="setting__input"
+            >
+              <option value="block">
+                {{ t("settings.appearance.cursorBlock") }}
+              </option>
+              <option value="bar">
+                {{ t("settings.appearance.cursorBar") }}
+              </option>
+              <option value="underline">
+                {{ t("settings.appearance.cursorUnderline") }}
+              </option>
+            </select>
+          </div>
+
+          <div class="setting">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.appearance.acrylic") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.appearance.acrylicHint") }}
+              </p>
+            </div>
+            <ToggleSwitch
+              :model-value="appearanceDraft.acrylic"
+              :label="t('settings.appearance.acrylic')"
+              @update:model-value="appearanceDraft.acrylic = $event"
+            />
+          </div>
+
+          <div class="setting__actions">
+            <button
+              class="button button--primary"
+              type="button"
+              :disabled="savingAppearance"
+              @click="saveAppearance"
+            >
+              {{ t("settings.appearance.save") }}
+            </button>
+          </div>
+          <p
+            v-if="error"
+            class="setting__error"
+            role="alert"
+          >
+            {{ error }}
+          </p>
+        </template>
+
+        <template v-else-if="section === 'shortcuts'">
+          <table class="shortcut-table">
+            <thead>
+              <tr>
+                <th>{{ t("settings.shortcuts.keys") }}</th>
+                <th>{{ t("settings.shortcuts.action") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="shortcut in SHORTCUTS"
+                :key="shortcut.keys"
+              >
+                <td><kbd>{{ shortcut.keys }}</kbd></td>
+                <td>{{ t(shortcut.label) }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="setting__hint">
+            {{ t("settings.shortcuts.readOnly") }}
+          </p>
+        </template>
+
+        <template v-else-if="section === 'about'">
+          <div class="about-card">
+            <h3 class="setting__title">
+              Ageminal
+            </h3>
+            <p class="setting__hint">
+              {{ t("settings.about.version", { version: appInfo?.version ?? "—" }) }}
+            </p>
+          </div>
+
+          <details
+            class="license-block"
+            open
+          >
+            <summary>{{ t("settings.about.codicon") }}</summary>
+            <p>{{ CODICON_ATTRIBUTION }}</p>
+            <pre>{{ CC_BY_4_0 }}</pre>
+          </details>
+
+          <details class="license-block">
+            <summary>{{ t("settings.about.font") }}</summary>
+            <p>{{ FONT_ATTRIBUTION }}</p>
+            <p>{{ t("settings.about.fontDerivation") }}</p>
+            <pre>{{ OFL_1_1 }}</pre>
+          </details>
+
+          <div class="license-block">
+            <h3 class="setting__title">
+              {{ t("settings.about.dependencies") }}
+            </h3>
+            <table class="license-table">
+              <tbody>
+                <tr
+                  v-for="dependency in DEPENDENCY_LICENSES"
+                  :key="dependency.name"
+                >
+                  <td>{{ dependency.name }}</td>
+                  <td><code>{{ dependency.license }}</code></td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="setting__hint">
+              {{ t("settings.about.dependencyHint") }}
+            </p>
+          </div>
+        </template>
 
         <p
           v-else-if="workspace.projects.length === 0"
@@ -630,6 +1015,7 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
               />
             </li>
           </ul>
+          <ProjectSettingsEditor :path="project.path" />
         </article>
       </section>
     </div>
@@ -1239,5 +1625,98 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
   justify-content: flex-end;
   gap: var(--space-3);
   margin-top: var(--space-5);
+}
+
+.setting--form {
+  align-items: center;
+}
+
+.setting__input {
+  flex: 0 1 320px;
+  min-width: 160px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+  font-size: var(--font-size-sm);
+}
+
+.setting__input--number {
+  flex: 0 0 100px;
+}
+
+.setting__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--space-5);
+}
+
+.shortcut-table,
+.license-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-sm);
+}
+
+.shortcut-table th,
+.shortcut-table td,
+.license-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-soft);
+  text-align: left;
+}
+
+.shortcut-table th {
+  color: var(--color-faint);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+}
+
+kbd {
+  display: inline-block;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-element);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.about-card,
+.license-block {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+}
+
+.license-block {
+  margin-top: var(--space-3);
+}
+
+.license-block summary {
+  cursor: pointer;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.license-block pre {
+  max-height: 360px;
+  overflow: auto;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  white-space: pre-wrap;
+}
+
+.license-table td:last-child {
+  width: 180px;
+  color: var(--color-faint);
 }
 </style>

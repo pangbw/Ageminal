@@ -24,6 +24,20 @@ export const commands = {
 	getConfirmClose: () => __TAURI_INVOKE<boolean>("get_confirm_close"),
 	/**  写入「关闭运行中页签需确认」并**立即落盘**（#69）。 */
 	setConfirmClose: (enabled: boolean) => typedError<null, string>(__TAURI_INVOKE("set_confirm_close", { enabled })),
+	/**  读通用设置。 */
+	generalSettings: () => typedError<GeneralView, string>(__TAURI_INVOKE("general_settings")),
+	/**  写通用设置并返回最新值。 */
+	setGeneralSettings: (input: GeneralInput) => typedError<GeneralView, string>(__TAURI_INVOKE("set_general_settings", { input })),
+	/**  读外观设置。 */
+	appearanceSettings: () => typedError<AppearanceView, string>(__TAURI_INVOKE("appearance_settings")),
+	/**  写外观设置并返回归一后的值。 */
+	setAppearanceSettings: (input: AppearanceInput) => typedError<AppearanceView, string>(__TAURI_INVOKE("set_appearance_settings", { input })),
+	/**  读一个项目的覆盖设置；不存在时返回空覆盖。 */
+	projectSettingsView: (path: string) => typedError<ProjectSettingsView, string>(__TAURI_INVOKE("project_settings_view", { path })),
+	/**  写项目级覆盖；全空时删除该项目条目。 */
+	setProjectSettings: (input: ProjectSettingsInput) => typedError<ProjectSettingsView, string>(__TAURI_INVOKE("set_project_settings", { input })),
+	/**  打开日志目录（#86 通用入口）。 */
+	openLogsDir: () => typedError<null, string>(__TAURI_INVOKE("open_logs_dir")),
 	/**  取全部 agent 配置（设置页 / 菜单初始化）。 */
 	getAgents: () => typedError<AgentConfig[], string>(__TAURI_INVOKE("get_agents")),
 	/**  保存一个 agent 的配置，返回合并后的完整清单。 */
@@ -235,6 +249,43 @@ export type AppInfo = {
 	os: string,
 };
 
+/**  外观输入。 */
+export type AppearanceInput = {
+	/**  主题 id；MVP 只接受 one-dark-pro-glass。 */
+	theme: string,
+	/**  字号（8–32）。 */
+	fontSize: number,
+	/**  行高（1.0–2.0）。 */
+	lineHeight: number | null,
+	/**  光标样式。 */
+	cursorStyle: CursorStyleView,
+	/**  Acrylic。 */
+	acrylic: boolean,
+};
+
+/**  外观设置视图。 */
+export type AppearanceView = {
+	/**  主题 id。 */
+	theme: string,
+	/**  终端字号（px）。 */
+	fontSize: number,
+	/**  终端行高倍数。 */
+	lineHeight: number | null,
+	/**  光标样式。 */
+	cursorStyle: CursorStyleView,
+	/**  Acrylic（#87；重启生效）。 */
+	acrylic: boolean,
+};
+
+/**  光标样式的 TS 形状。 */
+export type CursorStyleView = 
+/**  方块。 */
+"block" | 
+/**  竖线。 */
+"bar" | 
+/**  下划线。 */
+"underline";
+
 /**  目录里的一个条目（与 `ageminal-files::Entry` 字段一一对应）。 */
 export type DirEntryView = {
 	/**  文件名。 */
@@ -254,6 +305,32 @@ export type DirListingView = {
 	entries: DirEntryView[],
 	/**  条目数超过单目录上限（5000），已截断。 */
 	truncated: boolean,
+};
+
+/**  通用设置输入。 */
+export type GeneralInput = {
+	/**  默认 shell；空白 = 自动发现。 */
+	defaultShell: string | null,
+	/**  关闭运行中的终端是否二次确认。 */
+	confirmClose: boolean,
+	/**  启动行为。 */
+	startupBehavior: StartupBehaviorView,
+	/**  语言；空白 = 自动检测。 */
+	language: string | null,
+};
+
+/**  通用设置视图。 */
+export type GeneralView = {
+	/**  默认 shell；`None` = 自动发现。 */
+	defaultShell: string | null,
+	/**  关闭运行中的终端是否二次确认。 */
+	confirmClose: boolean,
+	/**  启动行为。 */
+	startupBehavior: StartupBehaviorView,
+	/**  语言（BCP-47）；`None` = 自动检测。 */
+	language: string | null,
+	/**  日志目录（供「打开日志」）。 */
+	logsDir: string,
 };
 
 /**  diff / 状态里的文件动作。 */
@@ -389,6 +466,48 @@ export type PreviewView = {
 	imageTooLarge: boolean,
 };
 
+/**  项目级 agent 覆盖。 */
+export type ProjectAgentView = {
+	/**  agent id。 */
+	agentId: string,
+	/**  程序覆盖；`None` = 继承全局。 */
+	command: string | null,
+	/**  参数覆盖；`None` = 继承全局。 */
+	args: string | null,
+};
+
+/**  项目级环境变量。 */
+export type ProjectEnvView = {
+	/**  变量名。 */
+	name: string,
+	/**  变量值。 */
+	value: string,
+};
+
+/**  项目级设置输入。 */
+export type ProjectSettingsInput = {
+	/**  项目根路径。 */
+	path: string,
+	/**  项目级默认 shell；空白 = 继承全局。 */
+	defaultShell: string | null,
+	/**  项目级环境变量。 */
+	env: ProjectEnvView[],
+	/**  项目级 agent 覆盖。 */
+	agents: ProjectAgentView[],
+};
+
+/**  项目级设置视图。 */
+export type ProjectSettingsView = {
+	/**  项目根路径。 */
+	path: string,
+	/**  项目级默认 shell；`None` = 继承全局。 */
+	defaultShell: string | null,
+	/**  项目级环境变量。 */
+	env: ProjectEnvView[],
+	/**  项目级 agent 覆盖。 */
+	agents: ProjectAgentView[],
+};
+
 /**  一个项目的视图（侧栏分组 + 设置页「项目」分页共用，#16 D6）。 */
 export type ProjectView = {
 	path: string,
@@ -460,6 +579,13 @@ export type SearchResultView = {
 	/**  预算用尽，结果是部分的。 */
 	timedOut: boolean,
 };
+
+/**  启动行为的 TS 形状。 */
+export type StartupBehaviorView = 
+/**  恢复上次工作区。 */
+"restore" | 
+/**  空工作区。 */
+"empty";
 
 /**  前端保存的一条页签。 */
 export type TabsTab = {

@@ -51,13 +51,15 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ageminal_agent::{AgentState, AgentStatusSnapshot, StatusBook, StatusSource, StatusUpdate};
+use ageminal_protocol::EnvVar;
+use ageminal_workspace::ProjectSettings;
 use serde::Serialize;
 use specta::Type;
 use tauri::ipc::{Channel, InvokeResponseBody, IpcResponse};
 use tauri::Emitter;
 
 use crate::agents;
-use crate::storage::{LaunchSpec, Store};
+use crate::storage::{LaunchSpec, Settings, Store};
 
 /// 合批上限：攒到这个字节数立刻发，不等 8 ms 窗口。
 const BATCH_BYTES: usize = 16 * 1024;
@@ -116,6 +118,10 @@ struct LaunchResolution {
     agent_id: Option<String>,
     /// 已捕获的 agent 对话 id。
     agent_session_id: Option<String>,
+    /// 本次 shell 覆盖（通用 / 项目级）。
+    shell: Option<String>,
+    /// 本次项目级环境变量。
+    env: Vec<EnvVar>,
 }
 
 /// 打开一个终端所需的参数（避免服务内部函数参数太多）。
@@ -127,6 +133,8 @@ pub(crate) struct OpenSpec {
     rows: u16,
     agent_id: Option<String>,
     command: Option<String>,
+    shell: Option<String>,
+    env: Vec<EnvVar>,
 }
 
 /// 一个存活终端会话的概要（`terminal_list`，UI 重开恢复用）。
@@ -547,6 +555,7 @@ fn windows_only() -> String {
 fn resolve_launch(
     store: &Store,
     sid: &str,
+    cwd: &str,
     agent_id: Option<&str>,
 ) -> Result<LaunchResolution, String> {
     let saved = store
@@ -555,6 +564,9 @@ fn resolve_launch(
         .iter()
         .find(|spec| spec.sid == sid)
         .cloned();
+    let settings = store.settings();
+    let project = project_for_store(store, cwd);
+    let (project_shell, project_env) = project_launch(settings, project);
     let Some(saved) = saved else {
         let Some(id) = agent_id else {
             return Ok(LaunchResolution {
@@ -564,11 +576,13 @@ fn resolve_launch(
                 args: None,
                 agent_id: None,
                 agent_session_id: None,
+                shell: project_shell,
+                env: project_env,
             });
         };
-        let config =
-            agents::resolve(store.settings(), id).ok_or_else(|| format!("未知的 agent：{id}"))?;
-        let command = agents::launch_command(store.settings(), id)?;
+        let config = agents::resolve_in_project(settings, project, id)
+            .ok_or_else(|| format!("未知的 agent：{id}"))?;
+        let command = agents::launch_command_in_project(settings, project, id)?;
         return Ok(LaunchResolution {
             command: Some(command.clone()),
             original_command: Some(command),
@@ -576,6 +590,8 @@ fn resolve_launch(
             args: Some(config.args),
             agent_id: Some(id.to_owned()),
             agent_session_id: None,
+            shell: project_shell,
+            env: project_env,
         });
     };
 
@@ -584,7 +600,7 @@ fn resolve_launch(
         .or_else(|| saved.agent_id.clone());
     let config = agent
         .as_deref()
-        .and_then(|id| agents::resolve(store.settings(), id));
+        .and_then(|id| agents::resolve_in_project(settings, project, id));
     let program = saved
         .program
         .clone()
@@ -594,13 +610,13 @@ fn resolve_launch(
         .clone()
         .or_else(|| config.as_ref().map(|config| config.args.clone()));
     let fresh_command = match agent.as_deref() {
-        Some(id) => agents::launch_command(store.settings(), id).ok(),
+        Some(id) => agents::launch_command_in_project(settings, project, id).ok(),
         None => None,
     };
     let resume = match (agent.as_deref(), saved.agent_session_id.as_deref()) {
         (Some(id), Some(session_id)) => {
             match agents::resume_command(
-                store.settings(),
+                settings,
                 id,
                 session_id,
                 program.as_deref(),
@@ -633,7 +649,65 @@ fn resolve_launch(
         args,
         agent_id: agent,
         agent_session_id: saved.agent_session_id.clone(),
+        shell: saved.shell.clone().or(project_shell),
+        env: if saved.env.is_empty() {
+            project_env
+        } else {
+            saved.env.clone()
+        },
     })
+}
+
+/// 找 cwd 所属的项目级设置：优先最长路径前缀，其次匹配已 pin 的 linked worktree。
+fn project_for_store<'a>(store: &'a Store, cwd: &str) -> Option<&'a ProjectSettings> {
+    if let Some(project) = project_for(store.settings(), cwd) {
+        return Some(project);
+    }
+    let cwd = PathBuf::from(cwd);
+    let root = store
+        .state()
+        .projects
+        .iter()
+        .find(|project| project.pinned.iter().any(|path| path == &cwd))
+        .map(|project| project.path.as_path())?;
+    store
+        .settings()
+        .projects
+        .iter()
+        .find(|project| project.path == root)
+}
+
+/// 找 cwd 所属的项目级设置（最长路径前缀）。
+fn project_for<'a>(settings: &'a Settings, cwd: &str) -> Option<&'a ProjectSettings> {
+    let cwd = PathBuf::from(cwd);
+    settings
+        .projects
+        .iter()
+        .filter(|project| cwd.starts_with(&project.path))
+        .max_by_key(|project| project.path.components().count())
+}
+
+/// 项目级 shell / env 覆盖；没有项目条目时回落到通用设置。
+fn project_launch(
+    settings: &Settings,
+    project: Option<&ProjectSettings>,
+) -> (Option<String>, Vec<EnvVar>) {
+    let shell = project
+        .and_then(|project| project.default_shell.clone())
+        .or_else(|| settings.general.default_shell.clone());
+    let env = project
+        .map(|project| {
+            project
+                .env
+                .iter()
+                .map(|(name, value)| EnvVar {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (shell, env)
 }
 
 /// 建会话前先写占位 launch spec（没有 incarnation）；失败也不阻止建会话。
@@ -650,7 +724,8 @@ fn ensure_launch_spec(store: &Mutex<Store>, sid: &str, cwd: &str, resolution: &L
             state.launch_specs.push(LaunchSpec {
                 sid: sid.to_owned(),
                 cwd: PathBuf::from(cwd),
-                shell: None,
+                shell: resolution.shell.clone(),
+                env: resolution.env.clone(),
                 command: resolution.original_command.clone(),
                 program: resolution.program.clone(),
                 args: resolution.args.clone(),
@@ -695,7 +770,8 @@ fn record_launch(
                 let spec = LaunchSpec {
                     sid: sid.to_owned(),
                     cwd: PathBuf::from(cwd),
-                    shell: None,
+                    shell: resolution.shell.clone(),
+                    env: resolution.env.clone(),
                     command: resolution.original_command.clone(),
                     program: resolution.program.clone(),
                     args: resolution.args.clone(),
@@ -727,7 +803,8 @@ fn record_launch(
                 state.launch_specs.push(LaunchSpec {
                     sid: sid.to_owned(),
                     cwd: PathBuf::from(cwd),
-                    shell: None,
+                    shell: resolution.shell.clone(),
+                    env: resolution.env.clone(),
                     command: None,
                     program: None,
                     args: None,
@@ -765,7 +842,7 @@ pub async fn terminal_open(
     // 新页签才从当前设置解析。
     let resolution = {
         let store = store.lock().map_err(|_| "设置锁已被污染".to_owned())?;
-        resolve_launch(&store, &sid, agent_id.as_deref())?
+        resolve_launch(&store, &sid, &cwd, agent_id.as_deref())?
     };
     // 先落一个占位 spec：daemon 写完启动命令就可能触发 agent 事件（#79），
     // `terminal_set_agent_session` 不能因为 record_launch 还没执行而丢 id。
@@ -777,6 +854,8 @@ pub async fn terminal_open(
         rows,
         agent_id: resolution.agent_id.clone(),
         command: resolution.command.clone(),
+        shell: resolution.shell.clone(),
+        env: resolution.env.clone(),
     };
     let service = state.inner().clone();
     let opened = tauri::async_runtime::spawn_blocking(move || service.open(spec, on_event))
@@ -1338,6 +1417,8 @@ fn open_session(
         rows,
         agent_id,
         command,
+        shell,
+        env,
     } = spec;
     if let Err(error) = ensure_client(runtime) {
         let _ = reply.send(Err(error));
@@ -1382,12 +1463,12 @@ fn open_session(
     let request = ageminal_protocol::CreateSession {
         sid: sid.clone(),
         cwd,
-        shell: None,
+        shell,
         command,
         agent_id,
         cols,
         rows,
-        env: Vec::new(),
+        env,
     };
 
     let created = match runtime.client.as_mut() {
@@ -2143,6 +2224,45 @@ mod tests {
             classify_data(u64::MAX - 1, u64::MAX, 4),
             DataClass::Gap,
             "溢出不能 panic"
+        );
+    }
+
+    #[test]
+    fn project_shell_and_env_override_general_settings() {
+        let mut settings = Settings::default();
+        settings.general.default_shell = Some("global-shell".to_owned());
+        let mut project = ProjectSettings::new(PathBuf::from("C:\\ws"));
+        project.default_shell = Some("project-shell".to_owned());
+        project.env.insert("FOO".to_owned(), "bar".to_owned());
+        project.agents.insert(
+            "claude".to_owned(),
+            ageminal_workspace::ProjectAgentOverride {
+                command: Some("claude-project".to_owned()),
+                args: Some("--model haiku".to_owned()),
+                extra: Default::default(),
+            },
+        );
+        settings.projects.push(project);
+
+        let project = project_for(&settings, "C:\\ws\\feature").expect("project");
+        let (shell, env) = project_launch(&settings, Some(project));
+        assert_eq!(shell.as_deref(), Some("project-shell"));
+        assert_eq!(
+            env,
+            vec![EnvVar {
+                name: "FOO".to_owned(),
+                value: "bar".to_owned()
+            }]
+        );
+
+        let unrelated = project_launch(&settings, project_for(&settings, "C:\\other"));
+        assert_eq!(unrelated.0.as_deref(), Some("global-shell"));
+        assert!(unrelated.1.is_empty());
+        assert_eq!(
+            agents::resolve_in_project(&settings, Some(project), "claude")
+                .expect("claude")
+                .command,
+            "claude-project"
         );
     }
 

@@ -18,6 +18,7 @@ pub mod heuristic;
 pub mod integrations;
 pub mod notifications;
 pub mod restore;
+pub mod settings_api;
 pub mod storage;
 pub mod terminal;
 pub mod tray;
@@ -153,6 +154,13 @@ pub fn builder() -> Builder<tauri::Wry> {
         set_language,
         get_confirm_close,
         set_confirm_close,
+        settings_api::general_settings,
+        settings_api::set_general_settings,
+        settings_api::appearance_settings,
+        settings_api::set_appearance_settings,
+        settings_api::project_settings_view,
+        settings_api::set_project_settings,
+        settings_api::open_logs_dir,
         agents::get_agents,
         agents::set_agent,
         integrations::integration_list,
@@ -393,12 +401,14 @@ pub fn run() {
             _ => {}
         })
         .setup(|app| {
+            let mut acrylic = false;
             match storage::Store::open_default() {
                 Ok(mut store) => {
                     // 损坏 / 迁移失败 / 高版本写入等提示，取走并只报一次（#88 接管日志）。
                     for notice in store.take_notices() {
                         eprintln!("[storage] {notice:?}");
                     }
+                    acrylic = store.settings().appearance.acrylic;
                     app.manage(Mutex::new(store));
                     spawn_state_flusher(app.handle().clone());
                     restore_window_geometry(app.handle());
@@ -422,6 +432,17 @@ pub fn run() {
                     app.manage(watch::FileWatch(watcher));
                 }
                 Err(error) => eprintln!("[watch] 初始化失败：{error}"),
+            }
+            // 窗口材质（#87）：transparent 是创建期属性；Acrylic 只在启动时按设置应用。
+            #[cfg(windows)]
+            if acrylic {
+                if let Some(window) = app.get_webview_window("main") {
+                    if let Err(error) =
+                        window_vibrancy::apply_acrylic(&window, Some((8, 9, 9, 180)))
+                    {
+                        eprintln!("[window] Acrylic 应用失败：{error}");
+                    }
+                }
             }
             // 集成注入物使用稳定 shim 路径（#31 / #83）；复制失败只记录，不阻塞启动。
             integrations::ensure_shim();

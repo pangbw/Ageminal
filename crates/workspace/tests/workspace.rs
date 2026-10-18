@@ -3,8 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use ageminal_git::worktree::{Marker, Worktree};
-use ageminal_workspace::{project_view, Discovery, Project, ProjectSettings, WorktreeName};
-use serde_json::json;
+use ageminal_workspace::{
+    project_view, Discovery, Project, ProjectAgentOverride, ProjectSettings, WorktreeName,
+};
+use serde_json::{json, Map};
 
 fn path(value: &str) -> PathBuf {
     PathBuf::from(value)
@@ -342,4 +344,32 @@ fn empty_project_view_has_no_error() {
 
     assert!(view.worktrees.is_empty());
     assert!(view.error.is_none());
+}
+
+#[test]
+fn project_overrides_are_typed_and_empty_aware() {
+    let mut settings = ProjectSettings::new(path("/ws/proj"));
+    assert!(settings.is_empty());
+
+    settings.default_shell = Some("C:\\Git\\bin\\bash.exe".to_owned());
+    settings.env.insert("FOO".to_owned(), "bar".to_owned());
+    settings.agents.insert(
+        "claude".to_owned(),
+        ProjectAgentOverride {
+            command: Some("claude-x".to_owned()),
+            args: Some("--model sonnet".to_owned()),
+            extra: Map::new(),
+        },
+    );
+    assert!(!settings.is_empty());
+
+    let json = serde_json::to_value(&settings).unwrap();
+    assert_eq!(json["defaultShell"], "C:\\Git\\bin\\bash.exe");
+    assert_eq!(json["env"]["FOO"], "bar");
+    assert_eq!(json["agents"]["claude"]["command"], "claude-x");
+
+    settings.default_shell = None;
+    settings.env.clear();
+    settings.agents.clear();
+    assert!(settings.is_empty());
 }

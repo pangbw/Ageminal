@@ -18,9 +18,11 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { reactive } from "vue";
 
+import type { AppearanceView } from "../../bindings";
 import { commands } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
 import { errorMessage, unwrap } from "../../lib/ipc";
+import { usePreferencesStore } from "../../stores/preferences";
 import { useTabsStore } from "../../stores/tabs";
 import { windowsBuildNumber } from "./platform";
 
@@ -128,16 +130,19 @@ export function ensureTerm(sid: string): Pooled {
   host.style.cssText = "width:100%;height:100%;";
   stage().appendChild(host);
 
+  const appearance = usePreferencesStore().appearance;
+  host.dataset.fontSize = String(appearance.fontSize);
+  host.dataset.lineHeight = String(appearance.lineHeight ?? "");
   const term = new Terminal({
     allowProposedApi: true,
     convertEol: false,
     scrollback: 10_000,
     allowTransparency: false,
     cursorBlink: true,
-    cursorStyle: "block",
+    cursorStyle: appearance.cursorStyle,
     fontFamily: '"Ageminal Mono", "Cascadia Mono", Consolas, "Courier New", monospace',
-    fontSize: 13,
-    lineHeight: 1.2,
+    fontSize: appearance.fontSize,
+    lineHeight: appearance.lineHeight ?? undefined,
     rightClickSelectsWord: false,
     windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber() },
     linkHandler: {
@@ -237,6 +242,7 @@ export function ensureTerm(sid: string): Pooled {
 export function mountTerm(sid: string, pane: HTMLElement): { cols: number; rows: number } {
   const entry = ensureTerm(sid);
   if (entry.host.parentElement !== pane) pane.appendChild(entry.host);
+  applyTerminalAppearance(sid, usePreferencesStore().appearance);
   const size = fitTerm(entry);
   enableWebgl(entry);
   entry.term.focus();
@@ -432,6 +438,18 @@ export function selectAll(sid: string): void {
 
 export function hasSelection(sid: string): boolean {
   return pooledTerms.get(sid)?.term.hasSelection() ?? false;
+}
+
+/** 实时应用外观设置（字号 / 行高 / 光标）；不重建会话。 */
+export function applyTerminalAppearance(sid: string, appearance: AppearanceView): void {
+  const entry = pooledTerms.get(sid);
+  if (!entry) return;
+  entry.term.options.fontSize = appearance.fontSize;
+  entry.term.options.lineHeight = appearance.lineHeight ?? undefined;
+  entry.term.options.cursorStyle = appearance.cursorStyle;
+  entry.host.dataset.fontSize = String(appearance.fontSize);
+  entry.host.dataset.lineHeight = String(appearance.lineHeight ?? "");
+  fitTerm(entry);
 }
 
 /** 搜索当前渲染端缓冲（scrollback 10k 行）；返回是否找到。 */

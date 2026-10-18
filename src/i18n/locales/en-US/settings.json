@@ -7,7 +7,8 @@
     "appearance": "Appearance",
     "shortcuts": "Shortcuts",
     "agents": "Agents",
-    "project": "Projects"
+    "project": "Projects",
+    "about": "About / Licenses"
   },
   "project": {
     "subtitle": "Manage the projects you added and their worktrees",
@@ -17,11 +18,43 @@
     "pin": "Add to sidebar",
     "rename": "Rename display name",
     "noBranch": "No branch",
-    "empty": "No projects yet"
+    "empty": "No projects yet",
+    "override": {
+      "title": "Project overrides",
+      "hint": "Only affects new terminal sessions in this project; existing sessions keep their first launch parameters.",
+      "shell": "Default shell override",
+      "inherit": "Inherit global",
+      "env": "Environment variables",
+      "addEnv": "Add variable",
+      "noEnv": "No project-level environment variables.",
+      "envName": "Name",
+      "envValue": "Value",
+      "remove": "Remove",
+      "agents": "Agent command overrides",
+      "agentsHint": "Leave empty to inherit global settings; command is the program, args go on the right.",
+      "saved": "Saved",
+      "save": "Save project settings"
+    }
   },
   "general": {
     "confirmClose": "Confirm before closing a running terminal",
-    "confirmCloseHint": "Ask before closing a terminal tab whose command is still running."
+    "confirmCloseHint": "Ask before closing a terminal tab whose command is still running.",
+    "subtitle": "Default shell, startup behavior, language and logs.",
+    "shell": "Default shell",
+    "shellHint": "Leave empty to auto-detect Git Bash / PowerShell; paths may contain spaces.",
+    "shellPlaceholder": "e.g. C:\\Program Files\\Git\\bin\\bash.exe",
+    "startup": "Startup behavior",
+    "startupHint": "Whether to restore the previous workspace on launch.",
+    "startupRestore": "Restore previous workspace",
+    "startupEmpty": "Open an empty workspace",
+    "language": "Language",
+    "languageHint": "MVP ships Simplified Chinese; empty follows the system.",
+    "languageSystem": "Follow system",
+    "logs": "Logs",
+    "logsHint": "Logs directory",
+    "openLogs": "Open logs folder",
+    "save": "Save general settings",
+    "languageZh": "Simplified Chinese"
   },
   "agents": {
     "subtitle": "Configure each agent launch command, arguments and icon color. Plain terminals remain available.",
@@ -69,5 +102,42 @@
     "testOk": "Test delivery succeeded ({time}).",
     "testFailed": "Test delivery failed: {detail}",
     "refresh": "Refresh"
+  },
+  "appearance": {
+    "subtitle": "Theme is fixed to One Dark Pro Glass; terminals stay opaque.",
+    "theme": "Theme",
+    "themeHint": "MVP is dark One Dark Pro Glass only; light / system themes are deferred.",
+    "fontSize": "Terminal font size",
+    "fontSizeHint": "8–32 px; default 13.",
+    "lineHeight": "Line height / density",
+    "lineHeightHint": "1.0–2.0; default 1.2.",
+    "cursor": "Cursor style",
+    "cursorHint": "Default block with blinking.",
+    "cursorBlock": "Block",
+    "cursorBar": "Bar",
+    "cursorUnderline": "Underline",
+    "acrylic": "Window material (Acrylic)",
+    "acrylicHint": "Requires an app restart; terminals remain opaque.",
+    "save": "Save appearance"
+  },
+  "shortcuts": {
+    "subtitle": "Read-only in the MVP; customization is deferred.",
+    "keys": "Shortcut",
+    "action": "Action",
+    "search": "Search terminal",
+    "copy": "Copy selection",
+    "paste": "Paste",
+    "selectAll": "Select all",
+    "interrupt": "Interrupt current command (no selection)",
+    "readOnly": "Only these management keys are intercepted while the terminal is focused."
+  },
+  "about": {
+    "subtitle": "Version, third-party licenses and dependency list.",
+    "version": "Version {version}",
+    "codicon": "Codicon (CC-BY-4.0)",
+    "font": "Ageminal Mono (OFL-1.1)",
+    "fontDerivation": "Ageminal Mono is derived from Maple Mono NF CN v7.9 and renamed; font assets are not distributed in this repository yet.",
+    "dependencies": "Dependency licenses",
+    "dependencyHint": "Major direct dependencies are listed here; the full audit runs in scripts/check-licenses.mjs."
   }
 }

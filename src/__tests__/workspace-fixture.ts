@@ -29,13 +29,55 @@ export function defaultAgents(): AgentConfig[] {
 export function createBindingsMock() {
   return {
     commands: {
-      appInfo: vi.fn(),
+      appInfo: vi.fn().mockResolvedValue({ name: "Ageminal", version: "0.0.0", os: "windows" }),
       windowsBuildNumber: vi.fn().mockResolvedValue(22631),
       systemLocale: vi.fn().mockResolvedValue(null),
       getLanguage: vi.fn().mockResolvedValue(null),
       setLanguage: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       getConfirmClose: vi.fn().mockResolvedValue(true),
       setConfirmClose: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      generalSettings: vi.fn().mockResolvedValue({
+        status: "ok",
+        data: {
+          defaultShell: null,
+          confirmClose: true,
+          startupBehavior: "restore",
+          language: null,
+          logsDir: "C:/logs",
+        },
+      }),
+      setGeneralSettings: vi.fn().mockImplementation((input: Record<string, unknown>) =>
+        Promise.resolve({
+          status: "ok",
+          data: {
+            defaultShell: input.defaultShell ?? null,
+            confirmClose: input.confirmClose ?? true,
+            startupBehavior: input.startupBehavior ?? "restore",
+            language: input.language ?? null,
+            logsDir: "C:/logs",
+          },
+        }),
+      ),
+      appearanceSettings: vi.fn().mockResolvedValue({
+        status: "ok",
+        data: {
+          theme: "one-dark-pro-glass",
+          fontSize: 13,
+          lineHeight: 1.2,
+          cursorStyle: "block",
+          acrylic: false,
+        },
+      }),
+      setAppearanceSettings: vi.fn().mockImplementation((input: Record<string, unknown>) =>
+        Promise.resolve({ status: "ok", data: input }),
+      ),
+      projectSettingsView: vi.fn().mockImplementation((path: string) =>
+        Promise.resolve({ status: "ok", data: { path, defaultShell: null, env: [], agents: [] } }),
+      ),
+      setProjectSettings: vi.fn().mockImplementation((input: Record<string, unknown>) =>
+        Promise.resolve({ status: "ok", data: input }),
+      ),
+      openLogsDir: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       getAgents: vi.fn().mockResolvedValue({ status: "ok", data: defaultAgents() }),
       saveTabs: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       restoreTabs: vi.fn().mockResolvedValue({ status: "ok", data: [] }),

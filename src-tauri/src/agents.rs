@@ -19,6 +19,7 @@ use specta::Type;
 use tauri::State;
 
 use ageminal_agent::RecognitionRule;
+use ageminal_workspace::ProjectSettings;
 
 use crate::storage::{Settings, Store};
 
@@ -203,6 +204,51 @@ pub fn resolve(settings: &Settings, id: &str) -> Option<AgentConfig> {
             .unwrap_or(default.color)
             .to_owned(),
     })
+}
+
+/// 项目级覆盖后的 agent 配置（#86）。
+///
+/// 项目只覆盖命令 / 参数；名称与颜色仍继承全局。
+pub fn resolve_in_project(
+    settings: &Settings,
+    project: Option<&ProjectSettings>,
+    id: &str,
+) -> Option<AgentConfig> {
+    let mut config = resolve(settings, id)?;
+    if let Some(over) = project.and_then(|project| project.agents.get(id)) {
+        if let Some(command) = over
+            .command
+            .as_deref()
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        {
+            config.command = command.to_owned();
+        }
+        if let Some(args) = over.args.as_deref().map(str::trim) {
+            config.args = args.to_owned();
+        }
+    }
+    Some(config)
+}
+
+/// 项目级覆盖后的启动命令。
+pub fn launch_command_in_project(
+    settings: &Settings,
+    project: Option<&ProjectSettings>,
+    id: &str,
+) -> Result<String, String> {
+    let config =
+        resolve_in_project(settings, project, id).ok_or_else(|| format!("未知的 agent：{id}"))?;
+    if config.command.contains(['\r', '\n']) || config.args.contains(['\r', '\n']) {
+        return Err("Agent 命令 / 参数不能包含换行".to_owned());
+    }
+    let mut command = quote_program(&config.command);
+    let args = config.args.trim();
+    if !args.is_empty() {
+        command.push(' ');
+        command.push_str(args);
+    }
+    Ok(command)
 }
 
 /// 全部四家（菜单 / 设置页用）。
@@ -412,6 +458,31 @@ mod tests {
             .any(|rule| rule.agent_id == "codex" && rule.command == "codex"));
         assert!(rules.iter().any(|rule| rule.agent_id == "opencode"));
         assert!(rules.iter().any(|rule| rule.agent_id == "pi"));
+    }
+
+    #[test]
+    fn project_overrides_replace_command_and_args_only() {
+        let settings = Settings::default();
+        let mut project =
+            ageminal_workspace::ProjectSettings::new(std::path::PathBuf::from("C:\\ws"));
+        project.agents.insert(
+            "claude".to_owned(),
+            ageminal_workspace::ProjectAgentOverride {
+                command: Some("claude-project".to_owned()),
+                args: Some("--model haiku".to_owned()),
+                extra: Default::default(),
+            },
+        );
+        let config = resolve_in_project(&settings, Some(&project), "claude").unwrap();
+        assert_eq!(config.command, "claude-project");
+        assert_eq!(config.args, "--model haiku");
+        assert_eq!(config.name, "Claude Code");
+        assert_eq!(
+            launch_command_in_project(&settings, Some(&project), "claude").unwrap(),
+            "claude-project --model haiku"
+        );
+        let opencode = resolve_in_project(&settings, Some(&project), "opencode").unwrap();
+        assert_eq!(opencode.command, "opencode");
     }
 
     #[test]

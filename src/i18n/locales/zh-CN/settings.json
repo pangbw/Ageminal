@@ -7,7 +7,8 @@
     "appearance": "外观",
     "shortcuts": "快捷键",
     "agents": "Agent",
-    "project": "项目"
+    "project": "项目",
+    "about": "关于 / 许可"
   },
   "project": {
     "subtitle": "管理已添加的项目及其工作树",
@@ -17,11 +18,43 @@
     "pin": "加入左侧栏",
     "rename": "重命名显示名",
     "noBranch": "无分支",
-    "empty": "还没有添加任何项目"
+    "empty": "还没有添加任何项目",
+    "override": {
+      "title": "项目级覆盖",
+      "hint": "只影响该项目下的新终端会话；已有会话保持首次启动参数。",
+      "shell": "默认 shell 覆盖",
+      "inherit": "继承全局",
+      "env": "环境变量",
+      "addEnv": "添加变量",
+      "noEnv": "没有项目级环境变量。",
+      "envName": "变量名",
+      "envValue": "变量值",
+      "remove": "删除",
+      "agents": "Agent 命令覆盖",
+      "agentsHint": "留空继承全局设置；命令只填程序，参数填右侧。",
+      "saved": "已保存",
+      "save": "保存项目设置"
+    }
   },
   "general": {
     "confirmClose": "关闭运行中的终端前确认",
-    "confirmCloseHint": "关闭正在运行命令的终端页签时先弹出确认。"
+    "confirmCloseHint": "关闭正在运行命令的终端页签时先弹出确认。",
+    "subtitle": "默认 shell、启动行为、语言与日志入口。",
+    "shell": "默认 shell",
+    "shellHint": "留空自动发现 Git Bash / PowerShell；路径可含空格。",
+    "shellPlaceholder": "例如 C:\\Program Files\\Git\\bin\\bash.exe",
+    "startup": "启动行为",
+    "startupHint": "决定启动时是否恢复上次工作区。",
+    "startupRestore": "恢复上次工作区",
+    "startupEmpty": "打开空工作区",
+    "language": "界面语言",
+    "languageHint": "MVP 只提供简体中文；留空跟随系统。",
+    "languageSystem": "跟随系统",
+    "logs": "日志",
+    "logsHint": "日志目录",
+    "openLogs": "打开日志目录",
+    "save": "保存通用设置",
+    "languageZh": "简体中文"
   },
   "agents": {
     "subtitle": "配置每个 Agent 的启动命令、参数与图标颜色；普通终端仍然保留。",
@@ -69,5 +102,42 @@
     "testOk": "测试投递成功（{time}）。",
     "testFailed": "测试投递失败：{detail}",
     "refresh": "刷新"
+  },
+  "appearance": {
+    "subtitle": "主题固定为 One Dark Pro Glass；终端区始终不透明。",
+    "theme": "主题",
+    "themeHint": "MVP 仅深色 One Dark Pro Glass，暂不支持浅色 / 跟随系统。",
+    "fontSize": "终端字号",
+    "fontSizeHint": "8–32 px；默认 13。",
+    "lineHeight": "行高 / 密度",
+    "lineHeightHint": "1.0–2.0；默认 1.2。",
+    "cursor": "光标样式",
+    "cursorHint": "默认 block + 闪烁。",
+    "cursorBlock": "方块",
+    "cursorBar": "竖线",
+    "cursorUnderline": "下划线",
+    "acrylic": "窗口材质（Acrylic）",
+    "acrylicHint": "开启后需重启应用生效；终端区保持不透明。",
+    "save": "保存外观设置"
+  },
+  "shortcuts": {
+    "subtitle": "MVP 只读展示，暂不支持自定义。",
+    "keys": "快捷键",
+    "action": "动作",
+    "search": "终端内搜索",
+    "copy": "复制选区",
+    "paste": "粘贴",
+    "selectAll": "全选",
+    "interrupt": "中断当前命令（无选区时）",
+    "readOnly": "终端聚焦时只拦截这些管理键；其它按键交给 agent / shell。"
+  },
+  "about": {
+    "subtitle": "版本、第三方许可与依赖清单。",
+    "version": "版本 {version}",
+    "codicon": "Codicon（CC-BY-4.0）",
+    "font": "Ageminal Mono（OFL-1.1）",
+    "fontDerivation": "Ageminal Mono 由 Maple Mono NF CN v7.9 派生并改名；字体资源尚未随仓库分发。",
+    "dependencies": "依赖许可清单",
+    "dependencyHint": "这里列出主要直接依赖；完整清单由 scripts/check-licenses.mjs 审计。"
   }
 }

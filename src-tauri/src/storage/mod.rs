@@ -17,7 +17,7 @@ mod tests;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub use settings::{General, Settings};
+pub use settings::{Appearance, CursorStyle, General, Settings, StartupBehavior};
 pub use state::{AppState, LaunchSpec, SavedTab, SavedTabKind, WindowState, WorktreeTabs};
 
 /// 应用数据目录名（`%LOCALAPPDATA%\Ageminal\`）。

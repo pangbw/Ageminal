@@ -46,7 +46,7 @@ describe("SettingsView", () => {
   it("lists every section in the navigation and opens Projects", () => {
     const { wrapper } = mountSettings();
 
-    expect(wrapper.findAll(".nav__item")).toHaveLength(5);
+    expect(wrapper.findAll(".nav__item")).toHaveLength(6);
     expect(wrapper.find(".nav__item--active").text()).toBe(
       localeString("zh-CN", "settings", ["nav", "project"]),
     );
@@ -119,12 +119,14 @@ describe("SettingsView", () => {
     const { wrapper } = mountSettings();
 
     await wrapper.findAll(".nav__item")[0].trigger("click");
+    await wrapper.findAll(".setting")[1].find(".toggle").trigger("click");
+    await wrapper.find(".setting__actions .button").trigger("click");
 
-    expect(wrapper.find(".setting__title").text()).toBe(
-      localeString("zh-CN", "settings", ["general", "confirmClose"]),
+    await vi.waitFor(() =>
+      expect(commands.setGeneralSettings).toHaveBeenCalledWith(
+        expect.objectContaining({ confirmClose: false }),
+      ),
     );
-    await wrapper.find(".toggle").trigger("click");
-    expect(commands.setConfirmClose).toHaveBeenCalledWith(false);
   });
 
   it("edits the four agent launch settings from the Agent section", async () => {
@@ -160,13 +162,13 @@ describe("SettingsView", () => {
     );
   });
 
-  it("shows a placeholder for the sections still owned by #86", async () => {
+  it("opens the appearance section with the fixed theme and font controls", async () => {
     const { wrapper } = mountSettings();
 
     await wrapper.findAll(".nav__item")[1].trigger("click");
 
-    expect(wrapper.find(".page__empty").text()).toBe(
-      localeString("zh-CN", "settings", ["comingSoon"]),
-    );
+    expect(wrapper.text()).toContain("One Dark Pro Glass");
+    expect(wrapper.find("input[type='number']").exists()).toBe(true);
+    expect(wrapper.text()).not.toContain(localeString("zh-CN", "settings", ["comingSoon"]));
   });
 });

@@ -4,6 +4,7 @@
 //! **worktree 显示名**在 `settings.json` 的项目级设置（[`ProjectSettings`]）。
 //! 两个文档都按 §14 的约定保留未知字段（`extra`，嵌套层同样保留）。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ageminal_git::worktree::{dir_name, Worktree};
@@ -93,7 +94,16 @@ pub struct ProjectSettings {
     /// worktree 的本地显示名。
     #[serde(default)]
     pub worktree_names: Vec<WorktreeName>,
-    /// 未知字段原样保留；#86 的 shell 覆盖 / 环境变量 / agent 覆盖落在这里。
+    /// 项目级默认 shell 覆盖（#86）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_shell: Option<String>,
+    /// 项目级环境变量（#86）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    /// 项目级 agent 命令 / 参数覆盖（#86）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agents: BTreeMap<String, ProjectAgentOverride>,
+    /// 未知字段原样保留。
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -104,6 +114,9 @@ impl ProjectSettings {
         Self {
             path,
             worktree_names: Vec::new(),
+            default_shell: None,
+            env: BTreeMap::new(),
+            agents: BTreeMap::new(),
             extra: Map::new(),
         }
     }
@@ -136,7 +149,33 @@ impl ProjectSettings {
 
     /// 没有显示名、也没有其它项目级设置的空条目（不值得留在 `settings.json` 里）。
     pub fn is_empty(&self) -> bool {
-        self.worktree_names.is_empty() && self.extra.is_empty()
+        self.worktree_names.is_empty()
+            && self.default_shell.is_none()
+            && self.env.is_empty()
+            && self.agents.is_empty()
+            && self.extra.is_empty()
+    }
+}
+
+/// 项目级 agent 覆盖（#86）；`None` = 继承全局设置。
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAgentOverride {
+    /// 程序（可执行文件或 PATH 名）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// 参数串。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    /// 未知字段原样保留。
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl ProjectAgentOverride {
+    /// 没有任何有效字段。
+    pub fn is_empty(&self) -> bool {
+        self.command.is_none() && self.args.is_none() && self.extra.is_empty()
     }
 }
 

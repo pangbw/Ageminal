@@ -23,6 +23,15 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* #87：窗口材质开启时，外壳面板用 alpha 让 DWM Acrylic 透出；终端 canvas 始终不透明。 */
+html[data-acrylic="true"] {
+  --color-bg: rgba(8, 9, 9, 0.72);
+}
+
+html[data-acrylic="true"] body {
+  background: transparent;
+}
+
 button {
   padding: 0;
   border: none;

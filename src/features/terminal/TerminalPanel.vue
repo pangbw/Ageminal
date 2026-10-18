@@ -8,11 +8,13 @@
 import IconClose from "~icons/codicon/close";
 import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 import { translate as t } from "../../i18n/translate";
+import { usePreferencesStore } from "../../stores/preferences";
 import type { TerminalTab } from "../../stores/tabs";
 import {
+  applyTerminalAppearance,
   clearTerminalSearch,
   copySelection,
   findInTerminal,
@@ -32,6 +34,7 @@ import {
 const RESIZE_DEBOUNCE_MS = 120;
 
 const props = defineProps<{ tab: TerminalTab }>();
+const preferences = usePreferencesStore();
 const emit = defineEmits<{ close: [] }>();
 
 const host = ref<HTMLElement | null>(null);
@@ -125,6 +128,12 @@ function scheduleSync(): void {
   clearTimeout(timer);
   timer = setTimeout(syncSize, RESIZE_DEBOUNCE_MS);
 }
+
+watch(
+  () => preferences.appearance,
+  (appearance) => applyTerminalAppearance(props.tab.sid, appearance),
+  { deep: true },
+);
 
 onMounted(() => {
   const element = host.value;
