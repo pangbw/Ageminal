@@ -13,6 +13,7 @@ use std::time::Duration;
 use ageminal_files::search::SearchOptions;
 use serde::Serialize;
 use specta::Type;
+use tauri_plugin_dialog::DialogExt;
 /// 搜索的墙钟预算（#19 D8）：用完返回部分结果并置 `timedOut`。
 const SEARCH_BUDGET: Duration = Duration::from_secs(2);
 
@@ -375,6 +376,31 @@ pub fn open_terminal(root: String, dir: String) -> Result<(), String> {
     let dir = PathBuf::from(dir);
     ageminal_files::ensure_within(&root, &dir).map_err(|error| error.to_string())?;
     spawn_terminal(&dir)
+}
+
+/// 弹系统文件选择器（#69：从「+」菜单新建文件预览页签）。
+///
+/// 根固定为当前 worktree；用户仍可导航到别处，所以选完要再校验一次 `ensure_within`。
+/// 返回 `None` = 用户取消。
+#[tauri::command]
+#[specta::specta]
+pub async fn pick_file(app: tauri::AppHandle, root: String) -> Result<Option<String>, String> {
+    let root = PathBuf::from(root);
+    if !root.is_dir() {
+        return Err("当前 worktree 目录不存在".to_owned());
+    }
+    // 阻塞式选择器不得在主线程调用（插件文档）；async 命令跑在异步运行时上。
+    let Some(file) = app
+        .dialog()
+        .file()
+        .set_directory(&root)
+        .blocking_pick_file()
+    else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|error| error.to_string())?;
+    ageminal_files::ensure_within(&root, &path).map_err(|error| error.to_string())?;
+    Ok(Some(crate::path_text(&path)))
 }
 
 /// `CF_HDROP` 写文件列表（Windows；见 `clipboard-win`）。其它平台显式报错。

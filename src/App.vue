@@ -10,16 +10,24 @@ import { computed, onMounted, watch } from "vue";
 
 import FileTree from "./features/files/FileTree.vue";
 import FileTreeActions from "./features/files/FileTreeActions.vue";
+import ConfirmDialog from "./features/files/ConfirmDialog.vue";
 import ProjectTree from "./features/projects/ProjectTree.vue";
 import PreviewPanel from "./features/tabs/PreviewPanel.vue";
 import SettingsView from "./features/settings/SettingsView.vue";
 import AppShell from "./features/shell/AppShell.vue";
 import EmptyState from "./features/shell/EmptyState.vue";
+import TabStrip from "./features/shell/TabStrip.vue";
 import { useWindowTitle } from "./features/shell/useWindowTitle";
+import {
+  cancelPendingClose,
+  confirmPendingClose,
+  pendingClose,
+  requestClose,
+} from "./features/tabs/actions";
 import TerminalPanel from "./features/terminal/TerminalPanel.vue";
-import { close as closeTerminalSession } from "./features/terminal/runtime";
 import { translate as t } from "./i18n/translate";
 import { useFilesStore } from "./stores/files";
+import { usePreferencesStore } from "./stores/preferences";
 import { useTabsStore } from "./stores/tabs";
 import { useUiStore } from "./stores/ui";
 import { useWorkspaceStore } from "./stores/workspace";
@@ -28,6 +36,7 @@ const ui = useUiStore();
 const workspace = useWorkspaceStore();
 const files = useFilesStore();
 const tabs = useTabsStore();
+const preferences = usePreferencesStore();
 
 // 窗口标题跟着激活 worktree 走（§6）。
 useWindowTitle();
@@ -53,18 +62,17 @@ const terminal = computed(() => {
 
 function closePreview(): void {
   const current = preview.value;
-  if (current !== null) tabs.closeFile(current.root, current.tab.path);
+  if (current !== null) requestClose(current.root, [current.tab]);
 }
 
 function closeTerminal(): void {
   const current = terminal.value;
-  if (current === null) return;
-  tabs.closeTerminal(current.root, current.tab.sid);
-  void closeTerminalSession(current.tab.sid);
+  if (current !== null) requestClose(current.root, [current.tab]);
 }
 
 onMounted(() => {
   void workspace.refresh();
+  void preferences.load();
 });
 
 /** 「添加项目」的实体：Rust 侧弹系统目录选择器（#32 D1）。 */
@@ -82,6 +90,10 @@ function addProject(): void {
     <!-- 左栏内容：项目 / worktree 树（#57）。 -->
     <template #projects>
       <ProjectTree />
+    </template>
+    <!-- 页签条：按当前 worktree 分组，切换时整组替换（#69）。 -->
+    <template #tabs>
+      <TabStrip />
     </template>
     <!-- 主区：文件只读预览（#60）、终端（#68）或空态；完整页签模型见 #69。 -->
     <template #main>
@@ -110,4 +122,14 @@ function addProject(): void {
       <FileTree />
     </template>
   </AppShell>
+
+  <ConfirmDialog
+    v-if="pendingClose"
+    :title="t('tabs.closeRunningTitle')"
+    :message="pendingClose.message"
+    :confirm-label="t('tabs.closeAnyway')"
+    danger
+    @confirm="confirmPendingClose"
+    @cancel="cancelPendingClose"
+  />
 </template>

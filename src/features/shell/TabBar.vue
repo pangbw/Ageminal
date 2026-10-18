@@ -9,8 +9,11 @@ import IconAdd from "~icons/codicon/add";
 
 import { translate as t } from "../../i18n/translate";
 import { useUiStore } from "../../stores/ui";
+import { useWorkspaceStore } from "../../stores/workspace";
+import NewTabMenu from "./NewTabMenu.vue";
 
 const ui = useUiStore();
+const workspace = useWorkspaceStore();
 </script>
 
 <template>
@@ -24,14 +27,21 @@ const ui = useUiStore();
     >
       <slot />
     </div>
-    <button
-      class="icon-button tabbar__new"
-      type="button"
-      :title="t('tabs.new')"
-      @click="ui.toggleNewTabMenu()"
-    >
-      <IconAdd />
-    </button>
+    <div class="tabbar__new-wrap">
+      <button
+        class="icon-button tabbar__new"
+        type="button"
+        :title="t('tabs.new')"
+        @click="ui.toggleNewTabMenu()"
+      >
+        <IconAdd />
+      </button>
+      <NewTabMenu
+        v-if="ui.newTabMenuOpen"
+        :root="workspace.activePath"
+        @close="ui.closeNewTabMenu()"
+      />
+    </div>
   </div>
 </template>
 
@@ -55,6 +65,12 @@ const ui = useUiStore();
 
 .tabbar__strip::-webkit-scrollbar {
   display: none;
+}
+
+.tabbar__new-wrap {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
 }
 
 .tabbar__new {

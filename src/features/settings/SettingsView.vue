@@ -12,6 +12,7 @@ import IconEdit from "~icons/codicon/edit";
 import { computed, ref } from "vue";
 
 import { translate as t, type MessagePath } from "../../i18n/translate";
+import { usePreferencesStore } from "../../stores/preferences";
 import { useUiStore } from "../../stores/ui";
 import { useWorkspaceStore } from "../../stores/workspace";
 import WindowControls from "../shell/WindowControls.vue";
@@ -29,6 +30,9 @@ const SECTIONS = [
 
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
+const preferences = usePreferencesStore();
+/** 设置写入失败时显示；成功后清空。 */
+const error = ref<string | null>(null);
 
 const section = ref<Section>("project");
 /** 正在重命名的 worktree 路径；`null` = 没有在编辑。 */
@@ -64,6 +68,16 @@ function removeProject(path: string): void {
 
 function setPinned(projectPath: string, worktreePath: string, pinned: boolean): void {
   void workspace.setWorktreePinned(projectPath, worktreePath, pinned);
+}
+
+/** 通用分页目前只有「关闭确认」；其余项归 #86。 */
+async function setConfirmClose(enabled: boolean): Promise<void> {
+  error.value = null;
+  try {
+    await preferences.setConfirmClose(enabled);
+  } catch (failure) {
+    error.value = failure instanceof Error ? failure.message : String(failure);
+  }
 }
 </script>
 
@@ -123,8 +137,33 @@ function setPinned(projectPath: string, worktreePath: string, pinned: boolean): 
           </button>
         </div>
 
+        <template v-if="section === 'general'">
+          <div class="setting">
+            <div class="setting__text">
+              <h3 class="setting__title">
+                {{ t("settings.general.confirmClose") }}
+              </h3>
+              <p class="setting__hint">
+                {{ t("settings.general.confirmCloseHint") }}
+              </p>
+            </div>
+            <ToggleSwitch
+              :model-value="preferences.confirmClose"
+              :label="t('settings.general.confirmClose')"
+              @update:model-value="setConfirmClose"
+            />
+          </div>
+          <p
+            v-if="error"
+            class="setting__error"
+            role="alert"
+          >
+            {{ error }}
+          </p>
+        </template>
+
         <p
-          v-if="section !== 'project'"
+          v-else-if="section !== 'project'"
           class="page__empty"
         >
           {{ t("settings.comingSoon") }}
@@ -405,5 +444,38 @@ function setPinned(projectPath: string, worktreePath: string, pinned: boolean): 
 
 .wt__rename {
   font-size: var(--font-size-sm);
+}
+
+.setting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md);
+}
+
+.setting__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.setting__title {
+  margin: 0;
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.setting__hint {
+  margin: var(--space-1) 0 0;
+  color: var(--color-faint);
+  font-size: var(--font-size-xs);
+}
+
+.setting__error {
+  margin: var(--space-3) 0 0;
+  color: var(--color-red);
+  font-size: var(--font-size-xs);
 }
 </style>

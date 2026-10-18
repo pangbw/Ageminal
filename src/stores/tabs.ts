@@ -78,6 +78,13 @@ export const useTabsStore = defineStore("tabs", () => {
     return tab.kind === "preview" ? tab.path : tab.sid;
   }
 
+  /** 激活指定页签；id 不存在时不动。 */
+  function setActive(root: string, id: string): void {
+    if (tabsFor(root).some((tab) => tabId(tab) === id)) {
+      activeByRoot.value[root] = id;
+    }
+  }
+
   /** 打开（或激活已有的）文件预览页签。 */
   function openFile(root: string, path: string, name: string): void {
     const tabs = (tabsByRoot.value[root] ??= []);
@@ -140,24 +147,39 @@ export const useTabsStore = defineStore("tabs", () => {
 
   /** 关闭一个预览页签；关掉的是激活项时，挑一个邻居顶上。 */
   function closeFile(root: string, path: string): void {
-    closeById(root, path);
+    closeTabs(root, [path]);
   }
 
   /** 关闭一个终端页签；关掉的是激活项时，挑一个邻居顶上。 */
   function closeTerminal(root: string, sid: string): void {
-    closeById(root, sid);
+    closeTabs(root, [sid]);
   }
 
-  function closeById(root: string, id: string): void {
+  /** 批量关闭；激活项被关掉时，挑原位置右侧（没有则左侧）的邻居顶上。 */
+  function closeTabs(root: string, ids: readonly string[]): void {
     const tabs = tabsByRoot.value[root];
-    if (!tabs) return;
-    const index = tabs.findIndex((tab) => tabId(tab) === id);
-    if (index === -1) return;
-    tabs.splice(index, 1);
-    if (activeByRoot.value[root] === id) {
-      const neighbour = tabs[index] ?? tabs[index - 1];
+    if (!tabs || ids.length === 0) return;
+    const closing = new Set(ids);
+    const firstIndex = tabs.findIndex((tab) => closing.has(tabId(tab)));
+    if (firstIndex === -1) return;
+    const kept = tabs.filter((tab) => !closing.has(tabId(tab)));
+    tabsByRoot.value[root] = kept;
+    const active = activeByRoot.value[root];
+    if (typeof active === "string" && closing.has(active)) {
+      const neighbour = kept[Math.min(firstIndex, kept.length - 1)] ?? null;
       activeByRoot.value[root] = neighbour ? tabId(neighbour) : null;
     }
+  }
+
+  /** 拖拽排序：把 `fromId` 移到 `toIndex`（clamp 到有效范围）。 */
+  function moveTab(root: string, fromId: string, toIndex: number): void {
+    const tabs = tabsByRoot.value[root];
+    if (!tabs) return;
+    const from = tabs.findIndex((tab) => tabId(tab) === fromId);
+    if (from === -1) return;
+    const [tab] = tabs.splice(from, 1);
+    const target = Math.max(0, Math.min(toIndex, tabs.length));
+    tabs.splice(target, 0, tab);
   }
 
   /** 关闭落在 `prefix`（含其自身）之下的预览页签（#62：删除文件 / 目录后收尾）。 */
@@ -192,13 +214,17 @@ export const useTabsStore = defineStore("tabs", () => {
     tabsByRoot,
     activeByRoot,
     tabsFor,
+    tabId,
     activeTab,
     activePreview,
     activeTerminal,
+    setActive,
     openFile,
     openTerminal,
     closeFile,
     closeTerminal,
+    closeTabs,
+    moveTab,
     closeUnder,
     movePath,
     markStale,

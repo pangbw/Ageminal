@@ -88,6 +88,29 @@ fn set_language(
         .map_err(|error| error.to_string())
 }
 
+/// 关闭运行中的终端页签前是否二次确认（#69；默认 `true`）。
+#[tauri::command]
+#[specta::specta]
+fn get_confirm_close(store: tauri::State<'_, Mutex<storage::Store>>) -> bool {
+    store
+        .lock()
+        .map(|guard| guard.settings().general.confirm_close)
+        .unwrap_or(true)
+}
+
+/// 写入「关闭运行中页签需确认」并**立即落盘**（#69）。
+#[tauri::command]
+#[specta::specta]
+fn set_confirm_close(
+    store: tauri::State<'_, Mutex<storage::Store>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut guard = store.lock().map_err(|_| "设置锁已被污染".to_owned())?;
+    guard
+        .update_settings(|settings| settings.general.confirm_close = enabled)
+        .map_err(|error| error.to_string())
+}
+
 /// 命令注册的单一来源：运行与导出绑定共用。
 pub fn builder() -> Builder<tauri::Wry> {
     Builder::new().commands(collect_commands![
@@ -95,6 +118,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         system_locale,
         get_language,
         set_language,
+        get_confirm_close,
+        set_confirm_close,
         workspace::workspace_snapshot,
         workspace::add_project,
         workspace::remove_project,
@@ -105,6 +130,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         files::read_dir,
         files::search_files,
         files::read_preview,
+        files::pick_file,
         files::open_in_editor,
         files::create_entry,
         files::rename_entry,

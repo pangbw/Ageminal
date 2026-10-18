@@ -157,4 +157,34 @@ describe("useTabsStore", () => {
 
     expect(tabs.activeTerminal(A)?.sid).toBe(sid);
   });
+
+  it("activates and reorders tabs without losing the active id", () => {
+    const tabs = useTabsStore();
+    tabs.openFile(A, `${A}/one.ts`, "one.ts");
+    tabs.openFile(A, `${A}/two.ts`, "two.ts");
+    tabs.openFile(A, `${A}/three.ts`, "three.ts");
+
+    tabs.setActive(A, `${A}/one.ts`);
+    tabs.moveTab(A, `${A}/three.ts`, 0);
+
+    expect(tabs.tabsFor(A).map((tab) => tab.name)).toEqual(["three.ts", "one.ts", "two.ts"]);
+    expect(tabs.activePreview(A)?.name).toBe("one.ts");
+
+    tabs.setActive(A, `${A}/missing.ts`);
+    expect(tabs.activePreview(A)?.name).toBe("one.ts");
+  });
+
+  it("closes a batch and falls back to the nearest surviving neighbour", () => {
+    const tabs = useTabsStore();
+    tabs.openFile(A, `${A}/one.ts`, "one.ts");
+    tabs.openFile(A, `${A}/two.ts`, "two.ts");
+    tabs.openFile(A, `${A}/three.ts`, "three.ts");
+    tabs.openFile(A, `${A}/four.ts`, "four.ts");
+    tabs.setActive(A, `${A}/three.ts`);
+
+    tabs.closeTabs(A, [`${A}/two.ts`, `${A}/three.ts`]);
+
+    expect(tabs.tabsFor(A).map((tab) => tab.name)).toEqual(["one.ts", "four.ts"]);
+    expect(tabs.activePreview(A)?.name).toBe("four.ts");
+  });
 });

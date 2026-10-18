@@ -13,12 +13,11 @@ import IconLock from "~icons/codicon/lock";
 import IconTerminal from "~icons/codicon/terminal";
 
 import { translate as t } from "../../i18n/translate";
-import { useTabsStore } from "../../stores/tabs";
 import { useWorkspaceStore } from "../../stores/workspace";
+import { openTerminalTab } from "../tabs/actions";
 import EmptyState from "../shell/EmptyState.vue";
 
 const workspace = useWorkspaceStore();
-const tabs = useTabsStore();
 
 function addProject(): void {
   void workspace.addProject();
@@ -34,13 +33,9 @@ function activate(path: string): void {
 
 /** 在这个 worktree 里开一个终端页签；会话本身由面板挂载时创建（#68）。 */
 function openTerminal(path: string): void {
-  const unique =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   // 从非激活 worktree 的快捷入口点进来时，先把该 worktree 切为激活项。
   if (!workspace.isActive(path)) void workspace.setActive(path);
-  tabs.openTerminal(path, `terminal:${path}:${unique}`, path, t("terminal.defaultName"));
+  openTerminalTab(path);
 }
 </script>
 

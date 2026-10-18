@@ -12,5 +12,20 @@
     "truncated": "File is large; showing only the beginning",
     "longLine": "Contains a very long line; rendering may be slow",
     "updated": "File updated"
+  },
+  "closeRunningTitle": "Close running terminal?",
+  "closeRunningMessage": "A command is still running in “{name}”. Closing the tab ends the session.",
+  "closeRunningManyMessage": "{count} running terminals. Closing the tabs ends those sessions.",
+  "closeAnyway": "Close anyway",
+  "context": {
+    "close": "Close tab",
+    "closeOthers": "Close other tabs",
+    "closeRight": "Close tabs to the right"
+  },
+  "menu": {
+    "terminal": "Terminal",
+    "file": "File preview",
+    "browser": "Browser",
+    "other": "Other"
   }
 }

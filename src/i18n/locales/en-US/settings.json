@@ -18,5 +18,9 @@
     "rename": "Rename display name",
     "noBranch": "No branch",
     "empty": "No projects yet"
+  },
+  "general": {
+    "confirmClose": "Confirm before closing a running terminal",
+    "confirmCloseHint": "Ask before closing a terminal tab whose command is still running."
   }
 }

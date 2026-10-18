@@ -51,6 +51,10 @@ export const useUiStore = defineStore("ui", () => {
     newTabMenuOpen.value = !newTabMenuOpen.value;
   }
 
+  function closeNewTabMenu(): void {
+    newTabMenuOpen.value = false;
+  }
+
   function toggleSettings(): void {
     settingsOpen.value = !settingsOpen.value;
   }
@@ -78,6 +82,7 @@ export const useUiStore = defineStore("ui", () => {
     collapsePanel,
     expandPanel,
     toggleNewTabMenu,
+    closeNewTabMenu,
     toggleSettings,
     toggleShowHidden,
     toggleShowIgnored,

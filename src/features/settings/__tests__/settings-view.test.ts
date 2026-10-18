@@ -115,10 +115,22 @@ describe("SettingsView", () => {
     expect(commands.renameWorktree).not.toHaveBeenCalled();
   });
 
-  it("shows a placeholder for the sections still owned by #86", async () => {
+  it("persists the close-confirmation setting from the general section", async () => {
     const { wrapper } = mountSettings();
 
     await wrapper.findAll(".nav__item")[0].trigger("click");
+
+    expect(wrapper.find(".setting__title").text()).toBe(
+      localeString("zh-CN", "settings", ["general", "confirmClose"]),
+    );
+    await wrapper.find(".toggle").trigger("click");
+    expect(commands.setConfirmClose).toHaveBeenCalledWith(false);
+  });
+
+  it("shows a placeholder for the sections still owned by #86", async () => {
+    const { wrapper } = mountSettings();
+
+    await wrapper.findAll(".nav__item")[1].trigger("click");
 
     expect(wrapper.find(".page__empty").text()).toBe(
       localeString("zh-CN", "settings", ["comingSoon"]),

@@ -12,5 +12,20 @@
     "truncated": "文件过大，仅显示前一部分",
     "longLine": "含超长行，渲染可能较慢",
     "updated": "文件已更新"
+  },
+  "closeRunningTitle": "关闭运行中的终端？",
+  "closeRunningMessage": "「{name}」里的命令仍在运行。关闭页签会结束会话。",
+  "closeRunningManyMessage": "有 {count} 个运行中的终端。关闭页签会结束这些会话。",
+  "closeAnyway": "仍然关闭",
+  "context": {
+    "close": "关闭页签",
+    "closeOthers": "关闭其他页签",
+    "closeRight": "关闭右侧页签"
+  },
+  "menu": {
+    "terminal": "终端",
+    "file": "文件预览",
+    "browser": "浏览器",
+    "other": "其他"
   }
 }

@@ -18,6 +18,10 @@ export const commands = {
 	getLanguage: () => __TAURI_INVOKE<string | null>("get_language"),
 	/**  写入界面语言并**立即落盘**；`None` = 恢复「跟随系统」。 */
 	setLanguage: (language: string | null) => typedError<null, string>(__TAURI_INVOKE("set_language", { language })),
+	/**  关闭运行中的终端页签前是否二次确认（#69；默认 `true`）。 */
+	getConfirmClose: () => __TAURI_INVOKE<boolean>("get_confirm_close"),
+	/**  写入「关闭运行中页签需确认」并**立即落盘**（#69）。 */
+	setConfirmClose: (enabled: boolean) => typedError<null, string>(__TAURI_INVOKE("set_confirm_close", { enabled })),
 	/**  启动 hydrate：前端拿到的唯一工作区事实。 */
 	workspaceSnapshot: () => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("workspace_snapshot")),
 	/**
@@ -63,6 +67,13 @@ export const commands = {
 	 *  与 base64 编码可能耗时，放阻塞线程池上跑。
 	 */
 	readPreview: (root: string, path: string) => typedError<PreviewView, string>(__TAURI_INVOKE("read_preview", { root, path })),
+	/**
+	 *  弹系统文件选择器（#69：从「+」菜单新建文件预览页签）。
+	 * 
+	 *  根固定为当前 worktree；用户仍可导航到别处，所以选完要再校验一次 `ensure_within`。
+	 *  返回 `None` = 用户取消。
+	 */
+	pickFile: (root: string) => typedError<string | null, string>(__TAURI_INVOKE("pick_file", { root })),
 	/**
 	 *  用系统默认程序打开 `path`（D6 #20），路径须在 `root` 之内。
 	 * 

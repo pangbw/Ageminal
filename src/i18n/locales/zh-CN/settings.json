@@ -18,5 +18,9 @@
     "rename": "重命名显示名",
     "noBranch": "无分支",
     "empty": "还没有添加任何项目"
+  },
+  "general": {
+    "confirmClose": "关闭运行中的终端前确认",
+    "confirmCloseHint": "关闭正在运行命令的终端页签时先弹出确认。"
   }
 }
