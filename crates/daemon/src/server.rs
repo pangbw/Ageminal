@@ -1,4 +1,4 @@
-//! 命名管道服务端：单例守卫 + 握手 + ping/pong（issue #64 / #65）。
+//! 命名管道服务端：单例守卫 + 多客户端口 + 握手 + 事件路由（#64 / #65 / #79）。
 //!
 //! 单例：`FILE_FLAG_FIRST_PIPE_INSTANCE` 让**第二个** `CreateNamedPipeW` 直接失败——内核级守卫，
 //! 不需要锁文件或 `Mutex`。**但「名字被占」的错误码各家实现口径不一**（CI 实测是
@@ -6,6 +6,10 @@
 //! 就去问一句「这条管道上有人应答吗」。是则「已在运行」，否则如实报错。
 //!
 //! 管道 DACL 只放当前用户（[`crate::acl`]），所以「非当前用户被拒绝」由内核完成，不靠应用层判断。
+//!
+//! 实例池：UI 的长连接会占住一个实例；`ageminal-notify` 的短连接必须能并发接入，所以 daemon
+//! 同时创建多个同名管道实例（首个实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE` 做单例守卫），每条实例
+//! 一个 acceptor 线程。AgentEvent 由 [`EventHub`] 广播给长连接。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -14,12 +18,12 @@ use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use ageminal_protocol::{
-    negotiate, Caps, ErrorCode, Hello, Message, Negotiation, ProtocolError, Sessions, Welcome,
-    PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+    negotiate, AgentEvent, Caps, ErrorCode, Hello, Message, Negotiation, ProtocolError, Sessions,
+    Welcome, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_CONNECTED, HANDLE,
@@ -28,17 +32,20 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PeekNamedPipe, PIPE_READMODE_BYTE,
-    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 
 use crate::history::HistoryStore;
 use crate::outbound::Outbound;
 use crate::pty::PtySize;
-use crate::session::SessionTable;
+use crate::session::{SessionEnv, SessionTable};
 use crate::{acl, framed, launch, logging, paths, win, DaemonError, DaemonInfo};
 
 /// 管道的内核缓冲（控制流量很小；这不是我们自己的读缓冲）。
 const BUFFER_BYTES: u32 = 8 * 1024;
+
+/// 命名管道实例池：1 条长连接（UI）+ 若干短连接（`ageminal-notify` / 探活）。
+const PIPE_INSTANCES: usize = 8;
 
 /// 建管道失败后，给「上一个 daemon 已建好管道、状态文件还没落盘」这个窗口留的宽限时间。
 const COLLISION_GRACE: Duration = Duration::from_secs(2);
@@ -108,8 +115,8 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
 
     // 先建管道：这一步同时完成单例判定（第二个实例会失败）。
     let security = acl::CurrentUserSecurity::build()?;
-    let pipe = match create_pipe(&config.pipe, &security) {
-        Ok(pipe) => pipe,
+    let pipes = match create_pipe_pool(&config.pipe, &security) {
+        Ok(pipes) => pipes,
         Err(DaemonError::Pipe { pipe, reason }) => {
             // 管道名已被占用时 **Windows 给的错误码并不稳定**（CI 实测 `ERROR_PIPE_BUSY`，
             // 文档写 `ERROR_ACCESS_DENIED`）。所以不猜错误码，直接**探测**：真有 daemon 在线，
@@ -155,9 +162,35 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
             ),
         );
     }
-    let sessions = Arc::new(SessionTable::with_history(history));
-    let shutdown = AtomicBool::new(false);
-    let result = accept_loop(&pipe, &info, &sessions, &log_path, &shutdown);
+    let sessions = Arc::new(SessionTable::with_history(history).with_env(SessionEnv {
+        pipe: info.pipe.clone(),
+        token: info.token.clone(),
+    }));
+    let events = Arc::new(EventHub::default());
+    let shutdown = Arc::new(Shutdown::default());
+
+    // 多个管道实例 = 多客户端口：UI 长连接占用一个，shim / 探活可以并发连其它实例。
+    for (index, pipe) in pipes.into_iter().enumerate() {
+        let info = info.clone();
+        let sessions = Arc::clone(&sessions);
+        let events = Arc::clone(&events);
+        let shutdown = Arc::clone(&shutdown);
+        let log_path = log_path.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("pipe-accept-{index}"))
+            .spawn(move || {
+                accept_loop(pipe, info, sessions, events, shutdown, log_path);
+            })
+        {
+            return Err(DaemonError::Unexpected(format!(
+                "管道接受线程启动失败：{error}"
+            )));
+        }
+    }
+
+    // shutdown 由处理请求的那条连接在 ack 写完、对端断开后置完成；这里只等它。
+    shutdown.wait_completed();
+    let result = Ok(());
 
     let _ = DaemonInfo::remove(&config.config_dir);
     logging::append(
@@ -181,6 +214,9 @@ fn install_panic_hook(log_path: &Path) {
 /// 拥有管道 HANDLE；析构即 `CloseHandle`。
 struct PipeHandle(HANDLE);
 
+// SAFETY：句柄只被移动到唯一一条 acceptor 线程；内核对象本身跨线程可用。
+unsafe impl Send for PipeHandle {}
+
 impl Drop for PipeHandle {
     fn drop(&mut self) {
         unsafe { CloseHandle(self.0) };
@@ -191,14 +227,37 @@ impl Drop for PipeHandle {
 ///
 /// 失败一律包成 [`DaemonError::Pipe`]——「是不是别的 daemon 占着」由调用方用**探测**判断，
 /// 不靠错误码（见 [`serve`]）。
-fn create_pipe(pipe: &str, security: &acl::CurrentUserSecurity) -> Result<PipeHandle, DaemonError> {
+fn create_pipe_pool(
+    pipe: &str,
+    security: &acl::CurrentUserSecurity,
+) -> Result<Vec<PipeHandle>, DaemonError> {
+    let mut handles = Vec::with_capacity(PIPE_INSTANCES);
+    for index in 0..PIPE_INSTANCES {
+        handles.push(create_pipe(pipe, security, index == 0)?);
+    }
+    Ok(handles)
+}
+
+/// 创建管道实例。`first` 的实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`，负责**单例守卫**；
+/// 同一 daemon 的后续实例不带该 flag，否则会被内核当成第二个 daemon 拒绝。
+fn create_pipe(
+    pipe: &str,
+    security: &acl::CurrentUserSecurity,
+    first: bool,
+) -> Result<PipeHandle, DaemonError> {
     let name = win::to_wide(pipe);
+    let flags = PIPE_ACCESS_DUPLEX
+        | if first {
+            FILE_FLAG_FIRST_PIPE_INSTANCE
+        } else {
+            0
+        };
     let handle = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            flags,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            1,
+            PIPE_UNLIMITED_INSTANCES,
             BUFFER_BYTES,
             BUFFER_BYTES,
             0,
@@ -215,23 +274,39 @@ fn create_pipe(pipe: &str, security: &acl::CurrentUserSecurity) -> Result<PipeHa
     Ok(PipeHandle(handle))
 }
 
-/// 顺序接受连接。每个连接处理完就 `DisconnectNamedPipe`，把**同一个实例**留给下一个客户端
-/// （单例下只有一个实例，REQUIREMENTS.md §5.1 的「单连接」）。
+/// 一个管道实例的接受循环：串行招呼该实例上的连接（不同实例并行）。
+///
+/// UI 长连接只占用一个实例；`ageminal-notify` 的短连接走其它实例，因此不会被 UI 卡住。
 fn accept_loop(
-    pipe: &PipeHandle,
-    info: &DaemonInfo,
-    sessions: &Arc<SessionTable>,
-    log_path: &Path,
-    shutdown: &AtomicBool,
-) -> Result<(), DaemonError> {
+    pipe: PipeHandle,
+    info: DaemonInfo,
+    sessions: Arc<SessionTable>,
+    events: Arc<EventHub>,
+    shutdown: Arc<Shutdown>,
+    log_path: PathBuf,
+) {
     loop {
-        wait_for_client(pipe.0, log_path)?;
-        if let Err(error) = serve_connection(pipe.0, info, sessions, log_path, shutdown) {
-            logging::append(log_path, &format!("连接结束：{error}"));
+        if let Err(error) = wait_for_client(pipe.0, &log_path) {
+            logging::append(&log_path, &format!("接受连接失败：{error}"));
+            return;
         }
-        unsafe { DisconnectNamedPipe(pipe.0) };
-        if shutdown.load(Ordering::SeqCst) {
-            return Ok(());
+        match serve_connection(pipe.0, &info, &sessions, &events, &shutdown, &log_path) {
+            Ok(handled_shutdown) => {
+                unsafe { DisconnectNamedPipe(pipe.0) };
+                if handled_shutdown {
+                    shutdown.complete();
+                    return;
+                }
+            }
+            Err(error) => {
+                logging::append(&log_path, &format!("连接结束：{error}"));
+                unsafe { DisconnectNamedPipe(pipe.0) };
+                if shutdown.is_requested() {
+                    // 停机期间连接出错（例如 ack 写失败）：别让主线程永久等完成信号。
+                    shutdown.complete();
+                    return;
+                }
+            }
         }
     }
 }
@@ -262,9 +337,10 @@ fn serve_connection(
     handle: HANDLE,
     info: &DaemonInfo,
     sessions: &Arc<SessionTable>,
+    events: &Arc<EventHub>,
+    shutdown: &Shutdown,
     log_path: &Path,
-    shutdown: &AtomicBool,
-) -> Result<(), DaemonError> {
+) -> Result<bool, DaemonError> {
     // **只借用**句柄：`ManuallyDrop` 防止 `File` 析构时把它关掉——这个管道实例还要复用。
     let owned = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
     let stream: &File = &owned;
@@ -291,7 +367,7 @@ fn serve_connection(
                     message: reason,
                 }),
             )?;
-            return wait_for_close(&mut reader);
+            return wait_for_close(&mut reader).map(|()| false);
         }
     };
 
@@ -310,6 +386,7 @@ fn serve_connection(
     // —— 握手之后：写端交给一条**专门的写线程**（多个会话的输出线程都要往里塞），读端留在本线程。
     // 帧边界只有写线程一个人在维护，所以不会写花。
     let outbound = Arc::new(Outbound::new(log_path.to_path_buf()));
+    events.register(&outbound);
     let handles = HandleMap::new();
 
     // 写线程**借用同一个句柄**，不 `try_clone()`：管道上出现过「原始句柄直写正常、复制句柄的写
@@ -317,15 +394,15 @@ fn serve_connection(
     let result = std::thread::scope(|scope| {
         let writer_thread = scope.spawn(|| outbound.run(&mut writer));
 
-        let result = read_loop(
-            &mut reader,
-            handle,
+        let connection = Connection {
             sessions,
-            &outbound,
-            &handles,
+            events,
+            outbound: &outbound,
+            handles: &handles,
             log_path,
             shutdown,
-        );
+        };
+        let result = read_loop(&mut reader, handle, &connection);
 
         outbound.close();
         match writer_thread.join() {
@@ -337,27 +414,34 @@ fn serve_connection(
     });
 
     // 连接断了：把这个连接挂着的会话都摘掉，免得它们的输出线程继续往死连接里塞。
+    events.unregister(&outbound);
     sessions.detach_all(&outbound);
     result
+}
+
+/// 一条连接的读循环共享上下文（避免把七八个引用逐个传参）。
+struct Connection<'a> {
+    sessions: &'a Arc<SessionTable>,
+    events: &'a Arc<EventHub>,
+    outbound: &'a Arc<Outbound>,
+    handles: &'a HandleMap,
+    log_path: &'a Path,
+    shutdown: &'a Shutdown,
 }
 
 /// 读循环：把客户端来的控制消息分发给会话层。
 fn read_loop(
     reader: &mut impl std::io::Read,
     handle: HANDLE,
-    sessions: &Arc<SessionTable>,
-    outbound: &Arc<Outbound>,
-    handles: &HandleMap,
-    log_path: &Path,
-    shutdown: &AtomicBool,
-) -> Result<(), DaemonError> {
+    connection: &Connection<'_>,
+) -> Result<bool, DaemonError> {
     loop {
-        if !wait_for_incoming(handle, log_path) {
-            return Ok(());
+        if !wait_for_incoming(handle, connection.log_path) {
+            return Ok(false);
         }
         match framed::read_message(reader) {
             // 对端在帧边界处正常关闭。
-            Ok(None) => return Ok(()),
+            Ok(None) => return Ok(false),
             Ok(Some(message)) => {
                 // 控制面留一条审计痕迹。`Ack` 是流控热路径、`Input`/`Data` 是数据面，都不记；
                 // daemon 的 stdio 是 NUL，剩下的日志是唯一线索。
@@ -367,13 +451,22 @@ fn read_loop(
                         | ageminal_protocol::FrameKind::Data
                         | ageminal_protocol::FrameKind::Input
                 ) {
-                    logging::append(log_path, &format!("<- {:?}", message.kind()));
+                    logging::append(connection.log_path, &format!("<- {:?}", message.kind()));
                 }
-                dispatch(message, sessions, outbound, handles, shutdown)?;
-                if shutdown.load(Ordering::SeqCst) {
-                    // ack 已入控制优先队列；等客户端读走并关闭连接再让 accept_loop 退出，
+                let requested_shutdown = matches!(message, Message::Shutdown);
+                dispatch(
+                    message,
+                    connection.sessions,
+                    connection.events,
+                    connection.outbound,
+                    connection.handles,
+                    connection.log_path,
+                    connection.shutdown,
+                )?;
+                if requested_shutdown {
+                    // ack 已入控制优先队列；等客户端读走并关闭连接再让主线程退出，
                     // 否则 `DisconnectNamedPipe` 可能把未读的 ack 一起丢掉。
-                    return wait_until_peer_closes(reader, handle);
+                    return wait_until_peer_closes(reader, handle).map(|()| true);
                 }
             }
             Err(error) => return Err(error),
@@ -466,9 +559,11 @@ fn wait_for_incoming(handle: HANDLE, log_path: &Path) -> bool {
 fn dispatch(
     message: Message,
     sessions: &Arc<SessionTable>,
+    events: &Arc<EventHub>,
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
-    shutdown: &AtomicBool,
+    log_path: &Path,
+    shutdown: &Shutdown,
 ) -> Result<(), DaemonError> {
     match message {
         Message::Ping => outbound.send_control(&Message::Pong),
@@ -477,7 +572,7 @@ fn dispatch(
             sessions.terminate_all();
             let _drained = sessions.wait_empty(SHUTDOWN_DRAIN);
             outbound.send_control(&Message::ShutdownAck)?;
-            shutdown.store(true, Ordering::SeqCst);
+            shutdown.request();
             Ok(())
         }
         Message::ListSessions => outbound.send_control(&Message::Sessions(Sessions {
@@ -517,6 +612,27 @@ fn dispatch(
             ),
         ),
         Message::Ack(ack) => acknowledge(outbound, sessions.ack(&ack.sid, ack.acked_bytes)),
+        Message::AgentEvent(event) => {
+            if sessions.accepts_event(&event.sid, event.incarnation_id.as_deref()) {
+                logging::append(
+                    log_path,
+                    &format!(
+                        "agent 事件：sid={} agent={} event={}",
+                        event.sid, event.agent, event.event
+                    ),
+                );
+                events.publish(&event, outbound);
+            } else {
+                logging::append(
+                    log_path,
+                    &format!(
+                        "丢弃迟到 agent 事件：sid={} incarnation={:?}",
+                        event.sid, event.incarnation_id
+                    ),
+                );
+            }
+            Ok(())
+        }
         Message::Input { handle, bytes, .. } => {
             let Some(sid) = handles.sid_of(handle) else {
                 return outbound.send_control(&Message::Error(ProtocolError {
@@ -645,6 +761,82 @@ fn wait_for_close(reader: &mut impl std::io::Read) -> Result<(), DaemonError> {
     }
 }
 
+/// daemon 停机信号：请求 + 「ShutdownAck 已送达且客户端断开」完成事件。
+#[derive(Default)]
+struct Shutdown {
+    requested: AtomicBool,
+    completed: Mutex<bool>,
+    wake: Condvar,
+}
+
+impl Shutdown {
+    fn request(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+    }
+
+    fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+
+    fn complete(&self) {
+        let mut completed = self.completed.lock().expect("shutdown completed");
+        if !*completed {
+            *completed = true;
+            self.wake.notify_all();
+        }
+    }
+
+    fn wait_completed(&self) {
+        let mut completed = self.completed.lock().expect("shutdown completed");
+        while !*completed {
+            completed = self.wake.wait(completed).expect("shutdown wait");
+        }
+    }
+}
+
+/// 连接之间的事件广播：shim 发来的 AgentEvent 推给 UI（和其它长连接）。
+///
+/// 只保存 `Weak`，连接断开后自动失效；发送时跳过来源连接（shim 不需要自己的事件回声）。
+#[derive(Default)]
+struct EventHub {
+    clients: Mutex<Vec<Weak<Outbound>>>,
+}
+
+impl EventHub {
+    fn register(&self, outbound: &Arc<Outbound>) {
+        let mut clients = self.clients.lock().expect("event hub");
+        clients.retain(|client| client.strong_count() > 0);
+        if !clients
+            .iter()
+            .any(|client| client.ptr_eq(&Arc::downgrade(outbound)))
+        {
+            clients.push(Arc::downgrade(outbound));
+        }
+    }
+
+    fn unregister(&self, outbound: &Arc<Outbound>) {
+        self.clients
+            .lock()
+            .expect("event hub")
+            .retain(|client| !client.ptr_eq(&Arc::downgrade(outbound)));
+    }
+
+    fn publish(&self, event: &AgentEvent, sender: &Arc<Outbound>) {
+        let message = Message::AgentEvent(event.clone());
+        let clients: Vec<Arc<Outbound>> = self
+            .clients
+            .lock()
+            .expect("event hub")
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|client| !Arc::ptr_eq(client, sender))
+            .collect();
+        for client in clients {
+            let _ = client.send_control(&message);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ageminal_protocol::Resume;
@@ -725,7 +917,7 @@ mod tests {
     fn pipe_dacl_allows_only_the_current_user() {
         let pipe = format!(r"\\.\pipe\ageminal-dacl-{}", std::process::id());
         let security = acl::CurrentUserSecurity::build().unwrap();
-        let server = create_pipe(&pipe, &security).unwrap();
+        let server = create_pipe(&pipe, &security, true).unwrap();
 
         // 服务端句柄只请求了 `PIPE_ACCESS_DUPLEX`，读 DACL 需要 `READ_CONTROL`；所以另开一个
         // **客户端**句柄——我们给自己的 DACL 授了 `FILE_ALL_ACCESS`，其中含 `READ_CONTROL`。

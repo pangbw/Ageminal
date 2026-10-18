@@ -22,6 +22,12 @@
 //! 覆盖不到 `last_seq` 时，`attach` 从日志精确续放。checkpoint 每 1 MiB / 轮转 / 退出时更新，
 //! 单会话 64 MiB、全部目录 256 MiB 预算 GC。历史 IO 失败只会关闭持久化，不影响会话。
 //!
+//! # 会话关联环境变量（#79）
+//!
+//! 生产 `SessionTable` 持有 daemon 的管道 / 令牌，spawn 前生成 `incarnationId` 并把它和
+//! `AGEMINAL_SESSION_ID` / `PIPE` / `TOKEN` / `WORKTREE`（已知 agent 时还有 `AGENT`）写进
+//! PTY 环境；调用方同名 env 会被覆盖。
+//!
 //! # 启动命令（#77）
 //!
 //! `CreateSession.command` 是一行 shell 命令：会话的 PTY / shell 先按正常路径起来，命令再写进
@@ -50,6 +56,8 @@ use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObj
 use ageminal_protocol::{
     Attached, CreateSession, Message, SessionCreated, SessionExited, SessionInfo, Snapshot,
 };
+
+use ageminal_protocol::env as agent_env;
 
 use crate::history::{self, History, HistoryStore};
 use crate::outbound::Outbound;
@@ -175,6 +183,15 @@ struct Session {
     history: Mutex<Option<History>>,
 }
 
+/// daemon 注入每个会话的关联变量（#79）。
+#[derive(Debug, Clone)]
+pub struct SessionEnv {
+    /// 命名管道完整路径。
+    pub pipe: String,
+    /// 握手令牌。
+    pub token: String,
+}
+
 /// daemon 全局的会话表。
 #[derive(Default)]
 pub struct SessionTable {
@@ -182,6 +199,8 @@ pub struct SessionTable {
     next_incarnation: AtomicU64,
     /// 所有会话共享的历史根；测试里为 `None`，生产由 server 注入。
     history: Option<HistoryStore>,
+    /// 关联环境变量；测试 / 独立会话可为 `None`。
+    notify_env: Option<SessionEnv>,
 }
 
 impl SessionTable {
@@ -197,6 +216,12 @@ impl SessionTable {
             history: Some(history),
             ..Self::default()
         }
+    }
+
+    /// 注入 daemon 的管道 / 令牌；`create` 时写进每个会话的 PTY 环境。
+    pub fn with_env(mut self, env: SessionEnv) -> Self {
+        self.notify_env = Some(env);
+        self
     }
 
     /// 建会话：spawn PTY → 起输出线程 + exit 监视线程。
@@ -223,7 +248,17 @@ impl SessionTable {
         // 历史 GC 放在 spawn 前：清掉旧目录不会碰到刚建好的会话。
         self.collect_history_garbage(Some(&request.sid));
 
-        let mut control = pty::spawn(&spec_from(request))?;
+        // 世代 id 必须先于 spawn 生成：它要作为 AGEMINAL_INCARNATION 注入子进程，
+        // 之后的事件才能按世代丢弃。
+        let incarnation_id = format!(
+            "inc-{}",
+            self.next_incarnation.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut control = pty::spawn(&spec_from(
+            request,
+            self.notify_env.as_ref(),
+            &incarnation_id,
+        ))?;
         let pid = control.pid();
         // 解耦「等退出」：自己开一个进程句柄，`terminate` 阻塞也不会影响退出事件。
         let exit = crate::win::open_process(pid)?;
@@ -239,10 +274,6 @@ impl SessionTable {
             write_launch_command(writer.as_mut(), command)?;
         }
 
-        let incarnation_id = format!(
-            "inc-{}",
-            self.next_incarnation.fetch_add(1, Ordering::Relaxed)
-        );
         let vt = Vt::new(request.cols as usize, request.rows as usize);
         let history = self.open_history(&request.sid, &vt);
         let session = Arc::new(Session {
@@ -407,6 +438,21 @@ impl SessionTable {
             (left.started_at_ms, &left.sid).cmp(&(right.started_at_ms, &right.sid))
         });
         sessions
+    }
+
+    /// 判断一条 agent 事件是否属于当前世代（#79 / #25）。
+    ///
+    /// - 会话还在：`incarnationId` 必须一致（缺失时不强判，兼容旧 shim）；
+    /// - 会话已不在：放行——`SessionEnd` 等收尾事件可能晚于进程退出，统一状态机（#80）
+    ///   需要看到它。真正迟到的旧世代事件在会话被同名新世代顶替时由第一支拒绝。
+    pub fn accepts_event(&self, sid: &str, incarnation_id: Option<&str>) -> bool {
+        let sessions = self.sessions.lock().expect("sessions");
+        match sessions.get(sid) {
+            Some(session) => incarnation_id
+                .map(|incarnation| incarnation == session.incarnation_id)
+                .unwrap_or(true),
+            None => true,
+        }
     }
 
     /// 断开（**≠ 终止**）：会话继续活着，只是不再往任何连接推输出。
@@ -841,11 +887,34 @@ fn write_launch_command(writer: &mut dyn Write, command: &str) -> Result<(), Dae
 }
 
 /// `CreateSession` → [`PtySpec`]。
-fn spec_from(request: &CreateSession) -> PtySpec {
+///
+/// `env` / `incarnation` 由 daemon 注入（#79）；调用方显式提供的同名变量会被覆盖——
+/// 会话关联是 daemon 的事实，不能被 UI / 用户参数污染。
+fn spec_from(
+    request: &CreateSession,
+    session_env: Option<&SessionEnv>,
+    incarnation_id: &str,
+) -> PtySpec {
     let (program, args) = match &request.shell {
         Some(program) => (program.clone(), shell_args(program)),
         None => default_shell(),
     };
+    let mut env: Vec<(String, String)> = request
+        .env
+        .iter()
+        .map(|variable| (variable.name.clone(), variable.value.clone()))
+        .collect();
+    if let Some(session_env) = session_env {
+        env.retain(|(name, _)| !agent_env::is_reserved(name));
+        env.push((agent_env::SESSION_ID.to_owned(), request.sid.clone()));
+        env.push((agent_env::INCARNATION.to_owned(), incarnation_id.to_owned()));
+        env.push((agent_env::PIPE.to_owned(), session_env.pipe.clone()));
+        env.push((agent_env::TOKEN.to_owned(), session_env.token.clone()));
+        env.push((agent_env::WORKTREE.to_owned(), request.cwd.clone()));
+        if let Some(agent) = request.agent_id.as_deref() {
+            env.push((agent_env::AGENT.to_owned(), agent.to_owned()));
+        }
+    }
     PtySpec {
         program,
         args,
@@ -854,11 +923,7 @@ fn spec_from(request: &CreateSession) -> PtySpec {
             cols: request.cols,
             rows: request.rows,
         },
-        env: request
-            .env
-            .iter()
-            .map(|variable| (variable.name.clone(), variable.value.clone()))
-            .collect(),
+        env,
     }
 }
 
@@ -1320,6 +1385,93 @@ mod tests {
     }
 
     #[test]
+    fn daemon_injects_session_environment_and_overrides_reserved_names() {
+        let request = CreateSession {
+            sid: "s-env".to_owned(),
+            cwd: r"D:\code\wt".to_owned(),
+            shell: Some("cmd.exe".to_owned()),
+            command: None,
+            agent_id: Some("claude".to_owned()),
+            cols: 80,
+            rows: 24,
+            env: vec![
+                ageminal_protocol::EnvVar {
+                    name: "AGEMINAL_SESSION_ID".to_owned(),
+                    value: "spoofed".to_owned(),
+                },
+                ageminal_protocol::EnvVar {
+                    name: "KEEP_ME".to_owned(),
+                    value: "yes".to_owned(),
+                },
+            ],
+        };
+        let spec = spec_from(
+            &request,
+            Some(&SessionEnv {
+                pipe: r"\\.\pipe\ageminal-test".to_owned(),
+                token: "token-1".to_owned(),
+            }),
+            "inc-7",
+        );
+        let env: HashMap<_, _> = spec.env.into_iter().collect();
+        assert_eq!(
+            env.get(agent_env::SESSION_ID).map(String::as_str),
+            Some("s-env")
+        );
+        assert_eq!(
+            env.get(agent_env::INCARNATION).map(String::as_str),
+            Some("inc-7")
+        );
+        assert_eq!(
+            env.get(agent_env::WORKTREE).map(String::as_str),
+            Some(r"D:\code\wt")
+        );
+        assert_eq!(
+            env.get(agent_env::AGENT).map(String::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            env.get(agent_env::TOKEN).map(String::as_str),
+            Some("token-1")
+        );
+        assert_eq!(
+            env.get(agent_env::PIPE).map(String::as_str),
+            Some(r"\\.\pipe\ageminal-test")
+        );
+        assert_eq!(env.get("KEEP_ME").map(String::as_str), Some("yes"));
+
+        // 普通 shell 没有一等入口 agent：不注入 AGENT，调用方的同名残留也要清掉。
+        let mut plain = request;
+        plain.agent_id = None;
+        plain.env = vec![ageminal_protocol::EnvVar {
+            name: "AGEMINAL_AGENT".to_owned(),
+            value: "stale".to_owned(),
+        }];
+        let spec = spec_from(
+            &plain,
+            Some(&SessionEnv {
+                pipe: r"\\.\pipe\ageminal-test".to_owned(),
+                token: "token-1".to_owned(),
+            }),
+            "inc-8",
+        );
+        assert!(!spec.env.iter().any(|(name, _)| name == agent_env::AGENT));
+    }
+
+    #[test]
+    fn events_are_dropped_for_a_stale_incarnation() {
+        let table = SessionTable::new();
+        table.insert(session("s", "inc-2"));
+        assert!(table.accepts_event("s", Some("inc-2")));
+        assert!(!table.accepts_event("s", Some("inc-1")));
+        assert!(table.accepts_event("s", None));
+        assert!(
+            table.accepts_event("gone", Some("inc-1")),
+            "收尾事件允许晚于会话退出"
+        );
+    }
+
+    #[test]
     fn create_session_spec_carries_cwd_size_and_env() {
         let request = CreateSession {
             sid: "s".to_owned(),
@@ -1334,7 +1486,7 @@ mod tests {
                 value: "t".to_owned(),
             }],
         };
-        let spec = spec_from(&request);
+        let spec = spec_from(&request, None, "inc-test");
         assert_eq!(spec.program, "cmd.exe");
         assert!(spec.args.is_empty());
         assert_eq!(

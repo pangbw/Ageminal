@@ -29,8 +29,9 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use ageminal_protocol::{
-    Ack, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, Hello, Message, ProtocolError,
-    Resize, SessionCreated, SessionInfo, Terminate, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+    Ack, AgentEvent, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, Hello, Message,
+    ProtocolError, Resize, SessionCreated, SessionInfo, Terminate, PROTOCOL_VERSION,
+    PROTOCOL_VERSION_MIN,
 };
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
@@ -176,6 +177,11 @@ impl Client {
                 force,
             }),
         )
+    }
+
+    /// 发送一条 agent 事件（测试 / 诊断用；生产由通知 shim 走自己的最小客户端）。
+    pub fn send_agent_event(&mut self, event: AgentEvent) -> Result<(), DaemonError> {
+        framed::send(&mut self.writer, &Message::AgentEvent(event))
     }
 
     /// 确认已消费字节数（无响应）。

@@ -316,7 +316,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 
 ### 10.5 统一投递与降级
 
-- **统一通道** ✅：CLI shim `ageminal notify --event <name> --agent <id>`（需容忍 Codex 把 JSON 放**最后一个 argv**）；shim 经 Named Pipe 投给守护进程。
+- **统一通道** ✅（#79）：CLI shim `ageminal-notify --event <name> --agent <id>`（需容忍 Codex 把 JSON 放**最后一个 argv**）；shim 经 Named Pipe 投给守护进程。daemon 使用**管道实例池**，UI 长连接与 shim 短连接可并发。payload 优先级 `--json` > 尾位 JSON > 非 TTY stdin；失败默认 exit 0 并写 `logs\notify-failures.log`（`--strict` 调试时才非零退出）。
 - **会话关联** ✅（E4 #25）：由 **daemon 在 spawn 会话时写入**下列环境变量（**所有会话都注入**，含普通 shell 页签；不改 `PATH`、不写全局配置）：
 
   | 变量 | 含义 |
@@ -346,7 +346,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   - **生效时机**：Claude 的 `hooks/` 改动需 **`/reload-plugins` 或重启**；其余下次启动生效 → 启用后**提示重启对应 agent**。
   - **状态**：`未启用` / `已启用` / `集成有更新` / `部分应用（X/Y 失败）` / `不受支持`（dsh）。
   - **测试投递**：一键跑一次 `ageminal-notify`，直接看诊断计数。
-- **恢复时** ✅：全局配置已持久生效，**无需重传命令行参数**；新会话由 daemon 注入同一套环境变量（E4 #25）即可继续回调。
+- **恢复时** ✅：全局配置已持久生效，**无需重传命令行参数**；新会话由 daemon 注入同一套环境变量（E4 #25）即可继续回调。daemon 按 `AGEMINAL_SESSION_ID` + `AGEMINAL_INCARNATION` 拒绝旧世代事件，未知会话的收尾事件仍放行给状态机。
 - **一键安装边界** ✅：安装器只做标准应用安装；Agent 配置注入走**设置页单独引导页**（默认零全局污染；「写入全局」为显式 opt-in，diff 预览 + 备份 + 回滚；**不写 PATH**）。
 - **降级** ✅（E5 #26）：**只用两个信号**——`sysinfo` 枚举**会话进程树 + 识别清单**（`claude`/`codex`/`opencode`/`pi` + 自定义），与**输出静默**。
   - **只暴露 `running` / `idle` / `exited`**，并在 worktree 行/页签**显式标注「状态不完整」**；绝不声称 `waiting` / `permission` / `done`。

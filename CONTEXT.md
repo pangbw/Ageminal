@@ -72,11 +72,14 @@
 | 术语 | 定义 |
 | --- | --- |
 | **一等入口** | worktree 行 ✦ 菜单 / 新建页签菜单直接启动受支持 agent；命令、参数、图标颜色来自设置，cwd = worktree，且仍跑在普通 shell 的进程树里。 |
-| **手动入口** | 用户在普通终端里自己敲 agent；继续保留，状态识别走进程树（#79），不要求走菜单。 |
+| **手动入口** | 用户在普通终端里自己敲 agent；继续保留，状态识别走进程树（#81），不要求走菜单。 |
 | **Agent 配置** | `settings.json` 的 `agents` 覆盖表；缺省四家 Claude Code / opencode / Codex / pi，**dsh 不在清单**（#77）。 |
-| **注入（injection）** | 把**首次启动参数**传给 agent，使它能回调我们。 |
+| **注入（injection）** | 把**首次启动参数**传给 agent，使它能回调我们；daemon 还会在**所有会话**注入 `AGEMINAL_*` 关联变量（#79）。 |
 | **集成（integration）** | 往 agent 的配置里写东西（插件 / hook 文件），**用户须在设置页手动启用**；配 diff 预览 + 自动备份 + 停用即回滚。 |
 | **集成状态** | `未启用` / `已启用` / `集成有更新` / `部分应用（X/Y 失败）` / `不受支持` |
+| **会话关联变量** | daemon 在 spawn 时写入的 `AGEMINAL_SESSION_ID` / `INCARNATION` / `PIPE` / `TOKEN` / `WORKTREE`，以及已知入口的 `AGENT`；子进程自动继承，#79。 |
+| **通知 shim** | 独立 `ageminal-notify.exe`：把 agent 原生事件经 Named Pipe 投给 daemon；payload 优先级 `--json` > 尾位 JSON > 非 TTY stdin，失败默认 exit 0 + 有界日志。 |
+| **多客户端口** | daemon 的命名管道实例池：UI 长连接与 notify 短连接并发，不再串行阻塞；事件经 daemon 广播到 UI 连接。 |
 | **统一状态** | 由 agent 事件 + 进程事实归并出的会话状态：`running` / `idle` / `waiting` / `permission` / `done` / `error` / `exited` |
 | **降级模式** | 只拿到进程事实（无事件）时，只暴露 `running` / `idle` / `exited`，并显式标注「不完整」 |
 | **会话树识别** | 通过 `sysinfo` 枚举会话进程树 + 识别名单 + 输出静默；**不解析输出**、不读窗口标题。 |

@@ -14,6 +14,7 @@
 //! 协议版本与 app 版本**解耦**，仅在帧形状变化时递增。
 
 pub mod discovery;
+pub mod env;
 pub mod frame;
 pub mod message;
 pub mod queue;
@@ -21,9 +22,9 @@ pub mod queue;
 pub use discovery::{state_file_in, DaemonInfo, DiscoveryError, STATE_FILE_NAME};
 pub use frame::{fragments, Flags, Frame, FrameError, FrameKind, HEADER_BYTES, MAX_FRAME_BYTES};
 pub use message::{
-    negotiate, Ack, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, EnvVar, ErrorCode,
-    Hello, Message, MessageError, Negotiation, ProtocolError, Resize, Resume, SessionCreated,
-    SessionExited, SessionInfo, Sessions, Snapshot, Terminate, Welcome, PROTOCOL_VERSION,
-    PROTOCOL_VERSION_MIN,
+    negotiate, Ack, AgentEvent, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, EnvVar,
+    ErrorCode, Hello, Message, MessageError, Negotiation, ProtocolError, Resize, Resume,
+    SessionCreated, SessionExited, SessionInfo, Sessions, Snapshot, Terminate, Welcome,
+    PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
 };
 pub use queue::ControlFirstQueue;

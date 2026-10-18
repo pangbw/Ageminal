@@ -130,6 +130,40 @@ fn wait_for_exit(
     }
 }
 
+/// #79：daemon 在 spawn 时注入的 `AGEMINAL_*` 必须真的到子 shell 里。
+#[test]
+fn injected_session_environment_is_visible_inside_the_shell() {
+    let fixture = Fixture::new("session-env");
+    let daemon = Spawned::start(&fixture);
+    let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+
+    let cwd = std::env::temp_dir().join(format!("ageminal-env-cwd-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&cwd);
+    std::fs::create_dir_all(&cwd).unwrap();
+    let mut create = request("env-session");
+    create.cwd = cwd.to_string_lossy().into_owned();
+    create.agent_id = Some("claude".to_owned());
+    let created = client.create_session(create).expect("建会话");
+
+    client
+        .write_input(
+            created.handle,
+            b"echo AGENT_ENV:%AGEMINAL_SESSION_ID%;%AGEMINAL_INCARNATION%;%AGEMINAL_WORKTREE%;%AGEMINAL_AGENT%;%AGEMINAL_TOKEN%;%AGEMINAL_PIPE%\r\n",
+        )
+        .expect("写输入");
+
+    let marker = format!("AGENT_ENV:env-session;{}", created.incarnation_id);
+    let mut collected = Collected::default();
+    let text = collected.wait_for(&mut client, created.handle, &marker, TIMEOUT);
+    let cwd = cwd.to_string_lossy();
+    assert!(text.contains(cwd.as_ref()), "{text}");
+    assert!(text.contains(";claude;"), "{text}");
+    assert!(text.contains(&daemon.info.token), "{text}");
+    assert!(text.contains(&daemon.info.pipe), "{text}");
+
+    client.terminate("env-session", false).expect("terminate");
+}
+
 /// 验收 1：create → 执行命令拿到字节 → ack → terminate 成功。
 #[test]
 fn create_write_ack_and_terminate() {

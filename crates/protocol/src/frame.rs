@@ -75,7 +75,7 @@ pub enum FrameKind {
     Resize,
     /// UI→D：累计已消费字节数。
     Ack,
-    /// D→UI：agent 状态机事件（负载形状见 #79）。
+    /// shim→D / D→UI：agent 事件（负载形状见 [`crate::AgentEvent`]）。
     AgentEvent,
     // —— 会话级（原始字节）
     /// D→UI：PTY 输出。

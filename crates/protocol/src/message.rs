@@ -43,7 +43,7 @@ impl Caps {
 
     /// 本实现支持的能力。
     pub fn supported() -> Self {
-        Self(Self::BINARY_PAYLOAD)
+        Self(Self::BINARY_PAYLOAD | Self::AGENT_EVENTS)
     }
 
     /// 原始位。
@@ -324,6 +324,38 @@ pub struct SessionExited {
     pub exit_code: Option<i32>,
 }
 
+/// 一条 agent 原生事件（#79）：shim → daemon → UI。
+///
+/// `sid` / `incarnation_id` 用来拒绝上个世代迟到的 hook 事件；`agent` / `event` 是 agent
+/// 原生标识，统一状态映射归 #80。负载是 agent 的原生 JSON，shim 已按 64 KiB 截断。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEvent {
+    /// 逻辑会话 id（`AGEMINAL_SESSION_ID` / `--session`）。
+    pub sid: String,
+    /// 本次 spawn 的世代 id（`AGEMINAL_INCARNATION`）；缺省表示 shim 没拿到。
+    #[serde(default)]
+    pub incarnation_id: Option<String>,
+    /// agent id（`claude` / `codex` / `opencode` / `pi` / 自定义）。
+    pub agent: String,
+    /// 原生事件名（由注入物 / agent 产生）。
+    pub event: String,
+    /// 原生事件别名（可选，供展示 / 诊断）。
+    #[serde(default)]
+    pub native: Option<String>,
+    /// 事件时间（Unix 毫秒；shim 生成）。
+    pub ts: u64,
+    /// agent 原生 JSON 负载（已截断到 64 KiB 内）。
+    #[serde(default)]
+    pub payload: Option<serde_json::Value>,
+    /// 负载是否被截断。
+    #[serde(default)]
+    pub truncated: bool,
+    /// worktree 根（`AGEMINAL_WORKTREE`；诊断 / 状态投影用）。
+    #[serde(default)]
+    pub worktree: Option<String>,
+}
+
 /// 改尺寸：UI→D。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -385,6 +417,8 @@ pub enum Message {
     Terminate(Terminate),
     /// [`SessionExited`]。
     SessionExited(SessionExited),
+    /// [`AgentEvent`]：shim → daemon → UI（#79）。
+    AgentEvent(AgentEvent),
     /// [`Resize`]。
     Resize(Resize),
     /// [`Ack`]。
@@ -431,6 +465,7 @@ impl Message {
             Message::Detach(_) => FrameKind::Detach,
             Message::Terminate(_) => FrameKind::Terminate,
             Message::SessionExited(_) => FrameKind::SessionExited,
+            Message::AgentEvent(_) => FrameKind::AgentEvent,
             Message::Resize(_) => FrameKind::Resize,
             Message::Ack(_) => FrameKind::Ack,
             Message::Data { .. } => FrameKind::Data,
@@ -459,6 +494,7 @@ impl Message {
             Message::Detach(value) => serde_json::to_vec(value)?,
             Message::Terminate(value) => serde_json::to_vec(value)?,
             Message::SessionExited(value) => serde_json::to_vec(value)?,
+            Message::AgentEvent(value) => serde_json::to_vec(value)?,
             Message::Resize(value) => serde_json::to_vec(value)?,
             Message::Ack(value) => serde_json::to_vec(value)?,
             // 心跳与枚举请求没有负载。
@@ -513,6 +549,9 @@ impl Message {
             FrameKind::SessionExited => Ok(Message::SessionExited(serde_json::from_slice(
                 &frame.payload,
             )?)),
+            FrameKind::AgentEvent => {
+                Ok(Message::AgentEvent(serde_json::from_slice(&frame.payload)?))
+            }
             FrameKind::Resize => Ok(Message::Resize(serde_json::from_slice(&frame.payload)?)),
             FrameKind::Ack => Ok(Message::Ack(serde_json::from_slice(&frame.payload)?)),
             other => Err(MessageError::UnsupportedKind(other)),
@@ -629,6 +668,17 @@ mod tests {
                 incarnation_id: "inc-1".to_owned(),
                 exit_code: Some(0),
             }),
+            Message::AgentEvent(AgentEvent {
+                sid: "wt/main/shell/1".to_owned(),
+                incarnation_id: Some("inc-1".to_owned()),
+                agent: "claude".to_owned(),
+                event: "Stop".to_owned(),
+                native: Some("Stop".to_owned()),
+                ts: 1_700_000_000_000,
+                payload: Some(serde_json::json!({"hook_event_name": "Stop"})),
+                truncated: false,
+                worktree: Some(r"C:\code\wt".to_owned()),
+            }),
             Message::Resize(Resize {
                 sid: "wt/main/shell/1".to_owned(),
                 cols: 100,
@@ -711,6 +761,10 @@ mod tests {
     fn caps_are_a_bitmap() {
         let supported = Caps::supported();
         assert!(supported.contains(Caps::BINARY_PAYLOAD));
+        assert!(
+            supported.contains(Caps::AGENT_EVENTS),
+            "v1 已支持 agent 事件帧"
+        );
         assert!(!supported.contains(Caps::COMPRESSION), "v1 不开压缩");
 
         // 客户端只声明压缩 → 交集为空，谁也别想用没谈拢的能力。
