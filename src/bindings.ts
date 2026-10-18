@@ -133,6 +133,8 @@ export const commands = {
 	 *  对账成「仅 UI 有 → 重建」。前端稍后的 `save_tabs` 会再覆盖一次，二者幂等。
 	 */
 	terminalClose: (sid: string) => typedError<null, string>(__TAURI_INVOKE("terminal_close", { sid })),
+	/**  Tauri 命令：当前 agent 状态快照（#80；UI 重载 / #82 挂载时补水）。 */
+	agentStatuses: () => __TAURI_INVOKE<AgentStatusView[]>("agent_statuses"),
 	/**  用前端当前打开着的预览文件替换监听集合（#61）。 */
 	setWatchedFiles: (paths: string[]) => typedError<null, string>(__TAURI_INVOKE("set_watched_files", { paths })),
 };
@@ -150,6 +152,59 @@ export type AgentConfig = {
 	args: string,
 	/**  图标颜色（十六进制，如 `#d97757`）。 */
 	color: string,
+};
+
+/**  状态事实来源。 */
+export type AgentStatusSource = 
+/**  agent 原生事件。 */
+"native" | 
+/**  进程退出事实。 */
+"process" | 
+/**  降级启发式（#81 预留）。 */
+"heuristic";
+
+/**  前端看到的状态枚举（与 `ageminal_agent::AgentState` 一一对应）。 */
+export type AgentStatusState = 
+/**  运行中。 */
+"running" | 
+/**  回合完成。 */
+"done" | 
+/**  空闲。 */
+"idle" | 
+/**  等待输入。 */
+"waiting" | 
+/**  等待授权。 */
+"permission" | 
+/**  出错。 */
+"error" | 
+/**  进程已退出。 */
+"exited";
+
+/**
+ *  给前端的版本化状态快照（#80）。
+ * 
+ *  `timestampMs` / `seq` 用 `f64`：specta 不生成 `u64`（BigInt 精度）；Unix 毫秒与
+ *  agent 序号都远小于 2^53。
+ */
+export type AgentStatusView = {
+	/**  逻辑会话 id。 */
+	sid: string,
+	/**  agent id。 */
+	agent: string | null,
+	/**  本次 spawn 的世代 id。 */
+	incarnationId: string | null,
+	/**  统一状态。 */
+	state: AgentStatusState,
+	/**  事实来源。 */
+	source: AgentStatusSource,
+	/**  事件时间（Unix 毫秒）。 */
+	timestampMs: number | null,
+	/**  逻辑序号；0 = 无。 */
+	seq: number | null,
+	/**  非零退出码（仅 `exited`）。 */
+	exitCode: number | null,
+	/**  最近错误原因。 */
+	reason: string | null,
 };
 
 /**  应用与运行时的基础信息。 */

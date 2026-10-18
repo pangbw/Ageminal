@@ -1,0 +1,16 @@
+[package]
+name = "ageminal-agent"
+version.workspace = true
+description = "Agent 原生事件 → 统一状态的纯逻辑（#80）"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ageminal-protocol = { path = "../protocol" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+proptest = "1"

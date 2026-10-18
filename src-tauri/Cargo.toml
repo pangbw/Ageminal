@@ -26,6 +26,7 @@ required-features = ["bindgen"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+ageminal-agent = { path = "../crates/agent" }
 ageminal-daemon = { path = "../crates/daemon" }
 ageminal-files = { path = "../crates/files" }
 ageminal-git = { path = "../crates/git" }

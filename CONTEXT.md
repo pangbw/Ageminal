@@ -80,7 +80,8 @@
 | **会话关联变量** | daemon 在 spawn 时写入的 `AGEMINAL_SESSION_ID` / `INCARNATION` / `PIPE` / `TOKEN` / `WORKTREE`，以及已知入口的 `AGENT`；子进程自动继承，#79。 |
 | **通知 shim** | 独立 `ageminal-notify.exe`：把 agent 原生事件经 Named Pipe 投给 daemon；payload 优先级 `--json` > 尾位 JSON > 非 TTY stdin，失败默认 exit 0 + 有界日志。 |
 | **多客户端口** | daemon 的命名管道实例池：UI 长连接与 notify 短连接并发，不再串行阻塞；事件经 daemon 广播到 UI 连接。 |
-| **统一状态** | 由 agent 事件 + 进程事实归并出的会话状态：`running` / `idle` / `waiting` / `permission` / `done` / `error` / `exited` |
+| **版本化状态** | 快照包含 `state + source + timestampMs + seq`；逻辑序号优先、时间戳兜底，状态机在 `crates/agent`（#80）。 |
+| **统一状态** | 由 agent 事件 + 进程事实归并出的会话状态：`running` / `idle` / `waiting` / `permission` / `done` / `error` / `exited`；纯逻辑在 `crates/agent`，app-core 通过 `agent-status` 全局事件推送（#80）。 |
 | **降级模式** | 只拿到进程事实（无事件）时，只暴露 `running` / `idle` / `exited`，并显式标注「不完整」 |
 | **会话树识别** | 通过 `sysinfo` 枚举会话进程树 + 识别名单 + 输出静默；**不解析输出**、不读窗口标题。 |
 

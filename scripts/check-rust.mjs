@@ -11,6 +11,8 @@ import { spawnSync } from "node:child_process";
 const isWindows = process.platform === "win32";
 const coreCrates = [
   "-p",
+  "ageminal-agent",
+  "-p",
   "ageminal-protocol",
   "-p",
   "ageminal-daemon",

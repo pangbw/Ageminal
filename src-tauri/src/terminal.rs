@@ -47,12 +47,14 @@
 //! Git Bash 脚本都由 shell 解析，agent 仍留在 shell 的进程树里（#79 的可识别路径）。
 
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use ageminal_agent::{AgentState, AgentStatusSnapshot, StatusBook, StatusSource, StatusUpdate};
 use serde::Serialize;
 use specta::Type;
 use tauri::ipc::{Channel, InvokeResponseBody, IpcResponse};
+use tauri::Emitter;
 
 use crate::agents;
 use crate::storage::{LaunchSpec, Store};
@@ -141,6 +143,117 @@ pub struct TerminalSession {
     pub incarnation_id: String,
     /// 一等入口的 agent id；普通终端为 `None`。
     pub agent_id: Option<String>,
+}
+
+/// 前端看到的状态枚举（与 `ageminal_agent::AgentState` 一一对应）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatusState {
+    /// 运行中。
+    Running,
+    /// 回合完成。
+    Done,
+    /// 空闲。
+    Idle,
+    /// 等待输入。
+    Waiting,
+    /// 等待授权。
+    Permission,
+    /// 出错。
+    Error,
+    /// 进程已退出。
+    Exited,
+}
+
+impl From<AgentState> for AgentStatusState {
+    fn from(state: AgentState) -> Self {
+        match state {
+            AgentState::Running => Self::Running,
+            AgentState::Done => Self::Done,
+            AgentState::Idle => Self::Idle,
+            AgentState::Waiting => Self::Waiting,
+            AgentState::Permission => Self::Permission,
+            AgentState::Error => Self::Error,
+            AgentState::Exited => Self::Exited,
+        }
+    }
+}
+
+/// 状态事实来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentStatusSource {
+    /// agent 原生事件。
+    Native,
+    /// 进程退出事实。
+    Process,
+    /// 降级启发式（#81 预留）。
+    Heuristic,
+}
+
+impl From<StatusSource> for AgentStatusSource {
+    fn from(source: StatusSource) -> Self {
+        match source {
+            StatusSource::Native => Self::Native,
+            StatusSource::Process => Self::Process,
+            StatusSource::Heuristic => Self::Heuristic,
+        }
+    }
+}
+
+/// 给前端的版本化状态快照（#80）。
+///
+/// `timestampMs` / `seq` 用 `f64`：specta 不生成 `u64`（BigInt 精度）；Unix 毫秒与
+/// agent 序号都远小于 2^53。
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatusView {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// agent id。
+    pub agent: Option<String>,
+    /// 本次 spawn 的世代 id。
+    pub incarnation_id: Option<String>,
+    /// 统一状态。
+    pub state: AgentStatusState,
+    /// 事实来源。
+    pub source: AgentStatusSource,
+    /// 事件时间（Unix 毫秒）。
+    pub timestamp_ms: f64,
+    /// 逻辑序号；0 = 无。
+    pub seq: f64,
+    /// 非零退出码（仅 `exited`）。
+    pub exit_code: Option<i32>,
+    /// 最近错误原因。
+    pub reason: Option<String>,
+}
+
+impl From<AgentStatusSnapshot> for AgentStatusView {
+    fn from(snapshot: AgentStatusSnapshot) -> Self {
+        Self {
+            sid: snapshot.sid,
+            agent: snapshot.agent,
+            incarnation_id: snapshot.incarnation_id,
+            state: snapshot.state.into(),
+            source: snapshot.source.into(),
+            timestamp_ms: snapshot.timestamp_ms as f64,
+            seq: snapshot.seq as f64,
+            exit_code: snapshot.exit_code,
+            reason: snapshot.reason,
+        }
+    }
+}
+
+/// `agent-status` 全局事件负载。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentStatusEvent {
+    /// 改变前的状态。
+    pub previous: Option<AgentStatusState>,
+    /// 最新快照。
+    pub current: AgentStatusView,
+    /// 状态是否真的变化（仅刷新版本时为 `false`）。
+    pub changed: bool,
 }
 
 /// 走 Channel JSON 帧的控制消息。
@@ -246,27 +359,48 @@ impl Type for TerminalEvent {
 pub struct TerminalService {
     #[cfg(windows)]
     sender: mpsc::Sender<Request>,
+    /// agent 状态归约器的共享句柄（#80）；非 Windows 也保留，命令返回空表。
+    statuses: Arc<Mutex<StatusBook>>,
 }
 
 impl TerminalService {
     /// 启动服务线程。即使线程起不来，返回的句柄也只会让命令报错，不影响应用启动。
-    pub fn start() -> Self {
+    pub fn start(app: tauri::AppHandle) -> Self {
+        let statuses = Arc::new(Mutex::new(StatusBook::default()));
         #[cfg(windows)]
         {
             let (sender, receiver) = mpsc::channel();
             let worker = sender.clone();
+            let worker_statuses = Arc::clone(&statuses);
             if let Err(error) = std::thread::Builder::new()
                 .name("terminal-service".to_owned())
-                .spawn(move || service_loop(receiver))
+                .spawn(move || service_loop(receiver, app, worker_statuses))
             {
                 eprintln!("[terminal] 服务线程启动失败：{error}");
             }
-            Self { sender: worker }
+            Self {
+                sender: worker,
+                statuses,
+            }
         }
         #[cfg(not(windows))]
         {
-            Self {}
+            let _ = app;
+            Self { statuses }
         }
+    }
+
+    /// 当前所有 agent 状态快照（UI 重载 / #82 挂载时补水）。
+    pub fn statuses(&self) -> Vec<AgentStatusView> {
+        self.statuses
+            .lock()
+            .map(|book| {
+                book.snapshots()
+                    .into_iter()
+                    .map(AgentStatusView::from)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 建会话。
@@ -649,6 +783,13 @@ pub async fn terminal_open(
     Ok(opened)
 }
 
+/// Tauri 命令：当前 agent 状态快照（#80；UI 重载 / #82 挂载时补水）。
+#[tauri::command]
+#[specta::specta]
+pub fn agent_statuses(state: tauri::State<'_, TerminalService>) -> Vec<AgentStatusView> {
+    state.inner().statuses()
+}
+
 /// Tauri 命令：枚举存活会话（UI 重开时恢复终端页签，#75）。
 #[tauri::command]
 #[specta::specta]
@@ -860,14 +1001,36 @@ struct Runtime {
     client: Option<ageminal_daemon::client::Client>,
     sessions: std::collections::HashMap<String, SessionState>,
     by_handle: std::collections::HashMap<u32, String>,
+    /// daemon 事件 → 统一状态的共享归约表。
+    statuses: Arc<Mutex<StatusBook>>,
+}
+
+/// 把归约结果推给前端；`agent-status` 是全局低频事件（#80 / #82 消费）。
+#[cfg(windows)]
+fn emit_agent_status(app: &tauri::AppHandle, update: StatusUpdate) {
+    let previous = update.previous.map(AgentStatusState::from);
+    let current = AgentStatusView::from(update.current);
+    let _ = app.emit(
+        "agent-status",
+        AgentStatusEvent {
+            previous,
+            current,
+            changed: update.changed,
+        },
+    );
 }
 
 #[cfg(windows)]
-fn service_loop(receiver: mpsc::Receiver<Request>) {
+fn service_loop(
+    receiver: mpsc::Receiver<Request>,
+    app: tauri::AppHandle,
+    statuses: Arc<Mutex<StatusBook>>,
+) {
     let mut runtime = Runtime {
         client: None,
         sessions: std::collections::HashMap::new(),
         by_handle: std::collections::HashMap::new(),
+        statuses,
     };
 
     loop {
@@ -899,7 +1062,9 @@ fn service_loop(receiver: mpsc::Receiver<Request>) {
             };
             match next {
                 Ok(Some(message)) => {
-                    handle_message(&mut runtime, message);
+                    if let Some(update) = handle_message(&mut runtime, message) {
+                        emit_agent_status(&app, update);
+                    }
                     flush_due(&mut runtime);
                 }
                 Ok(None) => break,
@@ -956,6 +1121,9 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
         Request::Close { sid } => {
             if let Some(client) = runtime.client.as_mut() {
                 let _ = client.terminate(&sid, false);
+            }
+            if let Ok(mut statuses) = runtime.statuses.lock() {
+                statuses.remove(&sid);
             }
             remove_session(runtime, &sid, None);
         }
@@ -1145,6 +1313,10 @@ fn open_session(
 
     match created {
         Ok(created) => {
+            // 同 sid 的新世代：旧状态属于上一个进程，不能带进新会话。
+            if let Ok(mut statuses) = runtime.statuses.lock() {
+                statuses.remove(&sid);
+            }
             runtime.sessions.insert(
                 sid.clone(),
                 SessionState {
@@ -1468,24 +1640,26 @@ fn push_data(session: &mut SessionState, bytes: &[u8]) {
 }
 
 #[cfg(windows)]
-fn handle_message(runtime: &mut Runtime, message: ageminal_protocol::Message) {
+fn handle_message(
+    runtime: &mut Runtime,
+    message: ageminal_protocol::Message,
+) -> Option<StatusUpdate> {
     use ageminal_protocol::Message;
 
     match message {
         Message::Data { handle, seq, bytes } => {
             handle_data(runtime, handle, seq, bytes);
+            None
         }
         Message::Snapshot(snapshot) => {
-            let Some(session) = runtime.sessions.get_mut(&snapshot.sid) else {
-                return;
-            };
+            let session = runtime.sessions.get_mut(&snapshot.sid)?;
             if !session.visible {
-                return;
+                return None;
             }
             // 只接受当前这次断档请求对应的 checkpoint：attach 之后迟到的旧快照
             // （或从未请求过的快照）不能把已经对齐的进度往回拽。
             if !session.awaiting_checkpoint || snapshot.seq < session.last_seq {
-                return;
+                return None;
             }
             // checkpoint 是新的绝对锚点：丢掉旧批次与旧进度，之后的实时数据从 seq 接。
             session.last_seq = snapshot.seq;
@@ -1504,8 +1678,20 @@ fn handle_message(runtime: &mut Runtime, message: ageminal_protocol::Message) {
                     reconnected: true,
                 },
             );
+            None
         }
+        Message::AgentEvent(event) => runtime
+            .statuses
+            .lock()
+            .ok()
+            .and_then(|mut statuses| statuses.apply_event(&event)),
         Message::SessionExited(exited) => {
+            let update = runtime.statuses.lock().ok().and_then(|mut statuses| {
+                statuses
+                    .contains(&exited.sid)
+                    .then(|| statuses.apply_exit(&exited, crate::now_ms()))
+                    .flatten()
+            });
             if let Some(mut session) = runtime.sessions.remove(&exited.sid) {
                 runtime.by_handle.remove(&session.handle);
                 send_control(
@@ -1515,14 +1701,16 @@ fn handle_message(runtime: &mut Runtime, message: ageminal_protocol::Message) {
                     },
                 );
             }
+            update
         }
         Message::Error(error) => {
             // 协议里的 `Error` 没有 sid；很可能是某条无响应命令（resize / ack / input）
             // 的失败。不能广播给所有会话，否则一个已退出的会话会让整屏终端都弹错误。
             eprintln!("[terminal] daemon 错误：{error:?}");
+            None
         }
         // 请求-响应已经在 Client::request 里消化；这里只忽略心跳等。
-        _ => {}
+        _ => None,
     }
 }
 
@@ -1744,10 +1932,53 @@ mod tests {
                 client: None,
                 sessions,
                 by_handle,
+                statuses: Arc::new(Mutex::new(StatusBook::default())),
             },
             1,
             messages,
         )
+    }
+
+    /// #80：daemon 的 AgentEvent / SessionExited 在 app-core 里真的进入统一状态表。
+    #[test]
+    fn agent_events_and_exit_reduce_into_the_status_book() {
+        let (mut runtime, _handle, _messages) = runtime_with_session(0);
+        let event = ageminal_protocol::AgentEvent {
+            sid: "s".to_owned(),
+            incarnation_id: Some("inc-1".to_owned()),
+            agent: "claude".to_owned(),
+            event: "UserPromptSubmit".to_owned(),
+            native: None,
+            ts: 1_000,
+            payload: Some(serde_json::json!({})),
+            truncated: false,
+            worktree: None,
+        };
+        let update = handle_message(&mut runtime, ageminal_protocol::Message::AgentEvent(event))
+            .expect("AgentEvent 应产生状态");
+        assert_eq!(update.current.state, AgentState::Running);
+        assert_eq!(
+            runtime
+                .statuses
+                .lock()
+                .unwrap()
+                .snapshot("s")
+                .map(|s| s.state),
+            Some(AgentState::Running)
+        );
+
+        let update = handle_message(
+            &mut runtime,
+            ageminal_protocol::Message::SessionExited(ageminal_protocol::SessionExited {
+                sid: "s".to_owned(),
+                incarnation_id: "inc-1".to_owned(),
+                exit_code: Some(9),
+            }),
+        )
+        .expect("退出应产生状态");
+        assert_eq!(update.current.state, AgentState::Exited);
+        assert_eq!(update.current.exit_code, Some(9));
+        assert!(!runtime.sessions.contains_key("s"));
     }
 
     /// #72 验收 2：洞出现时丢弃数据并进入「等 checkpoint」；Snapshot 到达后从新锚点继续。

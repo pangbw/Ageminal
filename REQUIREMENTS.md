@@ -297,7 +297,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   - **`done` 不自动迁移到 `idle`**（常驻到新活动事件把它带回 `running`）✅（E3 #24）
   - **非零进程退出 → `exited` + 标记非零退出码**，不擅自判 `error` ✅（E3 #24）
 - **降级模式**（未装原生集成 / 手动启动）✅（E3 #24）：**只暴露 `running` / `idle` / `exited`**（+ 可选 `error`），并在 worktree 行/页签**显式标注「状态不完整」**；不伪装 `waiting` / `permission` / `done`
-- **事件合并规则** ✅（E3 #24）：版本化状态（`state+source+timestamp+seq`，**逻辑序优先、时间序兜底**）；冲突优先级 `exited` > `error` > `permission` > `waiting` > `running`，且 `done`/`idle` **不得把 `running` 打回**；按 agent 稳定 id **幂等 + 200–500 ms 防抖**；**子代理状态默认不展示**（根会话只由根事件决定）
+- **事件合并规则** ✅（E3 #24 / #80）：纯逻辑实现见 `crates/agent`；版本化状态（`state+source+timestamp+seq`，**逻辑序优先、时间序兜底**）；冲突优先级 `exited` > `error` > `permission` > `waiting` > `running`，且 `done`/`idle` **不得把 `running` 打回**；按 agent 稳定 id **幂等 + 200–500 ms 防抖**；**子代理状态默认不展示**（根会话只由根事件决定）
 - 通知 ✅：进入「等待输入 / 需要授权 / 完成 / 出错」时发**桌面通知**，并高亮对应 worktree 行与页签；**`done → idle` 不重复通知**
   - **「点击通知」** ✅（#48 真机实测）：**点击通知会激活/聚焦窗口**（已实测）；官方插件在 Windows **无任何点击回调**（desktop 只注册 `notify`/`request_permission`/`is_permission_granted`，源码确认），Web `Notification` 路径在 WebView2 下**事件链不通**（`onclick`/`onshow`/`onclose` 均不触发）。因此**不做「精确跳转到对应终端」，🕓 延后**（将来需自研 WinRT toast 激活）；定位依赖**应用内高亮**（worktree 行 + 页签彩点）
 - 展现位置：左侧 worktree 行（彩点 + 名称）、终端页签标题/圆点 ✅；**托盘角标 = 延后**
@@ -583,6 +583,7 @@ Ageminal/
 ├─ src-tauri/            # Tauri app crate（含 app-core）
 │  └─ binaries/          # sidecar 构建产物（-$TARGET_TRIPLE.exe，gitignore）
 ├─ crates/
+│  ├─ agent/             # agent 事件 → 统一状态的纯逻辑（#80）
 │  ├─ protocol/          # app-core ↔ daemon 的帧协议（Rust 单一来源）
 │  ├─ git/               # git CLI 访问层（worktree 发现 + 薄执行；纯逻辑跨平台可测）
 │  ├─ workspace/         # 工作区模型（项目 / 侧栏 / 显示名投影；纯逻辑）

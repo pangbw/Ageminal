@@ -162,6 +162,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         terminal::terminal_ack,
         terminal::terminal_set_visible,
         terminal::terminal_close,
+        terminal::agent_statuses,
         watch::set_watched_files
     ])
 }
@@ -395,7 +396,8 @@ pub fn run() {
             // 守护进程常驻（#64）：后台确保它在跑（复用优先），不阻塞窗口创建。
             daemon::spawn_ensure();
             // 终端服务（#68）：连接 daemon、按会话合批转发到前端 Channel。
-            app.manage(terminal::TerminalService::start());
+            // 同一线程也归约 agent 状态（#80），并把更新作为 `agent-status` 全局事件推给 UI。
+            app.manage(terminal::TerminalService::start(app.handle().clone()));
             // 托盘（#76）：关窗 / 最小化隐藏，菜单承载两层显式退出。
             if let Err(error) = tray::setup(app.handle()) {
                 eprintln!("[tray] 初始化失败：{error}");
