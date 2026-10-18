@@ -99,7 +99,11 @@ onBeforeUnmount(() => {
         :title="tab.cwd"
       >{{ tab.name }}</span>
       <span
-        v-if="state?.status === 'starting'"
+        v-if="state?.reconnected"
+        class="terminal__note terminal__note--reconnected"
+      >{{ t("terminal.reconnected") }}</span>
+      <span
+        v-else-if="state?.status === 'starting'"
         class="terminal__note"
       >{{ t("terminal.starting") }}</span>
       <span
@@ -175,6 +179,10 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   color: var(--color-faint);
   font-size: var(--font-size-xs);
+}
+
+.terminal__note--reconnected {
+  color: var(--color-accent);
 }
 
 .terminal__action {

@@ -402,6 +402,9 @@ fn dispatch(
                 sessions.attach(&attach.sid, attach.last_seq, handle, Arc::clone(outbound));
             reply(outbound, result.map(Message::Attached))
         }
+        Message::Checkpoint(checkpoint) => {
+            acknowledge(outbound, sessions.checkpoint(&checkpoint.sid))
+        }
         Message::Detach(detach) => {
             // 断开**不是**终止：会话继续活在 daemon 里（§5.2）。
             sessions.detach(&detach.sid);

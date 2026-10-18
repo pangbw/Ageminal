@@ -57,6 +57,10 @@ pub enum FrameKind {
     Attach,
     /// D→UI：接上了（从哪个 `seq` 起）。
     Attached,
+    /// UI→D：seq 断档，请发一份当前 checkpoint。
+    Checkpoint,
+    /// D→UI：checkpoint（ANSI 快照 + 对应 `seq`）。
+    Snapshot,
     /// UI→D：断开（**≠ 终止**，会话继续活在 daemon 里）。
     Detach,
     /// UI→D：真正结束会话。
@@ -93,6 +97,8 @@ impl FrameKind {
             FrameKind::SessionCreated => 0x0021,
             FrameKind::Attach => 0x0022,
             FrameKind::Attached => 0x0023,
+            FrameKind::Checkpoint => 0x0028,
+            FrameKind::Snapshot => 0x0029,
             FrameKind::Detach => 0x0024,
             FrameKind::Terminate => 0x0025,
             FrameKind::SessionExited => 0x0026,
@@ -119,6 +125,8 @@ impl FrameKind {
             0x0021 => FrameKind::SessionCreated,
             0x0022 => FrameKind::Attach,
             0x0023 => FrameKind::Attached,
+            0x0028 => FrameKind::Checkpoint,
+            0x0029 => FrameKind::Snapshot,
             0x0024 => FrameKind::Detach,
             0x0025 => FrameKind::Terminate,
             0x0026 => FrameKind::SessionExited,

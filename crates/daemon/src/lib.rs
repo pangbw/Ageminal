@@ -39,6 +39,7 @@ mod logging;
 mod outbound;
 #[cfg(windows)]
 pub mod paths;
+mod ring;
 #[cfg(windows)]
 pub mod server;
 #[cfg(windows)]

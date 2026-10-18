@@ -24,12 +24,15 @@
 //! # 隐藏会话
 //!
 //! 页签不可见时前端调 [`terminal_set_visible`]：app-core 向 daemon 发 `Detach`，不再转发字节。
-//! 切回时 `Attach` 从当前进度续流；真正的快照回放归 #71 / #72，本票只保证「隐藏时停止收流」。
+//! 切回时 `Attach` 从 `last_seq` 之后回放 daemon 环形缓冲；窗口外则用 ANSI 快照重建。
+//! 数据帧按 `seq` 对账：重复只取尾巴，出现空洞就丢弃并请求 checkpoint（#72）。
 //!
 //! # 尚未实现（后续票）
 //!
 //! - 流控高低水位与 daemon 侧暂停发送：见 #73；这里只把 ack 原样转给 daemon 记账。
 //! - 关闭页签的「detach 而不是 terminate」语义：见 #75；本票的关闭是显式结束会话。
+//! - 流内「—— 已重新连接 ——」分隔线：回放边界可能落在转义序列中间，直接注入会截断序列；
+//!   归 #75 随 attach 语义一起做（当前只在面板标题显示可见提示）。
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -86,9 +89,33 @@ pub enum TerminalControl {
     /// 重新 attach 成功；`from_seq` 是本次续流的起始字节偏移。
     ///
     /// 前端据此把 ack 计数器清零（ack 是**本次 attach 内**的累计值，app-core 再加 `from_seq`）。
+    /// `snapshot` 非空时表示无法精确回放，前端要先用它重建屏幕。
     Attached {
         /// 续流起点。
         from_seq: u64,
+        /// 实时流起点；`from_seq..replay_end` 是回放。
+        replay_end: u64,
+        /// ANSI 快照（无法精确回放时）。
+        snapshot: Option<String>,
+        /// 是否 alt-screen（前端提示 / #75 分隔线用）。
+        alt_screen: bool,
+    },
+    /// 回放结束、实时流开始；前端据此显示「已重新连接」提示。
+    ///
+    /// 真正写进终端字节流的分隔线归 #75：回放边界可能落在转义序列中间，
+    /// 直接注入会截断序列，必须先有安全的重置点。
+    ReplayEnd {
+        /// 是否 alt-screen（前端提示 / #75 分隔线用）。
+        alt_screen: bool,
+    },
+    /// 断档恢复：用 checkpoint 快照重建屏幕。
+    Snapshot {
+        /// ANSI 快照。
+        ansi: String,
+        /// 快照对应的累计偏移。
+        from_seq: u64,
+        /// 是否 alt-screen。
+        alt_screen: bool,
     },
     /// 操作失败（可见给用户）。
     Error {
@@ -392,6 +419,13 @@ struct SessionState {
     last_seq: u64,
     /// 本次 attach 的起点；ack 回给 daemon 时要加上它。
     ack_base: u64,
+    /// 回放结束位置；`replay_done == false` 时收到的数据属于回放。
+    replay_end: u64,
+    replay_done: bool,
+    /// 已请求 checkpoint，等 `Snapshot` 期间丢弃所有数据帧。
+    awaiting_checkpoint: bool,
+    /// 当前屏幕是否 alt-screen（前端提示用）。
+    alt_screen: bool,
 }
 
 /// 合批器。抽成独立类型，好在非 Windows 上也能单测「不丢字节 / 阈值触发」。
@@ -600,6 +634,10 @@ fn open_session(
                     batcher: Batcher::default(),
                     last_seq: 0,
                     ack_base: 0,
+                    replay_end: 0,
+                    replay_done: true,
+                    awaiting_checkpoint: false,
+                    alt_screen: false,
                 },
             );
             runtime.by_handle.insert(created.handle, sid.clone());
@@ -656,6 +694,9 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
         match attached {
             Ok(attached) => {
                 let from_seq = attached.from_seq;
+                let replay_end = attached.replay_end;
+                let alt_screen = attached.alt_screen;
+                let has_snapshot = attached.snapshot.is_some();
                 if let Some(session) = runtime.sessions.get_mut(sid) {
                     if session.handle != attached.handle {
                         runtime.by_handle.remove(&session.handle);
@@ -664,8 +705,25 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
                     }
                     session.visible = true;
                     session.ack_base = from_seq;
+                    session.last_seq = from_seq;
+                    session.replay_end = replay_end;
+                    session.replay_done = has_snapshot || replay_end <= from_seq;
+                    session.awaiting_checkpoint = false;
+                    session.alt_screen = alt_screen;
                     session.batcher = Batcher::default();
-                    send_control(session, TerminalControl::Attached { from_seq });
+                    send_control(
+                        session,
+                        TerminalControl::Attached {
+                            from_seq,
+                            replay_end,
+                            snapshot: attached.snapshot,
+                            alt_screen,
+                        },
+                    );
+                    // 快照路径没有回放数据；Attached 之后立刻分隔，前端先写快照再写分隔行。
+                    if has_snapshot {
+                        send_control(session, TerminalControl::ReplayEnd { alt_screen });
+                    }
                 }
             }
             Err(error) => send_error(runtime, sid, error.to_string()),
@@ -684,9 +742,139 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
         }
         if let Some(session) = runtime.sessions.get_mut(sid) {
             session.visible = false;
-            // 断开期间的输出不保留（快照归 #71 / #72）。
+            // 断开期间的输出留在 daemon 环形缓冲里；切回时按 last_seq 回放或走快照。
             session.batcher = Batcher::default();
         }
+    }
+}
+
+/// 一条数据帧相对当前期望偏移的分类。
+#[cfg(windows)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DataClass {
+    /// 整帧都已消费。
+    Drop,
+    /// 当前偏移之后的前若干字节还没消费（重叠尾巴）。
+    Tail(usize),
+    /// 正好接上。
+    Fresh,
+    /// 中间有洞。
+    Gap,
+}
+
+/// 纯函数：`expected` = 下一个期望字节的绝对偏移。
+#[cfg(windows)]
+fn classify_data(expected: u64, seq: u64, len: usize) -> DataClass {
+    if len == 0 {
+        return DataClass::Drop;
+    }
+    let end = seq.saturating_add(len as u64);
+    if end <= expected {
+        DataClass::Drop
+    } else if seq < expected {
+        DataClass::Tail((expected - seq) as usize)
+    } else if seq == expected {
+        DataClass::Fresh
+    } else {
+        DataClass::Gap
+    }
+}
+
+/// 处理一条数据帧：去重 / 断档检测 / 回放与实时的边界。
+#[cfg(windows)]
+fn handle_data(runtime: &mut Runtime, handle: u32, seq: u64, mut bytes: Vec<u8>) {
+    let Some(sid) = runtime.by_handle.get(&handle).cloned() else {
+        return;
+    };
+
+    let mut request_checkpoint = false;
+    {
+        let Some(session) = runtime.sessions.get_mut(&sid) else {
+            return;
+        };
+        if !session.visible || session.awaiting_checkpoint {
+            return;
+        }
+
+        match classify_data(session.last_seq, seq, bytes.len()) {
+            DataClass::Drop => return,
+            DataClass::Gap => {
+                // 洞：绝不把半截流画到屏幕上，等 checkpoint 快照重建。
+                session.awaiting_checkpoint = true;
+                session.batcher = Batcher::default();
+                request_checkpoint = true;
+            }
+            DataClass::Tail(overlap) => {
+                // 回放过 / 旧连接留下的重叠帧：只转发尚未消费的尾巴。
+                bytes.drain(..overlap);
+            }
+            DataClass::Fresh => {}
+        }
+
+        if !request_checkpoint {
+            forward_data(session, &mut bytes);
+        }
+    }
+
+    if request_checkpoint {
+        if let Some(client) = runtime.client.as_mut() {
+            if let Err(error) = client.checkpoint(&sid) {
+                lose_connection(runtime, error.to_string());
+            }
+        }
+    }
+}
+
+/// 把一段数据按回放 / 实时边界切开，然后交给合批器。
+#[cfg(windows)]
+fn forward_data(session: &mut SessionState, bytes: &mut Vec<u8>) {
+    if !session.replay_done {
+        let remaining = session.replay_end.saturating_sub(session.last_seq) as usize;
+        if remaining == 0 {
+            send_control(
+                session,
+                TerminalControl::ReplayEnd {
+                    alt_screen: session.alt_screen,
+                },
+            );
+            session.replay_done = true;
+        } else if bytes.len() > remaining {
+            let live = bytes.split_off(remaining);
+            push_data(session, bytes);
+            session.last_seq += remaining as u64;
+            // 先冲刷回放尾巴，再发分隔控制，最后把实时部分塞进新的批次。
+            send_control(
+                session,
+                TerminalControl::ReplayEnd {
+                    alt_screen: session.alt_screen,
+                },
+            );
+            session.replay_done = true;
+            if !live.is_empty() {
+                push_data(session, &live);
+                session.last_seq += live.len() as u64;
+            }
+            return;
+        }
+    }
+
+    push_data(session, bytes);
+    session.last_seq += bytes.len() as u64;
+    if !session.replay_done && session.last_seq == session.replay_end {
+        send_control(
+            session,
+            TerminalControl::ReplayEnd {
+                alt_screen: session.alt_screen,
+            },
+        );
+        session.replay_done = true;
+    }
+}
+
+#[cfg(windows)]
+fn push_data(session: &mut SessionState, bytes: &[u8]) {
+    if let Some(batch) = session.batcher.push(bytes, std::time::Instant::now()) {
+        let _ = session.event.send(TerminalEvent::Data(batch));
     }
 }
 
@@ -696,20 +884,42 @@ fn handle_message(runtime: &mut Runtime, message: ageminal_protocol::Message) {
 
     match message {
         Message::Data { handle, seq, bytes } => {
-            let Some(sid) = runtime.by_handle.get(&handle).cloned() else {
+            handle_data(runtime, handle, seq, bytes);
+        }
+        Message::Snapshot(snapshot) => {
+            let Some(session) = runtime.sessions.get_mut(&snapshot.sid) else {
                 return;
             };
-            let now = std::time::Instant::now();
-            let Some(session) = runtime.sessions.get_mut(&sid) else {
-                return;
-            };
-            session.last_seq = seq.saturating_add(bytes.len() as u64);
             if !session.visible {
                 return;
             }
-            if let Some(batch) = session.batcher.push(&bytes, now) {
-                let _ = session.event.send(TerminalEvent::Data(batch));
+            // 只接受当前这次断档请求对应的 checkpoint：attach 之后迟到的旧快照
+            // （或从未请求过的快照）不能把已经对齐的进度往回拽。
+            if !session.awaiting_checkpoint || snapshot.seq < session.last_seq {
+                return;
             }
+            // checkpoint 是新的绝对锚点：丢掉旧批次与旧进度，之后的实时数据从 seq 接。
+            session.last_seq = snapshot.seq;
+            session.ack_base = snapshot.seq;
+            session.replay_end = snapshot.seq;
+            session.replay_done = true;
+            session.awaiting_checkpoint = false;
+            session.alt_screen = snapshot.alt_screen;
+            session.batcher = Batcher::default();
+            send_control(
+                session,
+                TerminalControl::Snapshot {
+                    ansi: snapshot.ansi,
+                    from_seq: snapshot.seq,
+                    alt_screen: snapshot.alt_screen,
+                },
+            );
+            send_control(
+                session,
+                TerminalControl::ReplayEnd {
+                    alt_screen: snapshot.alt_screen,
+                },
+            );
         }
         Message::SessionExited(exited) => {
             if let Some(mut session) = runtime.sessions.remove(&exited.sid) {
@@ -812,6 +1022,7 @@ fn pty_size(cols: u16, rows: u16) -> ageminal_daemon::pty::PtySize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::time::Instant;
 
     #[test]
@@ -839,6 +1050,166 @@ mod tests {
             .take_if_due(start + BATCH_WINDOW)
             .expect("窗口到了要冲刷");
         assert_eq!(batch, b"prompt");
+    }
+
+    fn test_session(
+        replay_end: u64,
+    ) -> (SessionState, Arc<std::sync::Mutex<Vec<InvokeResponseBody>>>) {
+        let messages = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = messages.clone();
+        let event = Channel::new(move |body| {
+            sink.lock().expect("messages").push(body);
+            Ok(())
+        });
+        (
+            SessionState {
+                handle: 1,
+                event,
+                visible: true,
+                batcher: Batcher::default(),
+                last_seq: 0,
+                ack_base: 0,
+                replay_end,
+                replay_done: replay_end == 0,
+                awaiting_checkpoint: false,
+                alt_screen: false,
+            },
+            messages,
+        )
+    }
+
+    fn flush_for_test(session: &mut SessionState) {
+        if let Some(batch) = session.batcher.flush() {
+            session.event.send(TerminalEvent::Data(batch)).unwrap();
+        }
+    }
+
+    fn raw_bytes(body: &InvokeResponseBody) -> Option<Vec<u8>> {
+        match body {
+            InvokeResponseBody::Raw(bytes) => Some(bytes.clone()),
+            InvokeResponseBody::Json(_) => None,
+        }
+    }
+
+    fn control_type(body: &InvokeResponseBody) -> Option<String> {
+        match body {
+            InvokeResponseBody::Json(json) => {
+                let value: serde_json::Value = serde_json::from_str(json).unwrap();
+                Some(value.get("type")?.as_str()?.to_owned())
+            }
+            InvokeResponseBody::Raw(_) => None,
+        }
+    }
+
+    /// #72 验收 1 的 app-core 半：回放尾巴先冲刷，随后才是 ReplayEnd，实时数据另起批次。
+    #[test]
+    fn replay_boundary_is_flushed_before_live_data() {
+        let (mut session, messages) = test_session(3);
+        let mut bytes = b"abcdef".to_vec();
+
+        forward_data(&mut session, &mut bytes);
+        flush_for_test(&mut session);
+
+        let messages = messages.lock().expect("messages");
+        assert_eq!(messages.len(), 3);
+        assert_eq!(raw_bytes(&messages[0]).as_deref(), Some(b"abc".as_slice()));
+        assert_eq!(control_type(&messages[1]).as_deref(), Some("replayEnd"));
+        assert_eq!(raw_bytes(&messages[2]).as_deref(), Some(b"def".as_slice()));
+        assert_eq!(session.last_seq, 6);
+        assert!(session.replay_done);
+    }
+
+    /// 整帧刚好落在回放边界：先发字节，再发边界控制。
+    #[test]
+    fn replay_boundary_at_frame_end_still_marks_the_seam() {
+        let (mut session, messages) = test_session(4);
+        let mut bytes = b"wxyz".to_vec();
+
+        forward_data(&mut session, &mut bytes);
+
+        let messages = messages.lock().expect("messages");
+        assert_eq!(raw_bytes(&messages[0]).as_deref(), Some(b"wxyz".as_slice()));
+        assert_eq!(control_type(&messages[1]).as_deref(), Some("replayEnd"));
+    }
+
+    /// 没有回放时不该凭空插入边界控制。
+    #[test]
+    fn live_data_without_replay_has_no_seam_control() {
+        let (mut session, messages) = test_session(0);
+        let mut bytes = b"live".to_vec();
+
+        forward_data(&mut session, &mut bytes);
+        flush_for_test(&mut session);
+
+        let messages = messages.lock().expect("messages");
+        assert_eq!(raw_bytes(&messages[0]).as_deref(), Some(b"live".as_slice()));
+        assert_eq!(messages.len(), 1);
+    }
+
+    fn runtime_with_session(
+        last_seq: u64,
+    ) -> (Runtime, u32, Arc<std::sync::Mutex<Vec<InvokeResponseBody>>>) {
+        let (mut session, messages) = test_session(0);
+        session.last_seq = last_seq;
+        let mut sessions = std::collections::HashMap::new();
+        sessions.insert("s".to_owned(), session);
+        let mut by_handle = std::collections::HashMap::new();
+        by_handle.insert(1, "s".to_owned());
+        (
+            Runtime {
+                client: None,
+                sessions,
+                by_handle,
+            },
+            1,
+            messages,
+        )
+    }
+
+    /// #72 验收 2：洞出现时丢弃数据并进入「等 checkpoint」；Snapshot 到达后从新锚点继续。
+    #[test]
+    fn a_gap_waits_for_a_checkpoint_and_snapshot_resets_the_offset() {
+        let (mut runtime, handle, messages) = runtime_with_session(10);
+
+        handle_data(&mut runtime, handle, 20, b"discard-me".to_vec());
+        {
+            let session = runtime.sessions.get("s").expect("session");
+            assert!(session.awaiting_checkpoint);
+            assert_eq!(session.last_seq, 10, "断档帧不能推进偏移");
+            assert!(messages.lock().expect("messages").is_empty());
+        }
+
+        handle_message(
+            &mut runtime,
+            ageminal_protocol::Message::Snapshot(ageminal_protocol::Snapshot {
+                sid: "s".to_owned(),
+                seq: 30,
+                ansi: "SCREEN".to_owned(),
+                alt_screen: false,
+            }),
+        );
+
+        let session = runtime.sessions.get("s").expect("session");
+        assert!(!session.awaiting_checkpoint);
+        assert_eq!(session.last_seq, 30);
+        assert!(session.replay_done);
+        let messages = messages.lock().expect("messages");
+        assert_eq!(control_type(&messages[0]).as_deref(), Some("snapshot"));
+        assert_eq!(control_type(&messages[1]).as_deref(), Some("replayEnd"));
+    }
+
+    #[test]
+    fn data_frames_are_classified_against_the_expected_offset() {
+        assert_eq!(classify_data(10, 10, 5), DataClass::Fresh);
+        assert_eq!(classify_data(10, 8, 5), DataClass::Tail(2));
+        assert_eq!(classify_data(10, 8, 2), DataClass::Drop);
+        assert_eq!(classify_data(10, 12, 5), DataClass::Gap);
+        assert_eq!(classify_data(10, 10, 0), DataClass::Drop);
+        assert_eq!(
+            classify_data(u64::MAX - 1, u64::MAX, 4),
+            DataClass::Gap,
+            "溢出不能 panic"
+        );
     }
 
     #[test]

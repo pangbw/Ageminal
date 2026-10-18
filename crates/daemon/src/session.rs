@@ -6,13 +6,19 @@
 //! 帧头的 `handle` 是**连接内**句柄（#65 定的），所以 handle ↔ `sid` 的映射归连接；输出线程从
 //! 自己的 attachment 里拿 handle。
 //!
-//! # 这一层还没有的东西
+//! # 回放（#72）
 //!
-//! - **回放**：没有历史缓冲，`Attach` 从「当前进度」接上实时流；断开期间的输出**丢弃**，
-//!   **断开期间产生的退出事件也丢弃**（`attachment` 为空时无处可送）——重连后只会得到「没有会话」，
-//!   分不清「从未存在」和「离开期间退了」。两件事都归 #72 的环形缓冲 + 对账。
-//!   `seq` 是**累计字节偏移**（不是帧号），所以 #72 接上后可以直接用它当起点。
-//! - **流控**：`Ack` 只记账（[`SessionTable::ack`]），高低水位暂停发送 / 停读 PTY 归 #73。
+//! 每个会话保留最近 **4 MiB** 输出，按累计字节偏移 `seq` 索引。`Attach` 时：
+//! - `last_seq` 还在窗口里 → 从它之后回放，`replay_end` 之后接实时流；
+//! - `last_seq == 0` 或已滑出窗口 → 发 ANSI 快照，实时流从当前 `seq` 起；
+//! - 输出线程与 attach 共用 **VT → output** 锁序，快照 / `seq` / 回放窗口是同一个原子边界。
+//!
+//! **断开期间产生的退出事件仍会丢弃**（`attachment` 为空时无处可送），重连后表现为「没有会话」；
+//! 区分「从未存在 / 离开期间退了」需要更长的持久化历史，归 #74。
+//!
+//! # 流控
+//!
+//! `Ack` 只记账（[`SessionTable::ack`]）；高低水位暂停发送 / 停读 PTY 归 #73。
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -26,10 +32,13 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
-use ageminal_protocol::{Attached, CreateSession, Message, SessionCreated, SessionExited};
+use ageminal_protocol::{
+    Attached, CreateSession, Message, SessionCreated, SessionExited, Snapshot,
+};
 
 use crate::outbound::Outbound;
 use crate::pty::{self, Pty, PtySize, PtySpec};
+use crate::ring::RingBuffer;
 use crate::vt::Vt;
 use crate::DaemonError;
 
@@ -39,11 +48,27 @@ const EXIT_POLL: Duration = Duration::from_millis(50);
 /// 一次从 PTY 读多少字节（合并成一条数据帧）。
 const READ_CHUNK: usize = 16 * 1024;
 
+/// 每会话保留的输出回放窗口（#72）。
+const OUTPUT_RING_BYTES: usize = 4 * 1024 * 1024;
+
+/// 回放时单条 `Data` 帧的上限；`MAX_FRAME_BYTES` 是 1 MiB，留足余量。
+const REPLAY_CHUNK: usize = 64 * 1024;
+
 /// 输出推给谁。
 #[derive(Clone)]
 struct Attachment {
     handle: u32,
     outbound: Arc<Outbound>,
+}
+
+/// 会话输出状态：`seq`、回放窗口与当前连接必须一起改，否则 attach 会看到撕裂的边界。
+struct OutputState {
+    /// 下一个字节的累计偏移。
+    seq: u64,
+    /// 最近一段输出（按绝对偏移索引）。
+    ring: RingBuffer,
+    /// 当前挂着的连接。
+    attachment: Option<Attachment>,
 }
 
 /// 一个会话（跨连接存活）。
@@ -59,14 +84,12 @@ struct Session {
     exit: Option<OwnedHandle>,
     /// PTY 写端（键盘输入）。
     writer: Mutex<Box<dyn Write + Send>>,
-    /// 输出用的累计字节偏移。
-    seq: AtomicU64,
     /// 客户端已确认消费的字节数（#73 的水位输入）。
     acked_bytes: AtomicU64,
     /// 服务端 VT 内核（#70）：屏幕 / 光标 / alt-screen / SGR。
     vt: Mutex<Vt>,
-    /// 当前挂着的连接。
-    attachment: Mutex<Option<Attachment>>,
+    /// 输出偏移 / 回放窗口 / 当前连接（#72）。
+    output: Mutex<OutputState>,
 }
 
 /// daemon 全局的会话表。
@@ -131,10 +154,13 @@ impl SessionTable {
             control: Mutex::new(Some(control)),
             exit: Some(exit),
             writer: Mutex::new(writer),
-            seq: AtomicU64::new(0),
             acked_bytes: AtomicU64::new(0),
             vt: Mutex::new(Vt::new(request.cols as usize, request.rows as usize)),
-            attachment: Mutex::new(Some(Attachment { handle, outbound })),
+            output: Mutex::new(OutputState {
+                seq: 0,
+                ring: RingBuffer::new(OUTPUT_RING_BYTES),
+                attachment: Some(Attachment { handle, outbound }),
+            }),
         });
 
         // spawn 期间表可能被塞进同名会话（单连接下不会，但别赌）。**保住活着的那一个**，
@@ -169,28 +195,66 @@ impl SessionTable {
 
     /// 接回已有会话；把输出改推到这条连接。
     ///
-    /// `last_seq` 暂时**不用**：没有历史可回放（#72 接上后从这里开始回放）。
+    /// 三种情况：
+    /// - `last_seq` 还在环形窗口里 → 从它之后**精确回放**，`replay_end` 之后才是实时流；
+    /// - `last_seq == 0`（新 UI）或已经滑出窗口 → 用 ANSI 快照建屏，实时流从当前 `seq` 开始；
+    /// - `last_seq == 当前 seq` → 无需回放。
+    ///
+    /// 锁顺序固定为 **VT → output**：输出线程也按这个顺序拿锁，因此快照 / `seq` / 回放窗口
+    /// 是同一个原子边界。
     pub fn attach(
         &self,
         sid: &str,
-        _last_seq: u64,
+        last_seq: u64,
         handle: u32,
         outbound: Arc<Outbound>,
     ) -> Result<Attached, DaemonError> {
         let session = self.get(sid)?;
-        let from_seq = session.seq.load(Ordering::SeqCst);
-        *session.attachment.lock().expect("attachment") = Some(Attachment { handle, outbound });
+        let vt = session.vt.lock().expect("vt");
+        let mut output = session.output.lock().expect("output");
+        let current = output.seq;
+        let alt_screen = vt.alt_screen();
+
+        let (snapshot, from_seq, replay) = if last_seq > 0 && last_seq <= current {
+            match output.ring.since(last_seq) {
+                Some(bytes) => (None, last_seq, bytes),
+                None => (Some(vt.snapshot()), current, Vec::new()),
+            }
+        } else {
+            // `last_seq == 0`：新 UI，没有可信的屏幕；用快照重建。
+            (Some(vt.snapshot()), current, Vec::new())
+        };
+
+        // 先把回放帧排进出站队列，再让输出线程继续追；两者都在同一把 output 锁内，
+        // 因此不会出现「实时流插到回放中间」。
+        output.attachment = Some(Attachment {
+            handle,
+            outbound: outbound.clone(),
+        });
+        let mut offset = 0usize;
+        for chunk in replay.chunks(REPLAY_CHUNK) {
+            outbound.send_data(&Message::Data {
+                handle,
+                seq: from_seq + offset as u64,
+                bytes: chunk.to_vec(),
+            });
+            offset += chunk.len();
+        }
+
         Ok(Attached {
             sid: sid.to_owned(),
             handle,
             from_seq,
+            replay_end: current,
+            snapshot,
+            alt_screen,
         })
     }
 
     /// 断开（**≠ 终止**）：会话继续活着，只是不再往任何连接推输出。
     pub fn detach(&self, sid: &str) {
         if let Some(session) = self.sessions.lock().expect("sessions").get(sid) {
-            *session.attachment.lock().expect("attachment") = None;
+            session.output.lock().expect("output").attachment = None;
         }
     }
 
@@ -204,12 +268,13 @@ impl SessionTable {
             .cloned()
             .collect();
         for session in sessions {
-            let mut attachment = session.attachment.lock().expect("attachment");
-            if attachment
+            let mut output = session.output.lock().expect("output");
+            if output
+                .attachment
                 .as_ref()
                 .is_some_and(|current| Arc::ptr_eq(&current.outbound, outbound))
             {
-                *attachment = None;
+                output.attachment = None;
             }
         }
     }
@@ -267,12 +332,32 @@ impl SessionTable {
         Ok(())
     }
 
-    /// 当前会话的 ANSI 快照（#71）；#72 / #75 的 attach 会用它重建屏幕。
-    #[allow(dead_code)] // 生产调用方在 #72 / #75；先把「怎么取快照」收在会话层。
-    pub fn snapshot(&self, sid: &str) -> Result<String, DaemonError> {
+    /// seq 断档后的 checkpoint：把当前屏幕 + 对应 `seq` 发给这条连接（#72）。
+    ///
+    /// 没有连接时不发；控制帧优先队列保证它先于后续数据到达客户端。
+    pub fn checkpoint(&self, sid: &str) -> Result<(), DaemonError> {
         let session = self.get(sid)?;
-        let snapshot = session.vt.lock().expect("vt").snapshot();
-        Ok(snapshot)
+        let vt = session.vt.lock().expect("vt");
+        let output = session.output.lock().expect("output");
+        let seq = output.seq;
+        let alt_screen = vt.alt_screen();
+        let ansi = vt.snapshot();
+        let attachment = output.attachment.clone();
+        drop(output);
+        drop(vt);
+
+        if let Some(attachment) = attachment {
+            attachment
+                .outbound
+                .send_control(&Message::Snapshot(Snapshot {
+                    sid: sid.to_owned(),
+                    seq,
+                    ansi,
+                    alt_screen,
+                }))
+                .ok();
+        }
+        Ok(())
     }
 
     /// 取会话。
@@ -325,10 +410,17 @@ fn pump_output(session: &Session, reader: &mut dyn Read) {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
-        // 服务端状态必须先于转发更新：#71 的快照、#72 的回放都以它为准。
-        session.vt.lock().expect("vt").feed(&buffer[..read]);
-        let seq = session.seq.fetch_add(read as u64, Ordering::SeqCst);
-        let attachment = session.attachment.lock().expect("attachment").clone();
+        // 服务端状态必须先于转发更新，且要与 attach 的「快照 + seq」共用一个原子边界。
+        // 锁顺序固定为 VT → output（attach / checkpoint 同序）。
+        let mut vt = session.vt.lock().expect("vt");
+        vt.feed(&buffer[..read]);
+        let mut output = session.output.lock().expect("output");
+        let seq = output.seq;
+        output.seq += read as u64;
+        output.ring.push(seq, &buffer[..read]);
+        let attachment = output.attachment.clone();
+        drop(output);
+        drop(vt);
         if let Some(attachment) = attachment {
             attachment.outbound.send_data(&Message::Data {
                 handle: attachment.handle,
@@ -336,7 +428,7 @@ fn pump_output(session: &Session, reader: &mut dyn Read) {
                 bytes: buffer[..read].to_vec(),
             });
         }
-        // 没有连接 → 丢弃（#72 的环形缓冲负责留住最近的历史）。
+        // 没有连接 → 只留在环形缓冲里，等 attach 回放（#72）。
     }
 }
 
@@ -360,7 +452,7 @@ fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
 
                     // 只有「表里当前这一代」才上报（迟到 exit 按 incarnationId 丢弃）。
                     if table.remove_if_current(&session.sid, &session.incarnation_id) {
-                        let attachment = session.attachment.lock().expect("attachment").clone();
+                        let attachment = session.output.lock().expect("output").attachment.clone();
                         if let Some(attachment) = attachment {
                             let _ = attachment.outbound.send_control(&Message::SessionExited(
                                 SessionExited {
@@ -513,16 +605,23 @@ mod tests {
     }
 
     fn session(sid: &str, incarnation_id: &str) -> Arc<Session> {
+        session_with_ring(sid, incarnation_id, OUTPUT_RING_BYTES)
+    }
+
+    fn session_with_ring(sid: &str, incarnation_id: &str, ring_bytes: usize) -> Arc<Session> {
         Arc::new(Session {
             sid: sid.to_owned(),
             incarnation_id: incarnation_id.to_owned(),
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
             writer: Mutex::new(Box::new(std::io::sink())),
-            seq: AtomicU64::new(0),
             acked_bytes: AtomicU64::new(0),
             vt: Mutex::new(Vt::new(80, 24)),
-            attachment: Mutex::new(None),
+            output: Mutex::new(OutputState {
+                seq: 0,
+                ring: RingBuffer::new(ring_bytes),
+                attachment: None,
+            }),
         })
     }
 
@@ -547,6 +646,128 @@ mod tests {
         // 同一代只摘一次。
         assert!(table.remove_if_current("s", "inc-2"));
         assert!(!table.remove_if_current("s", "inc-2"));
+    }
+
+    fn outbound() -> Arc<Outbound> {
+        Arc::new(Outbound::new(
+            std::env::temp_dir().join("ageminal-session-replay-test.log"),
+        ))
+    }
+
+    /// 排空出站队列并解出所有消息（attach 的回放 / checkpoint 的 Snapshot 都在里面）。
+    fn drain(outbound: &Arc<Outbound>) -> Vec<Message> {
+        outbound.close();
+        let mut bytes = Vec::new();
+        outbound.run(&mut bytes).expect("outbound writer");
+        let mut cursor = bytes.as_slice();
+        let mut messages = Vec::new();
+        while let Some(frame) = ageminal_protocol::Frame::read_from(&mut cursor).expect("frame") {
+            messages.push(Message::from_frame(&frame).expect("message"));
+        }
+        messages
+    }
+
+    /// #72 验收 1：从 `last_seq` 回放，再接实时流；偏移连续、不重不漏。
+    #[test]
+    fn attach_replays_and_then_continues_live_without_gaps() {
+        let table = SessionTable::new();
+        table.insert(session("s", "inc-1"));
+        PumpFixture::feed(&table, b"0123456789");
+
+        let outbound = outbound();
+        let attached = table.attach("s", 4, 7, outbound.clone()).expect("attach");
+        assert_eq!(attached.from_seq, 4);
+        assert_eq!(attached.replay_end, 10);
+        assert!(attached.snapshot.is_none(), "窗口内不需要快照");
+        assert!(!attached.alt_screen);
+
+        PumpFixture::feed(&table, b"XYZ");
+
+        let mut replay = Vec::new();
+        let mut seqs = Vec::new();
+        for message in drain(&outbound) {
+            if let Message::Data { seq, bytes, .. } = message {
+                seqs.push(seq);
+                replay.extend(bytes);
+            }
+        }
+        assert_eq!(replay, b"456789XYZ");
+        assert_eq!(seqs, vec![4, 10], "回放与实时必须按累计偏移连续");
+    }
+
+    /// #72：窗口外退化为快照；窗口内精确回放；正好在末尾则什么都不用补。
+    #[test]
+    fn attach_falls_back_to_snapshot_outside_the_ring() {
+        let table = SessionTable::new();
+        table.insert(session_with_ring("s", "inc-1", 4));
+        PumpFixture::feed(&table, b"abcdefghij");
+
+        let snapshot_out = outbound();
+        let snapshot = table
+            .attach("s", 2, 1, snapshot_out.clone())
+            .expect("attach");
+        assert!(snapshot.snapshot.is_some(), "旧位置必须退化为快照");
+        assert_eq!(snapshot.from_seq, 10);
+        assert_eq!(snapshot.replay_end, 10);
+        assert!(snapshot.snapshot.as_deref().unwrap().contains("abcdefghij"));
+        assert!(drain(&snapshot_out).is_empty(), "快照路径不应再发旧字节");
+
+        let replay_out = outbound();
+        let replay = table.attach("s", 8, 1, replay_out.clone()).expect("attach");
+        assert!(replay.snapshot.is_none());
+        assert_eq!(replay.from_seq, 8);
+        let bytes: Vec<u8> = drain(&replay_out)
+            .into_iter()
+            .flat_map(|message| match message {
+                Message::Data { bytes, .. } => bytes,
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(bytes, b"ij");
+
+        let current_out = outbound();
+        let current = table
+            .attach("s", 10, 1, current_out.clone())
+            .expect("attach");
+        assert!(current.snapshot.is_none());
+        assert_eq!(current.from_seq, 10);
+        assert_eq!(current.replay_end, 10);
+        assert!(drain(&current_out).is_empty());
+    }
+
+    /// #72 验收 2：断档恢复走 checkpoint，快照与 seq 必须配对。
+    #[test]
+    fn checkpoint_sends_the_snapshot_at_the_current_offset() {
+        let table = SessionTable::new();
+        table.insert(session("s", "inc-1"));
+        PumpFixture::feed(&table, b"hello");
+
+        let outbound = outbound();
+        let attached = table.attach("s", 5, 1, outbound.clone()).expect("attach");
+        assert!(attached.snapshot.is_none());
+        table.checkpoint("s").expect("checkpoint");
+
+        let messages = drain(&outbound);
+        let snapshot = messages
+            .into_iter()
+            .find_map(|message| match message {
+                Message::Snapshot(snapshot) => Some(snapshot),
+                _ => None,
+            })
+            .expect("应收到 Snapshot");
+        assert_eq!(snapshot.seq, 5);
+        assert!(snapshot.ansi.contains("hello"));
+        assert!(!snapshot.alt_screen);
+    }
+
+    struct PumpFixture;
+
+    impl PumpFixture {
+        fn feed(table: &SessionTable, bytes: &[u8]) {
+            let session = table.get("s").expect("session");
+            let mut reader = std::io::Cursor::new(bytes.to_vec());
+            pump_output(&session, &mut reader);
+        }
     }
 
     /// #70：输出线程必须在转发之前把字节喂给服务端 VT 内核。

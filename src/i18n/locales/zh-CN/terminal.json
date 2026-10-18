@@ -5,5 +5,6 @@
   "starting": "正在启动…",
   "error": "终端错误",
   "exited": "会话已结束",
-  "exitedWithCode": "会话已结束（退出码 {code}）"
+  "exitedWithCode": "会话已结束（退出码 {code}）",
+  "reconnected": "—— 已重新连接 ——"
 }

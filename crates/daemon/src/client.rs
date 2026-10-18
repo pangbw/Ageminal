@@ -29,8 +29,8 @@ use std::ptr;
 use std::time::{Duration, Instant};
 
 use ageminal_protocol::{
-    Ack, Attach, Attached, Caps, CreateSession, Detach, Hello, Message, ProtocolError, Resize,
-    SessionCreated, Terminate, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+    Ack, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, Hello, Message, ProtocolError,
+    Resize, SessionCreated, Terminate, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
 };
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
@@ -122,6 +122,16 @@ impl Client {
                 sid: sid.to_owned(),
                 cols: size.cols,
                 rows: size.rows,
+            }),
+        )
+    }
+
+    /// 请求一份当前 checkpoint（无响应；结果看 `Snapshot` 事件）。
+    pub fn checkpoint(&mut self, sid: &str) -> Result<(), DaemonError> {
+        framed::send(
+            &mut self.writer,
+            &Message::Checkpoint(Checkpoint {
+                sid: sid.to_owned(),
             }),
         )
     }

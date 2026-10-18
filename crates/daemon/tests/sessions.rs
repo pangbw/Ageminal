@@ -252,23 +252,36 @@ fn detach_keeps_the_session_alive() {
     collected.wait_for(&mut client, created.handle, "BEFORE", TIMEOUT);
 
     // 断开：不回退出事件，会话还在。
+    let last = collected.bytes(created.handle);
     client.detach("d").expect("detach 是 fire-and-forget");
     client
         .write_input(created.handle, b"echo WHILE-AWAY\r\n")
         .expect("写");
     std::thread::sleep(Duration::from_millis(500));
 
-    // 重新接上：句柄可能变（这里同一连接内复用），从当前进度接实时流。
-    let attached = client.attach("d", 0).expect("attach");
+    // #72：从断开前的 last_seq 精确回放，回放里应包含断开期间产生的输出。
+    let attached = client.attach("d", last).expect("attach");
     assert_eq!(attached.sid, "d");
-    assert!(attached.from_seq > 0, "应该报告从哪儿接上");
+    assert_eq!(attached.from_seq, last, "窗口内应从 lastSeq 之后回放");
+    assert!(
+        attached.snapshot.is_none(),
+        "窗口覆盖 lastSeq 时不该退化为快照"
+    );
+    assert!(attached.replay_end >= last);
+
+    let replayed = collected.wait_for(&mut client, attached.handle, "WHILE-AWAY", TIMEOUT);
+    assert!(replayed.contains("WHILE-AWAY"), "断开期间输出必须被回放");
 
     client
         .write_input(attached.handle, b"echo AFTER\r\n")
         .expect("写");
     collected.wait_for(&mut client, attached.handle, "AFTER", TIMEOUT);
-    // 断开期间产生的输出本票是丢弃的（回放归 #72），但「命令是否在那段时间产生输出」本身是时序相关
-    // 的，所以这里不断言它消失——否则测试会随机失败。
+
+    // lastSeq = 0：新 UI 没有可信屏幕，必须拿快照。
+    let snapshot = client.attach("d", 0).expect("attach with snapshot");
+    assert!(snapshot.snapshot.is_some(), "lastSeq=0 必须回快照");
+    assert_eq!(snapshot.from_seq, snapshot.replay_end);
+    assert_eq!(snapshot.sid, "d");
 
     client.terminate("d", false).expect("terminate");
     wait_for_exit(&mut client, &mut collected, "d", TIMEOUT);

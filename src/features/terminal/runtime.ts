@@ -5,6 +5,7 @@
  * - xterm 实例与宿主 `<div>` **不进 Pinia**（CONTEXT.md §0.2）；本模块用普通 `Map` 持有。
  * - 只有**当前可见**的页签在收流；不可见时向 app-core 发 `set_visible(false)`，由它 `Detach`。
  * - 合批与背压在 Rust 侧（≥16 KiB / ≥8 ms）；这里只按 xterm `write` 回调做累计 ack。
+ * - 切回时 app-core 从 `lastSeq` 回放；窗口外则发 ANSI 快照，前端 `reset()` 后重放（#72）。
  */
 import { Channel } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
@@ -20,7 +21,15 @@ import "@xterm/xterm/css/xterm.css";
 /** app-core 通过同一条 Channel 的 JSON 帧发来的控制消息。 */
 export type TerminalControl =
   | { type: "exit"; code: number | null }
-  | { type: "attached"; fromSeq: number }
+  | {
+      type: "attached";
+      fromSeq: number;
+      replayEnd: number;
+      snapshot: string | null;
+      altScreen: boolean;
+    }
+  | { type: "replayEnd"; altScreen: boolean }
+  | { type: "snapshot"; ansi: string; fromSeq: number; altScreen: boolean }
   | { type: "error"; message: string }
   | { type: "closed"; reason: string };
 
@@ -32,6 +41,8 @@ export type TerminalState = {
   error: string | null;
   exitCode: number | null;
   visible: boolean;
+  /** 刚经历过 attach 回放 / 快照（#72 的可见提示；分隔线本身归 #75）。 */
+  reconnected: boolean;
 };
 
 /** xterm 实例 + 宿主容器；与 UI 状态分开，避免被 Vue 深度代理。 */
@@ -157,6 +168,7 @@ export function show(sid: string, cwd: string): Promise<void> {
     error: null,
     exitCode: null,
     visible: false,
+    reconnected: false,
   };
   states.set(sid, created);
   // 取回 reactive 代理再改字段；直接改刚 set 进去的裸对象不会触发依赖。
@@ -274,6 +286,29 @@ function onMessage(sid: string, message: ArrayBuffer | TerminalControl): void {
   switch (message.type) {
     case "attached":
       resetAck(sid);
+      // 无法精确回放时，daemon 附带 ANSI 快照：先彻底重置 xterm，再用快照重建屏幕。
+      if (message.snapshot !== null) {
+        const entry = ensureTerm(sid);
+        entry.term.reset();
+        entry.term.write(message.snapshot);
+      }
+      break;
+    case "replayEnd":
+      // 不在终端字节流里注入分隔文本：回放边界可能落在转义序列中间，
+      // 注入会把序列截断。这里只给面板一个可见提示；真正的流内分隔归 #75。
+      state.reconnected = true;
+      window.setTimeout(() => {
+        const current = states.get(sid);
+        if (current) current.reconnected = false;
+      }, 2500);
+      break;
+    case "snapshot":
+      resetAck(sid);
+      {
+        const entry = ensureTerm(sid);
+        entry.term.reset();
+        entry.term.write(message.ansi);
+      }
       break;
     case "exit":
       state.status = "exited";
@@ -311,6 +346,7 @@ function resetAck(sid: string): void {
   entry.parsed = 0;
   entry.acked = 0;
 }
+
 
 function setError(sid: string, message: string): void {
   const state = states.get(sid);

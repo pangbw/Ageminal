@@ -215,6 +215,38 @@ pub struct Attached {
     pub handle: u32,
     /// 回放将从哪个 `seq` 开始。
     pub from_seq: u64,
+    /// 实时流从哪个 `seq` 开始；`from_seq..replay_end` 是环形缓冲回放。
+    #[serde(default)]
+    pub replay_end: u64,
+    /// 无法精确回放时附带的 ANSI 快照（#71）；此时 `from_seq == replay_end`。
+    #[serde(default)]
+    pub snapshot: Option<String>,
+    /// 快照 / 当前屏幕是否处于 alt-screen（前端决定是否插分隔线）。
+    #[serde(default)]
+    pub alt_screen: bool,
+}
+
+/// seq 断档：UI→D，请求一份当前 checkpoint。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checkpoint {
+    /// 逻辑会话 id。
+    pub sid: String,
+}
+
+/// checkpoint：D→UI。`seq` 是快照对应的累计字节偏移。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshot {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 快照对应的累计字节偏移；之后的实时数据从 `seq` 继续。
+    pub seq: u64,
+    /// ANSI 快照。
+    pub ansi: String,
+    /// 屏幕是否处于 alt-screen。
+    #[serde(default)]
+    pub alt_screen: bool,
 }
 
 /// 断开：UI→D。**≠ 终止**——会话继续活在 daemon 里（§5.2 的三层退出语义）。
@@ -292,6 +324,10 @@ pub enum Message {
     Attach(Attach),
     /// [`Attached`]。
     Attached(Attached),
+    /// [`Checkpoint`]。
+    Checkpoint(Checkpoint),
+    /// [`Snapshot`]。
+    Snapshot(Snapshot),
     /// [`Detach`]。
     Detach(Detach),
     /// [`Terminate`]。
@@ -335,6 +371,8 @@ impl Message {
             Message::SessionCreated(_) => FrameKind::SessionCreated,
             Message::Attach(_) => FrameKind::Attach,
             Message::Attached(_) => FrameKind::Attached,
+            Message::Checkpoint(_) => FrameKind::Checkpoint,
+            Message::Snapshot(_) => FrameKind::Snapshot,
             Message::Detach(_) => FrameKind::Detach,
             Message::Terminate(_) => FrameKind::Terminate,
             Message::SessionExited(_) => FrameKind::SessionExited,
@@ -360,6 +398,8 @@ impl Message {
             Message::SessionCreated(value) => serde_json::to_vec(value)?,
             Message::Attach(value) => serde_json::to_vec(value)?,
             Message::Attached(value) => serde_json::to_vec(value)?,
+            Message::Checkpoint(value) => serde_json::to_vec(value)?,
+            Message::Snapshot(value) => serde_json::to_vec(value)?,
             Message::Detach(value) => serde_json::to_vec(value)?,
             Message::Terminate(value) => serde_json::to_vec(value)?,
             Message::SessionExited(value) => serde_json::to_vec(value)?,
@@ -400,6 +440,10 @@ impl Message {
             )?)),
             FrameKind::Attach => Ok(Message::Attach(serde_json::from_slice(&frame.payload)?)),
             FrameKind::Attached => Ok(Message::Attached(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Checkpoint => {
+                Ok(Message::Checkpoint(serde_json::from_slice(&frame.payload)?))
+            }
+            FrameKind::Snapshot => Ok(Message::Snapshot(serde_json::from_slice(&frame.payload)?)),
             FrameKind::Detach => Ok(Message::Detach(serde_json::from_slice(&frame.payload)?)),
             FrameKind::Terminate => Ok(Message::Terminate(serde_json::from_slice(&frame.payload)?)),
             FrameKind::SessionExited => Ok(Message::SessionExited(serde_json::from_slice(
@@ -478,6 +522,18 @@ mod tests {
                 sid: "wt/main/shell/1".to_owned(),
                 handle: 3,
                 from_seq: 8,
+                replay_end: 12,
+                snapshot: None,
+                alt_screen: false,
+            }),
+            Message::Checkpoint(Checkpoint {
+                sid: "wt/main/shell/1".to_owned(),
+            }),
+            Message::Snapshot(Snapshot {
+                sid: "wt/main/shell/1".to_owned(),
+                seq: 12,
+                ansi: "\u{1b}[2Jhello".to_owned(),
+                alt_screen: false,
             }),
             Message::Detach(Detach {
                 sid: "wt/main/shell/1".to_owned(),
