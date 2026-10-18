@@ -36,7 +36,7 @@ use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 
 use ageminal_protocol::{
-    Attached, CreateSession, Message, SessionCreated, SessionExited, Snapshot,
+    Attached, CreateSession, Message, SessionCreated, SessionExited, SessionInfo, Snapshot,
 };
 
 use crate::outbound::Outbound;
@@ -135,6 +135,12 @@ struct Session {
     sid: String,
     /// 本次 spawn 的世代。**迟到 exit 靠它判**。
     incarnation_id: String,
+    /// 子进程 pid（运行态元数据；`ListSessions` 与 attach 结果用）。
+    pid: u32,
+    /// spawn 时的工作目录（UI 重开时重建页签）。
+    cwd: String,
+    /// spawn 时间（Unix 毫秒）；用于稳定排序 / 后续启动对账。
+    started_at_ms: u64,
     /// PTY 控制端（resize / terminate）。**可取走**：`terminate` 把 PTY 交给独立线程去关，
     /// 免得 `ClosePseudoConsole` 等 conout 排空时卡住连接线程。
     control: Mutex<Option<Box<dyn Pty>>>,
@@ -211,6 +217,9 @@ impl SessionTable {
         let session = Arc::new(Session {
             sid: request.sid.clone(),
             incarnation_id: incarnation_id.clone(),
+            pid,
+            cwd: request.cwd.clone(),
+            started_at_ms: crate::logging::now_ms(),
             control: Mutex::new(Some(control)),
             exit: Some(exit),
             writer: Mutex::new(writer),
@@ -313,7 +322,40 @@ impl SessionTable {
             replay_end: current,
             snapshot,
             alt_screen,
+            cols: vt.columns() as u16,
+            rows: vt.screen_lines() as u16,
         })
+    }
+
+    /// 当前存活的会话清单（`ListSessions` / UI 重开恢复，#75）。
+    ///
+    /// 表里只有活着的会话——退出 watcher 摘除后会立刻消失；因此**不能用「清单里没有」推断
+    /// 进程从未存在**，启动对账的四象限留给 #78。
+    pub fn list(&self) -> Vec<SessionInfo> {
+        let mut sessions: Vec<SessionInfo> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .values()
+            .map(|session| {
+                // 一次锁拿到两个尺寸：在同一表达式里二次 lock 同一把 std Mutex 会死锁。
+                let vt = session.vt.lock().expect("vt");
+                SessionInfo {
+                    sid: session.sid.clone(),
+                    incarnation_id: session.incarnation_id.clone(),
+                    pid: session.pid,
+                    cwd: session.cwd.clone(),
+                    cols: vt.columns() as u16,
+                    rows: vt.screen_lines() as u16,
+                    started_at_ms: session.started_at_ms,
+                }
+            })
+            .collect();
+        // HashMap 顺序不稳定；按 spawn 时间排序，同一毫秒再按 sid 兜底。
+        sessions.sort_by(|left, right| {
+            (left.started_at_ms, &left.sid).cmp(&(right.started_at_ms, &right.sid))
+        });
+        sessions
     }
 
     /// 断开（**≠ 终止**）：会话继续活着，只是不再往任何连接推输出。
@@ -711,6 +753,9 @@ mod tests {
         Arc::new(Session {
             sid: sid.to_owned(),
             incarnation_id: incarnation_id.to_owned(),
+            pid: 0,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            started_at_ms: 0,
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
             writer: Mutex::new(Box::new(std::io::sink())),

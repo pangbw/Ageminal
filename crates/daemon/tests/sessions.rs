@@ -453,6 +453,69 @@ fn flow_control_pauses_at_high_water_and_resumes_without_loss() {
     assert!(flow_done(&text), "没收到结束标记");
 }
 
+/// #75 验收 1：UI 进程断开后换一条连接，按 `sid` 列会话并 attach 快照，shell 继续跑。
+#[test]
+fn a_new_connection_lists_and_attaches_a_live_session() {
+    let fixture = Fixture::new("reattach");
+    let daemon = Spawned::start(&fixture);
+
+    let mut first = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+    let created = first.create_session(request("reattach")).expect("建会话");
+    first
+        .write_input(created.handle, b"echo BEFORE-REATTACH\r\n")
+        .expect("写");
+    let mut collected = Collected::default();
+    collected.wait_for(&mut first, created.handle, "BEFORE-REATTACH", TIMEOUT);
+
+    // 断开后让 shell 继续产生输出；标记用 %RANDOM%，回显里只有 `%RANDOM%`，不会误命中。
+    first
+        .write_input(
+            created.handle,
+            b"ping -n 3 127.0.0.1 >nul & echo WHILE-AWAY-%RANDOM%\r\n",
+        )
+        .expect("写");
+    drop(first);
+    std::thread::sleep(Duration::from_secs(4));
+
+    let mut second = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+    let sessions = second.list_sessions().expect("listSessions");
+    let info = sessions
+        .iter()
+        .find(|info| info.sid == "reattach")
+        .expect("断开后会话仍应在清单里");
+    assert_eq!(info.incarnation_id, created.incarnation_id);
+    assert_eq!(info.cwd, request("reattach").cwd);
+
+    let attached = second.attach("reattach", 0).expect("attach 快照");
+    assert_eq!(attached.from_seq, attached.replay_end);
+    let snapshot = attached.snapshot.expect("新连接应拿快照");
+    assert!(
+        number_after_marker(&snapshot, "WHILE-AWAY-").is_some(),
+        "快照里应有断开期间产生的输出：{snapshot:?}"
+    );
+
+    second
+        .write_input(attached.handle, b"echo LIVE-AFTER\r\n")
+        .expect("写");
+    collected.wait_for(&mut second, attached.handle, "LIVE-AFTER", TIMEOUT);
+
+    second.terminate("reattach", false).expect("terminate");
+}
+
+/// 标记后**紧跟**的数字（用于区分命令回显里的 `%RANDOM%` 与真正运行结果）。
+fn number_after_marker(text: &str, marker: &str) -> Option<u32> {
+    for (index, _) in text.match_indices(marker) {
+        let digits: String = text[index + marker.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if let Ok(value) = digits.parse() {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// 不存在的会话：daemon 回一条 `Error`，**连接不断**（回完还能继续用）。
 #[test]
 fn unknown_session_is_an_error_not_a_disconnect() {

@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use ageminal_protocol::{
     Ack, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, Hello, Message, ProtocolError,
-    Resize, SessionCreated, Terminate, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+    Resize, SessionCreated, SessionInfo, Terminate, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
 };
 use windows_sys::Win32::Foundation::{
     GetLastError, ERROR_PIPE_BUSY, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
@@ -67,6 +67,19 @@ impl Client {
     pub fn ping(&mut self) -> Result<(), DaemonError> {
         self.request(&Message::Ping, |message| matches!(message, Message::Pong))?;
         Ok(())
+    }
+
+    /// 枚举 daemon 中仍然存活的会话（UI 重开恢复 / 启动对账，#75）。
+    pub fn list_sessions(&mut self) -> Result<Vec<SessionInfo>, DaemonError> {
+        let message = self.request(&Message::ListSessions, |message| {
+            matches!(message, Message::Sessions(_))
+        })?;
+        match message {
+            Message::Sessions(sessions) => Ok(sessions.sessions),
+            other => Err(DaemonError::Unexpected(format!(
+                "期待 sessions，收到 {other:?}"
+            ))),
+        }
     }
 
     /// 建会话。
@@ -271,8 +284,8 @@ pub fn connect(info: &DaemonInfo, timeout: Duration) -> Result<Client, DaemonErr
             caps: Caps::supported(),
             token: info.token.clone(),
             client_instance_id: client_instance_id(),
-            // 握手里的 `resume` 目前**留空**：回放与对账归 #72。接上时这里要改成
-            // 「每条已 attach 会话的 sid + 最后 seq」，服务端按 §6.2 逐条 Attach。
+            // 跨 UI 重开走 `ListSessions` + `Attach(lastSeq = 0)`（#75）：新 UI 没有可信的
+            // lastSeq，先拿快照。`Hello.resume` 预留给后续单连接批量恢复。
             resume: Vec::new(),
         }),
     )?;

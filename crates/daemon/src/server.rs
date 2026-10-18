@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ageminal_protocol::{
-    negotiate, Caps, ErrorCode, Hello, Message, Negotiation, ProtocolError, Welcome,
+    negotiate, Caps, ErrorCode, Hello, Message, Negotiation, ProtocolError, Sessions, Welcome,
     PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
 };
 use windows_sys::Win32::Foundation::{
@@ -391,6 +391,9 @@ fn dispatch(
 ) -> Result<(), DaemonError> {
     match message {
         Message::Ping => outbound.send_control(&Message::Pong),
+        Message::ListSessions => outbound.send_control(&Message::Sessions(Sessions {
+            sessions: sessions.list(),
+        })),
         Message::CreateSession(request) => {
             let handle = handles.handle_for(&request.sid);
             let result = sessions.create(&request, handle, Arc::clone(outbound));

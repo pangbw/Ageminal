@@ -6,7 +6,8 @@
  * - 只有**当前可见**的页签在收流；不可见时向 app-core 发 `set_visible(false)`，由它 `Detach`。
  * - 合批与背压在 Rust 侧（≥16 KiB / ≥8 ms）；这里按 xterm `write` 回调做累计 ack，
  *   每 32 KiB 或空闲 25 ms 发一次（#73 的 256 / 64 KiB 高低水位输入）。
- * - 切回可见时 app-core 发 ANSI 快照，前端 `reset()` 后重放（#73）；精确回放留给显式重连。
+ * - 切回可见时 app-core 发 ANSI 快照，前端 `reset()` 后重放（#73）；UI 重开走
+ *   `terminal_list` + `Attach(0)` 快照，真正的重连在回放边界后写「已重新连接」（#75）。
  */
 import { Channel } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
@@ -15,6 +16,7 @@ import { Terminal, type IDisposable } from "@xterm/xterm";
 import { reactive } from "vue";
 
 import { commands } from "../../bindings";
+import { translate as t } from "../../i18n/translate";
 import { errorMessage, unwrap } from "../../lib/ipc";
 
 import "@xterm/xterm/css/xterm.css";
@@ -28,9 +30,18 @@ export type TerminalControl =
       replayEnd: number;
       snapshot: string | null;
       altScreen: boolean;
+      reconnected: boolean;
+      cols: number;
+      rows: number;
     }
-  | { type: "replayEnd"; altScreen: boolean }
-  | { type: "snapshot"; ansi: string; fromSeq: number; altScreen: boolean }
+  | { type: "replayEnd"; altScreen: boolean; reconnected: boolean }
+  | {
+      type: "snapshot";
+      ansi: string;
+      fromSeq: number;
+      altScreen: boolean;
+      reconnected: boolean;
+    }
   | { type: "error"; message: string }
   | { type: "closed"; reason: string };
 
@@ -60,6 +71,9 @@ type Pooled = {
   epoch: number;
   /** 空闲补 ack 的定时器（高水位暂停后，最后不足 32 KiB 的尾巴也必须确认）。 */
   ackTimer: number | undefined;
+  /** daemon 当前 VT 尺寸；与面板一致时跳过 resize，避免 ConPTY 重绘清掉分隔线。 */
+  serverCols: number;
+  serverRows: number;
 };
 
 /** 一次 ack 的字节阈值（VS Code 档位 32 KiB）。 */
@@ -148,6 +162,8 @@ export function ensureTerm(sid: string): Pooled {
     acked: 0,
     epoch: 0,
     ackTimer: undefined,
+    serverCols: 0,
+    serverRows: 0,
   };
   pooledTerms.set(sid, entry);
   return entry;
@@ -224,17 +240,17 @@ export function hide(sid: string): void {
     .catch((failure: unknown) => console.warn("[terminal] hide failed", failure));
 }
 
-/** 关闭：临时语义是「结束会话」（detach 语义归 #75）。 */
+/** 关闭页签：显式结束会话（运行中页签的二次确认在 tabs/actions.ts）。 */
 export async function close(sid: string): Promise<void> {
   const pending = opening.get(sid);
   if (pending) await pending.catch(() => undefined);
 
-  if (opened.has(sid)) {
-    await commands
-      .terminalClose(sid)
-      .then(unwrap)
-      .catch((failure: unknown) => console.warn("[terminal] close failed", failure));
-  }
+  // 即使本地还没 attach（例如 UI 重开后尚未点开的恢复页签），也要让 daemon 真正终止：
+  // `terminal_close` 按 sid 找会话，不依赖本地 SessionState。
+  await commands
+    .terminalClose(sid)
+    .then(unwrap)
+    .catch((failure: unknown) => console.warn("[terminal] close failed", failure));
 
   const entry = pooledTerms.get(sid);
   if (entry) {
@@ -251,6 +267,12 @@ export async function close(sid: string): Promise<void> {
 /** 同步尺寸（由面板的 ResizeObserver 去抖后调用）。 */
 export function resize(sid: string, cols: number, rows: number): void {
   if (!opened.has(sid)) return;
+  const entry = pooledTerms.get(sid);
+  if (entry && entry.serverCols === cols && entry.serverRows === rows) return;
+  if (entry) {
+    entry.serverCols = cols;
+    entry.serverRows = rows;
+  }
   void commands
     .terminalResize(sid, cols, rows)
     .then(unwrap)
@@ -261,6 +283,9 @@ export function resize(sid: string, cols: number, rows: number): void {
 function open(sid: string, cwd: string): Promise<void> {
   const entry = ensureTerm(sid);
   const { cols, rows } = fitTerm(entry);
+  // CreateSession 与 attach 前的 resize 都使用这个尺寸；首次 resize 可安全跳过。
+  entry.serverCols = cols;
+  entry.serverRows = rows;
   const state = states.get(sid);
   if (state) {
     state.status = "starting";
@@ -304,21 +329,25 @@ function onMessage(sid: string, message: ArrayBuffer | TerminalControl): void {
   switch (message.type) {
     case "attached":
       resetAck(sid);
+      {
+        const entry = pooledTerms.get(sid);
+        if (entry) {
+          entry.serverCols = message.cols;
+          entry.serverRows = message.rows;
+        }
+      }
       // 无法精确回放时，daemon 附带 ANSI 快照：先彻底重置 xterm，再用快照重建屏幕。
       if (message.snapshot !== null) {
         const entry = ensureTerm(sid);
         entry.term.reset();
         entry.term.write(message.snapshot);
+        // 快照路径没有回放数据，重连标记随 Attached 一起来；写快照之后再写分隔线。
+        if (message.reconnected) announceReconnect(sid, message.altScreen);
       }
       break;
     case "replayEnd":
-      // 不在终端字节流里注入分隔文本：回放边界可能落在转义序列中间，
-      // 注入会把序列截断。这里只给面板一个可见提示；真正的流内分隔归 #75。
-      state.reconnected = true;
-      window.setTimeout(() => {
-        const current = states.get(sid);
-        if (current) current.reconnected = false;
-      }, 2500);
+      // 有回放时，边界之后才写分隔线；普通隐藏页签切回不污染历史。
+      if (message.reconnected) announceReconnect(sid, message.altScreen);
       break;
     case "snapshot":
       resetAck(sid);
@@ -326,6 +355,7 @@ function onMessage(sid: string, message: ArrayBuffer | TerminalControl): void {
         const entry = ensureTerm(sid);
         entry.term.reset();
         entry.term.write(message.ansi);
+        if (message.reconnected) announceReconnect(sid, message.altScreen);
       }
       break;
     case "exit":
@@ -395,6 +425,23 @@ function resetAck(sid: string): void {
   entry.acked = 0;
 }
 
+/** 真正的重连：面板提示 + 流内分隔线（alt-screen 只留面板提示）。 */
+function announceReconnect(sid: string, altScreen: boolean): void {
+  const state = states.get(sid);
+  if (!state) return;
+  state.reconnected = true;
+  window.setTimeout(() => {
+    const current = states.get(sid);
+    if (current) current.reconnected = false;
+  }, 2500);
+  // 分隔线直接写进 xterm，不注入 PTY 字节流：回放边界可能落在转义序列中间，
+  // 注入字节流会把它截断；xterm 的写队列保证它排在快照 / 回放之后、实时流之前。
+  if (!altScreen) {
+    pooledTerms
+      .get(sid)
+      ?.term.write(`\r\n\x1b[2m${t("terminal.reconnected")}\x1b[0m\r\n`);
+  }
+}
 
 function setError(sid: string, message: string): void {
   const state = states.get(sid);

@@ -24,6 +24,7 @@ import {
   pendingClose,
   requestClose,
 } from "./features/tabs/actions";
+import { restoreTerminalTabs } from "./features/tabs/restore";
 import TerminalPanel from "./features/terminal/TerminalPanel.vue";
 import { translate as t } from "./i18n/translate";
 import { useFilesStore } from "./stores/files";
@@ -73,6 +74,10 @@ function closeTerminal(): void {
 onMounted(() => {
   void workspace.refresh();
   void preferences.load();
+  // #75：daemon 里存活的会话在新 UI 里重建页签；面板挂载时会 attach 快照。
+  void restoreTerminalTabs().catch((failure: unknown) =>
+    console.warn("[terminal] restore failed", failure),
+  );
 });
 
 /** 「添加项目」的实体：Rust 侧弹系统目录选择器（#32 D1）。 */

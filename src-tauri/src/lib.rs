@@ -140,6 +140,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         files::reveal_in_explorer,
         files::open_terminal,
         terminal::terminal_open,
+        terminal::terminal_list,
         terminal::terminal_write,
         terminal::terminal_resize,
         terminal::terminal_ack,

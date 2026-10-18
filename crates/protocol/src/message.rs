@@ -124,6 +124,37 @@ pub struct Welcome {
     pub daemon_version: String,
 }
 
+/// 一个**存活**会话的元数据（`ListSessions` 用）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 本次 spawn 的世代 id。
+    pub incarnation_id: String,
+    /// 子进程 pid。
+    pub pid: u32,
+    /// 会话的工作目录（用于 UI 重建页签）。
+    pub cwd: String,
+    /// 当前列数。
+    #[serde(default)]
+    pub cols: u16,
+    /// 当前行数。
+    #[serde(default)]
+    pub rows: u16,
+    /// spawn 时间（Unix 毫秒）；用于稳定排序 / 后续对账。
+    #[serde(default)]
+    pub started_at_ms: u64,
+}
+
+/// 会话清单：D→UI（响应 [`Message::ListSessions`]）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Sessions {
+    /// 当前 daemon 中仍然存活的会话。
+    pub sessions: Vec<SessionInfo>,
+}
+
 /// 错误：D→UI。**版本不匹配**也走这里，带明确理由。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -224,6 +255,12 @@ pub struct Attached {
     /// 快照 / 当前屏幕是否处于 alt-screen（前端决定是否插分隔线）。
     #[serde(default)]
     pub alt_screen: bool,
+    /// 快照对应的终端列数（重连时前端据此判断是否需要 resize）。
+    #[serde(default)]
+    pub cols: u16,
+    /// 快照对应的终端行数。
+    #[serde(default)]
+    pub rows: u16,
 }
 
 /// seq 断档：UI→D，请求一份当前 checkpoint。
@@ -316,6 +353,10 @@ pub enum Message {
     Ping,
     /// 心跳应答。
     Pong,
+    /// 枚举存活会话：UI→D（UI 重开时按 sid 重建页签）。
+    ListSessions,
+    /// [`Sessions`]：D→UI。
+    Sessions(Sessions),
     /// [`CreateSession`]。
     CreateSession(CreateSession),
     /// [`SessionCreated`]。
@@ -367,6 +408,8 @@ impl Message {
             Message::Error(_) => FrameKind::Error,
             Message::Ping => FrameKind::Ping,
             Message::Pong => FrameKind::Pong,
+            Message::ListSessions => FrameKind::ListSessions,
+            Message::Sessions(_) => FrameKind::Sessions,
             Message::CreateSession(_) => FrameKind::CreateSession,
             Message::SessionCreated(_) => FrameKind::SessionCreated,
             Message::Attach(_) => FrameKind::Attach,
@@ -394,6 +437,7 @@ impl Message {
             Message::Hello(value) => serde_json::to_vec(value)?,
             Message::Welcome(value) => serde_json::to_vec(value)?,
             Message::Error(value) => serde_json::to_vec(value)?,
+            Message::Sessions(value) => serde_json::to_vec(value)?,
             Message::CreateSession(value) => serde_json::to_vec(value)?,
             Message::SessionCreated(value) => serde_json::to_vec(value)?,
             Message::Attach(value) => serde_json::to_vec(value)?,
@@ -405,8 +449,8 @@ impl Message {
             Message::SessionExited(value) => serde_json::to_vec(value)?,
             Message::Resize(value) => serde_json::to_vec(value)?,
             Message::Ack(value) => serde_json::to_vec(value)?,
-            // 心跳没有负载。
-            Message::Ping | Message::Pong => Vec::new(),
+            // 心跳与枚举请求没有负载。
+            Message::Ping | Message::Pong | Message::ListSessions => Vec::new(),
         };
         Ok(Frame::control(kind, 0, 0, payload))
     }
@@ -432,6 +476,8 @@ impl Message {
             FrameKind::Hello => Ok(Message::Hello(serde_json::from_slice(&frame.payload)?)),
             FrameKind::Welcome => Ok(Message::Welcome(serde_json::from_slice(&frame.payload)?)),
             FrameKind::Error => Ok(Message::Error(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::ListSessions => Ok(Message::ListSessions),
+            FrameKind::Sessions => Ok(Message::Sessions(serde_json::from_slice(&frame.payload)?)),
             FrameKind::CreateSession => Ok(Message::CreateSession(serde_json::from_slice(
                 &frame.payload,
             )?)),
@@ -496,6 +542,18 @@ mod tests {
             }),
             Message::Ping,
             Message::Pong,
+            Message::ListSessions,
+            Message::Sessions(Sessions {
+                sessions: vec![SessionInfo {
+                    sid: "wt/main/shell/1".to_owned(),
+                    incarnation_id: "inc-1".to_owned(),
+                    pid: 4242,
+                    cwd: r"C:\code\wt".to_owned(),
+                    cols: 120,
+                    rows: 30,
+                    started_at_ms: 1_700_000_000_000,
+                }],
+            }),
             Message::CreateSession(CreateSession {
                 sid: "wt/main/shell/1".to_owned(),
                 cwd: r"C:\code\wt".to_owned(),
@@ -525,6 +583,8 @@ mod tests {
                 replay_end: 12,
                 snapshot: None,
                 alt_screen: false,
+                cols: 120,
+                rows: 30,
             }),
             Message::Checkpoint(Checkpoint {
                 sid: "wt/main/shell/1".to_owned(),

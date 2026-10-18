@@ -23,6 +23,7 @@ pub use frame::{fragments, Flags, Frame, FrameError, FrameKind, HEADER_BYTES, MA
 pub use message::{
     negotiate, Ack, Attach, Attached, Caps, Checkpoint, CreateSession, Detach, EnvVar, ErrorCode,
     Hello, Message, MessageError, Negotiation, ProtocolError, Resize, Resume, SessionCreated,
-    SessionExited, Snapshot, Terminate, Welcome, PROTOCOL_VERSION, PROTOCOL_VERSION_MIN,
+    SessionExited, SessionInfo, Sessions, Snapshot, Terminate, Welcome, PROTOCOL_VERSION,
+    PROTOCOL_VERSION_MIN,
 };
 pub use queue::ControlFirstQueue;

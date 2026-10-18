@@ -32,10 +32,13 @@
 //! daemon 按未确认字节做 256 / 64 KiB 高低水位；前端在 xterm `write` 回调里每 32 KiB（或空闲
 //! 25 ms）回一次累计 ack。高水位时 daemon 暂停读 PTY，背压经 ConPTY 传回子进程。
 //!
-//! # 尚未实现（后续票）
-//! - 关闭页签的「detach 而不是 terminate」语义：见 #75；本票的关闭是显式结束会话。
-//! - 流内「—— 已重新连接 ——」分隔线：回放边界可能落在转义序列中间，直接注入会截断序列；
-//!   归 #75 随 attach 语义一起做（当前只在面板标题显示可见提示）。
+//! # 关闭语义（#75）
+//!
+//! - **关闭页签** = 显式 `Terminate`（运行中先二次确认）——它会结束该会话。
+//! - **关闭窗口 / 退出 UI** = app-core 进程结束，连接断开 → daemon `detach_all`；会话继续活，
+//!   下次启动用 `ListSessions` 找回并 `Attach` 快照。
+//! - 重连成功后，前端在回放边界之后写一行「—— 已重新连接 ——」；它由前端直接写进 xterm，
+//!   不注入 PTY 字节流，因此不会截断可能落在边界中间的转义序列。
 
 use std::sync::mpsc;
 use std::time::Duration;
@@ -60,9 +63,14 @@ const MAX_FRAMES_PER_TICK: usize = 64;
 #[cfg(windows)]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 建会话的等待上限；daemon 内部的请求超时是 20 s，这里留一点余量。
+/// 建会话的等待上限。attach 路径可能先 list 再 attach（daemon 每个请求 20 s 上限），
+/// 这里给两次请求留余量。
 #[cfg(windows)]
-const OPEN_TIMEOUT: Duration = Duration::from_secs(22);
+const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// 枚举会话的等待上限：连接等待 + daemon 单次请求的超时都要覆盖。
+#[cfg(windows)]
+const LIST_TIMEOUT: Duration = Duration::from_secs(32);
 
 /// 前端拿到的建会话结果。
 #[derive(Debug, Clone, Serialize, Type)]
@@ -70,6 +78,20 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(22);
 pub struct TerminalOpened {
     /// 逻辑会话 id。
     pub sid: String,
+    /// shell 进程 id。
+    pub pid: u32,
+    /// 本次 spawn 的世代 id。
+    pub incarnation_id: String,
+}
+
+/// 一个存活终端会话的概要（`terminal_list`，UI 重开恢复用）。
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSession {
+    /// 逻辑会话 id。
+    pub sid: String,
+    /// 会话工作目录（用于重建页签）。
+    pub cwd: String,
     /// shell 进程 id。
     pub pid: u32,
     /// 本次 spawn 的世代 id。
@@ -102,14 +124,22 @@ pub enum TerminalControl {
         snapshot: Option<String>,
         /// 是否 alt-screen（前端提示 / #75 分隔线用）。
         alt_screen: bool,
+        /// 是否是真正的重连；快照路径下前端在快照之后直接写分隔线。
+        reconnected: bool,
+        /// daemon 快照对应的列数。
+        cols: u16,
+        /// daemon 快照对应的行数。
+        rows: u16,
     },
-    /// 回放结束、实时流开始；前端据此显示「已重新连接」提示。
+    /// 回放结束、实时流开始；前端据此显示提示并写流内分隔线。
     ///
-    /// 真正写进终端字节流的分隔线归 #75：回放边界可能落在转义序列中间，
-    /// 直接注入会截断序列，必须先有安全的重置点。
+    /// 分隔线由前端直接写进 xterm（不在 PTY 字节流里注入），因此不会截断回放边界。
     ReplayEnd {
-        /// 是否 alt-screen（前端提示 / #75 分隔线用）。
+        /// 是否 alt-screen（alt-screen 下前端不写流内分隔线，只留面板提示）。
         alt_screen: bool,
+        /// 是否是真正的重连（新 UI attach / 断档恢复）；普通隐藏页签切回为 `false`，
+        /// 不往滚屏历史里塞分隔线。
+        reconnected: bool,
     },
     /// 断档恢复：用 checkpoint 快照重建屏幕。
     Snapshot {
@@ -119,6 +149,8 @@ pub enum TerminalControl {
         from_seq: u64,
         /// 是否 alt-screen。
         alt_screen: bool,
+        /// 断档恢复也是重连；前端在快照之后写分隔线。
+        reconnected: bool,
     },
     /// 操作失败（可见给用户）。
     Error {
@@ -224,6 +256,23 @@ impl TerminalService {
         }
     }
 
+    /// 枚举 daemon 中仍然存活的会话（UI 重开恢复，#75）。
+    pub fn list(&self) -> Result<Vec<TerminalSession>, String> {
+        #[cfg(windows)]
+        {
+            let (reply, receiver) = mpsc::sync_channel(1);
+            self.send(Request::List { reply })?;
+            match receiver.recv_timeout(LIST_TIMEOUT) {
+                Ok(result) => result,
+                Err(_) => Err("终端服务在等待 daemon 枚举会话时超时".to_owned()),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Err(windows_only())
+        }
+    }
+
     /// 键盘输入（UTF-8 字节）。
     pub fn input(&self, sid: String, bytes: Vec<u8>) -> Result<(), String> {
         #[cfg(windows)]
@@ -276,7 +325,7 @@ impl TerminalService {
         }
     }
 
-    /// 结束会话（临时语义；关闭页签的 detach 语义归 #75）。
+    /// 显式结束会话（关闭页签）；关窗 / 退出 UI 不走这里，连接断开只 detach。
     pub fn close(&self, sid: String) -> Result<(), String> {
         #[cfg(windows)]
         {
@@ -315,6 +364,18 @@ pub async fn terminal_open(
 ) -> Result<TerminalOpened, String> {
     let service = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || service.open(sid, cwd, cols, rows, on_event))
+        .await
+        .map_err(|error| format!("终端服务不可用：{error}"))?
+}
+
+/// Tauri 命令：枚举存活会话（UI 重开时恢复终端页签，#75）。
+#[tauri::command]
+#[specta::specta]
+pub async fn terminal_list(
+    state: tauri::State<'_, TerminalService>,
+) -> Result<Vec<TerminalSession>, String> {
+    let service = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.list())
         .await
         .map_err(|error| format!("终端服务不可用：{error}"))?
 }
@@ -387,6 +448,9 @@ enum Request {
         rows: u16,
         event: Channel<TerminalEvent>,
         reply: mpsc::SyncSender<Result<TerminalOpened, String>>,
+    },
+    List {
+        reply: mpsc::SyncSender<Result<Vec<TerminalSession>, String>>,
     },
     Input {
         sid: String,
@@ -496,8 +560,9 @@ fn service_loop(receiver: mpsc::Receiver<Request>) {
     };
 
     loop {
-        // 完全空闲（没有连接、没有会话）时阻塞等命令，别每 2 ms 空转。
-        if runtime.client.is_none() && runtime.sessions.is_empty() {
+        // 没有会话时阻塞等命令，别每 2 ms 空转。`terminal_list` 会在启动时先连上 daemon，
+        // 但列表本身没有需要实时消费的事件；等用户真正打开页签时再进轮询。
+        if runtime.sessions.is_empty() {
             match receiver.recv_timeout(Duration::from_millis(100)) {
                 Ok(request) => handle_request(&mut runtime, request),
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -553,6 +618,7 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
             event,
             reply,
         } => open_session(runtime, sid, cwd, cols, rows, event, reply),
+        Request::List { reply } => list_sessions(runtime, reply),
         Request::Input { sid, bytes } => {
             let Some(handle) = runtime.sessions.get(&sid).map(|session| session.handle) else {
                 return;
@@ -592,6 +658,52 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
 }
 
 #[cfg(windows)]
+fn ensure_client(runtime: &mut Runtime) -> Result<(), String> {
+    if runtime.client.is_some() {
+        return Ok(());
+    }
+    match connect() {
+        Ok(client) => {
+            runtime.client = Some(client);
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// 枚举存活会话（`terminal_list`）。
+#[cfg(windows)]
+fn list_sessions(
+    runtime: &mut Runtime,
+    reply: mpsc::SyncSender<Result<Vec<TerminalSession>, String>>,
+) {
+    if let Err(error) = ensure_client(runtime) {
+        let _ = reply.send(Err(error));
+        return;
+    }
+    let result = runtime.client.as_mut().expect("连接已建立").list_sessions();
+    match result {
+        Ok(sessions) => {
+            let _ = reply.send(Ok(sessions
+                .into_iter()
+                .map(|info| TerminalSession {
+                    sid: info.sid,
+                    cwd: info.cwd,
+                    pid: info.pid,
+                    incarnation_id: info.incarnation_id,
+                })
+                .collect()));
+        }
+        Err(error) => {
+            if matches!(error, ageminal_daemon::DaemonError::NotRunning { .. }) {
+                lose_connection(runtime, error.to_string());
+            }
+            let _ = reply.send(Err(error.to_string()));
+        }
+    }
+}
+
+#[cfg(windows)]
 fn open_session(
     runtime: &mut Runtime,
     sid: String,
@@ -601,14 +713,43 @@ fn open_session(
     event: Channel<TerminalEvent>,
     reply: mpsc::SyncSender<Result<TerminalOpened, String>>,
 ) {
-    if runtime.client.is_none() {
-        match connect() {
-            Ok(client) => runtime.client = Some(client),
+    if let Err(error) = ensure_client(runtime) {
+        let _ = reply.send(Err(error));
+        return;
+    }
+
+    // 先看 daemon 里是否已有这个 sid：UI 进程重启 / WebView reload 都必须走 attach，
+    // 不能因为本地 SessionState 没了就新建一个把旧 shell 挤掉。
+    let existing = match runtime.client.as_mut().expect("连接已建立").list_sessions() {
+        Ok(sessions) => sessions.into_iter().find(|info| info.sid == sid),
+        Err(error) => {
+            if matches!(error, ageminal_daemon::DaemonError::NotRunning { .. }) {
+                lose_connection(runtime, error.to_string());
+            }
+            let _ = reply.send(Err(error.to_string()));
+            return;
+        }
+    };
+
+    if let Some(info) = existing {
+        match attach_existing(runtime, &sid, &info, event, cols, rows) {
+            Ok(opened) => {
+                if reply.send(Ok(opened)).is_err() {
+                    // 调用方已走（页签在打开过程中被关）：只 detach，别杀这个已有会话。
+                    if let Some(client) = runtime.client.as_mut() {
+                        let _ = client.detach(&sid);
+                    }
+                    remove_session(runtime, &sid, None);
+                }
+            }
             Err(error) => {
-                let _ = reply.send(Err(error));
-                return;
+                if matches!(error, ageminal_daemon::DaemonError::NotRunning { .. }) {
+                    lose_connection(runtime, error.to_string());
+                }
+                let _ = reply.send(Err(error.to_string()));
             }
         }
+        return;
     }
 
     let request = ageminal_protocol::CreateSession {
@@ -667,6 +808,71 @@ fn open_session(
     }
 }
 
+/// 把一条已有 daemon 会话接回新的 Channel（UI 重开 / WebView reload）。
+///
+/// 新 UI 没有可信的 `lastSeq`，一律 `Attach(sid, 0)` 取当前 ANSI 快照；实时流从快照的
+/// `seq` 继续。快照路径直接在 `Attached{reconnected:true}` 里带上标记，前端写完快照后
+/// 立刻写分隔线；只有有回放时才等 `ReplayEnd` 到边界再写。
+#[cfg(windows)]
+fn attach_existing(
+    runtime: &mut Runtime,
+    sid: &str,
+    info: &ageminal_protocol::SessionInfo,
+    event: Channel<TerminalEvent>,
+    cols: u16,
+    rows: u16,
+) -> Result<TerminalOpened, ageminal_daemon::DaemonError> {
+    let client = runtime.client.as_mut().expect("连接已建立");
+    // 先按新面板尺寸 resize，再取快照：否则 attach 之后的 resize 会让 ConPTY 重绘，
+    // 把刚写进 xterm 的「已重新连接」分隔线清掉。
+    if info.cols != cols || info.rows != rows {
+        client.resize(sid, pty_size(cols, rows))?;
+    }
+    let attached = client.attach(sid, 0)?;
+    let from_seq = attached.from_seq;
+    let replay_end = attached.replay_end;
+    let alt_screen = attached.alt_screen;
+    let has_snapshot = attached.snapshot.is_some();
+
+    let state = SessionState {
+        handle: attached.handle,
+        event,
+        visible: true,
+        batcher: Batcher::default(),
+        last_seq: from_seq,
+        ack_base: from_seq,
+        replay_end,
+        replay_done: has_snapshot || replay_end <= from_seq,
+        awaiting_checkpoint: false,
+        alt_screen,
+    };
+    if let Some(old) = runtime.sessions.insert(sid.to_owned(), state) {
+        runtime.by_handle.remove(&old.handle);
+    }
+    runtime.by_handle.insert(attached.handle, sid.to_owned());
+
+    let session = runtime.sessions.get_mut(sid).expect("刚插入");
+    send_control(
+        session,
+        TerminalControl::Attached {
+            from_seq,
+            replay_end,
+            snapshot: attached.snapshot,
+            alt_screen,
+            reconnected: true,
+            cols: attached.cols,
+            rows: attached.rows,
+        },
+    );
+    // 快照路径已在 Attached 里带上重连标记；有回放时等 forward_data 到边界再发 ReplayEnd。
+
+    Ok(TerminalOpened {
+        sid: sid.to_owned(),
+        pid: info.pid,
+        incarnation_id: info.incarnation_id.clone(),
+    })
+}
+
 #[cfg(windows)]
 fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
     let Some(current) = runtime.sessions.get(sid).map(|session| session.visible) else {
@@ -697,6 +903,8 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
                 let from_seq = attached.from_seq;
                 let replay_end = attached.replay_end;
                 let alt_screen = attached.alt_screen;
+                let cols = attached.cols;
+                let rows = attached.rows;
                 let has_snapshot = attached.snapshot.is_some();
                 if let Some(session) = runtime.sessions.get_mut(sid) {
                     if session.handle != attached.handle {
@@ -719,12 +927,11 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
                             replay_end,
                             snapshot: attached.snapshot,
                             alt_screen,
+                            reconnected: false,
+                            cols,
+                            rows,
                         },
                     );
-                    // 快照路径没有回放数据；Attached 之后立刻分隔，前端先写快照再写分隔行。
-                    if has_snapshot {
-                        send_control(session, TerminalControl::ReplayEnd { alt_screen });
-                    }
                 }
             }
             Err(error) => send_error(runtime, sid, error.to_string()),
@@ -836,6 +1043,7 @@ fn forward_data(session: &mut SessionState, bytes: &mut Vec<u8>) {
                 session,
                 TerminalControl::ReplayEnd {
                     alt_screen: session.alt_screen,
+                    reconnected: true,
                 },
             );
             session.replay_done = true;
@@ -848,6 +1056,7 @@ fn forward_data(session: &mut SessionState, bytes: &mut Vec<u8>) {
                 session,
                 TerminalControl::ReplayEnd {
                     alt_screen: session.alt_screen,
+                    reconnected: true,
                 },
             );
             session.replay_done = true;
@@ -866,6 +1075,7 @@ fn forward_data(session: &mut SessionState, bytes: &mut Vec<u8>) {
             session,
             TerminalControl::ReplayEnd {
                 alt_screen: session.alt_screen,
+                reconnected: true,
             },
         );
         session.replay_done = true;
@@ -913,12 +1123,7 @@ fn handle_message(runtime: &mut Runtime, message: ageminal_protocol::Message) {
                     ansi: snapshot.ansi,
                     from_seq: snapshot.seq,
                     alt_screen: snapshot.alt_screen,
-                },
-            );
-            send_control(
-                session,
-                TerminalControl::ReplayEnd {
-                    alt_screen: snapshot.alt_screen,
+                    reconnected: true,
                 },
             );
         }
@@ -1196,7 +1401,11 @@ mod tests {
         assert!(session.replay_done);
         let messages = messages.lock().expect("messages");
         assert_eq!(control_type(&messages[0]).as_deref(), Some("snapshot"));
-        assert_eq!(control_type(&messages[1]).as_deref(), Some("replayEnd"));
+        assert_eq!(
+            messages.len(),
+            1,
+            "checkpoint 快照已自带重连标记，不再另发 ReplayEnd"
+        );
     }
 
     #[test]

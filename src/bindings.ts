@@ -97,6 +97,8 @@ export const commands = {
 	openTerminal: (root: string, dir: string) => typedError<null, string>(__TAURI_INVOKE("open_terminal", { root, dir })),
 	/**  Tauri 命令：建会话。`async` + `spawn_blocking`，建会话期间不占住 UI 线程。 */
 	terminalOpen: (sid: string, cwd: string, cols: number, rows: number, onEvent: Channel<number>) => typedError<TerminalOpened, string>(__TAURI_INVOKE("terminal_open", { sid, cwd, cols, rows, onEvent })),
+	/**  Tauri 命令：枚举存活会话（UI 重开时恢复终端页签，#75）。 */
+	terminalList: () => typedError<TerminalSession[], string>(__TAURI_INVOKE("terminal_list")),
 	/**  Tauri 命令：键盘输入。`data` 是 xterm `onData` 给的字符串（UTF-8）。 */
 	terminalWrite: (sid: string, data: string) => typedError<null, string>(__TAURI_INVOKE("terminal_write", { sid, data })),
 	/**  Tauri 命令：同步 resize。 */
@@ -212,6 +214,18 @@ export type SearchResultView = {
 export type TerminalOpened = {
 	/**  逻辑会话 id。 */
 	sid: string,
+	/**  shell 进程 id。 */
+	pid: number,
+	/**  本次 spawn 的世代 id。 */
+	incarnationId: string,
+};
+
+/**  一个存活终端会话的概要（`terminal_list`，UI 重开恢复用）。 */
+export type TerminalSession = {
+	/**  逻辑会话 id。 */
+	sid: string,
+	/**  会话工作目录（用于重建页签）。 */
+	cwd: string,
 	/**  shell 进程 id。 */
 	pid: number,
 	/**  本次 spawn 的世代 id。 */
