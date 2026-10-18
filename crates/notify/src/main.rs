@@ -186,7 +186,10 @@ fn run(cli: &Cli) -> Outcome {
         worktree: context.worktree,
     };
     match deliver(&event, &context.pipe, &context.token) {
-        Ok(()) => Outcome::ok(),
+        Ok(()) => {
+            log_success();
+            Outcome::ok()
+        }
         Err(reason) => Outcome::failed(reason),
     }
 }
@@ -300,13 +303,26 @@ fn log_failure(reason: &str) {
 }
 
 fn append_failure(logs: &Path, reason: &str) -> std::io::Result<()> {
+    append_log(logs, "notify-failures.log", reason)
+}
+
+/// 成功投递诊断：`%LOCALAPPDATA%\Ageminal\logs\notify-success.log`（#83）。
+fn log_success() {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let logs = PathBuf::from(local).join("Ageminal").join("logs");
+    let _ = append_log(&logs, "notify-success.log", "delivered");
+}
+
+fn append_log(logs: &Path, name: &str, message: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(logs)?;
-    let path = logs.join("notify-failures.log");
+    let path = logs.join(name);
     if std::fs::metadata(&path)
         .map(|metadata| metadata.len() > FAILURE_LOG_LIMIT)
         .unwrap_or(false)
     {
-        let rotated = logs.join("notify-failures.log.1");
+        let rotated = logs.join(format!("{name}.1"));
         let _ = std::fs::remove_file(&rotated);
         let _ = std::fs::rename(&path, &rotated);
     }
@@ -315,7 +331,7 @@ fn append_failure(logs: &Path, reason: &str) -> std::io::Result<()> {
         .create(true)
         .append(true)
         .open(path)?;
-    writeln!(file, "{} notify: {reason}", now_ms())
+    writeln!(file, "{} notify: {message}", now_ms())
 }
 
 // ───────────────────────────── Windows 投递 ─────────────────────────────
@@ -652,6 +668,20 @@ mod tests {
         if let Ok(error) = error_receiver.try_recv() {
             panic!("假 daemon 报错：{error}");
         }
+    }
+
+    #[test]
+    fn success_log_is_written_under_the_logs_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "ageminal-notify-success-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let logs = root.join("logs");
+        append_log(&logs, "notify-success.log", "delivered").unwrap();
+        let text = std::fs::read_to_string(logs.join("notify-success.log")).unwrap();
+        assert!(text.contains("delivered"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

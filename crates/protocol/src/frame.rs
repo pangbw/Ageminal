@@ -396,7 +396,8 @@ mod tests {
             Just(FrameKind::Data),
             Just(FrameKind::Input),
             Just(FrameKind::Ack),
-            any::<u16>().prop_map(FrameKind::Unknown),
+            // 避开已占用的类型码；否则 "Unknown(0x0001)" 解码成 Hello，往返必然失败。
+            (0x2000u16..=0xFFFF).prop_map(FrameKind::Unknown),
         ]
     }
 

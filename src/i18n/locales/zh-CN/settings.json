@@ -32,5 +32,42 @@
     "color": "图标颜色",
     "save": "保存",
     "hint": "在对应 worktree 目录中启动；命令只填可执行文件，参数填在右侧。"
+  },
+  "integration": {
+    "title": "集成",
+    "subtitle": "默认不写入任何配置；确认 diff 后才会投放。启用后请重启对应 agent 使其生效。",
+    "status": {
+      "notEnabled": "未启用",
+      "enabled": "已启用",
+      "updateAvailable": "集成有更新",
+      "partial": "部分应用",
+      "unsupported": "不受支持"
+    },
+    "action": {
+      "create": "新建",
+      "update": "更新",
+      "unchanged": "无变化"
+    },
+    "count": "{applied}/{total} 个文件已应用",
+    "lastDelivery": "上次投递：{time}",
+    "never": "从未",
+    "failures": "失败 {count} 次",
+    "shimMissing": "ageminal-notify.exe 尚未复制到稳定路径，启用可能失败。",
+    "enable": "查看改动并启用",
+    "reapply": "查看改动并重新应用",
+    "disable": "停用并回滚",
+    "test": "测试投递",
+    "previewTitle": "启用 {name} 集成",
+    "previewHint": "确认后将写入以下文件。已有文件会先创建 .ageminal-backup-[时间戳] 备份；不会修改其它配置键，也不会写 PATH。",
+    "backup": "覆盖前备份：{path}",
+    "noChanges": "内容已是最新。",
+    "cancel": "取消",
+    "confirm": "确认应用",
+    "applied": "{name} 集成已启用；请重启对应 agent 使其生效。",
+    "appliedWithBackups": "{name} 集成已启用。\n备份：\n{paths}\n请重启对应 agent 使其生效。",
+    "disabled": "集成已停用并回滚。",
+    "testOk": "测试投递成功（{time}）。",
+    "testFailed": "测试投递失败：{detail}",
+    "refresh": "刷新"
   }
 }

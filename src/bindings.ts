@@ -26,6 +26,16 @@ export const commands = {
 	getAgents: () => typedError<AgentConfig[], string>(__TAURI_INVOKE("get_agents")),
 	/**  保存一个 agent 的配置，返回合并后的完整清单。 */
 	setAgent: (config: AgentConfig) => typedError<AgentConfig[], string>(__TAURI_INVOKE("set_agent", { config })),
+	/**  列出四个 agent 的集成状态（Codex 显示 unsupported）。 */
+	integrationList: () => typedError<IntegrationView[], string>(__TAURI_INVOKE("integration_list")),
+	/**  应用前 diff 预览。 */
+	integrationPreview: (agentId: string) => typedError<IntegrationPreview, string>(__TAURI_INVOKE("integration_preview", { agentId })),
+	/**  确认应用投放。 */
+	integrationApply: (agentId: string) => typedError<IntegrationApplyResult, string>(__TAURI_INVOKE("integration_apply", { agentId })),
+	/**  停用并回滚。 */
+	integrationDisable: (agentId: string) => typedError<IntegrationApplyResult, string>(__TAURI_INVOKE("integration_disable", { agentId })),
+	/**  测试投递：跑一次真实 shim，验证 pipe / token / daemon 链路。 */
+	integrationTestDelivery: (agentId: string) => typedError<IntegrationTestResult, string>(__TAURI_INVOKE("integration_test_delivery", { agentId })),
 	/**  保存前端页签骨架；未知字段从旧状态按 root / tab id 合并保留。 */
 	saveTabs: (worktrees: TabsWorktree[]) => typedError<null, string>(__TAURI_INVOKE("save_tabs", { worktrees })),
 	/**  启动对账：读持久骨架 + 问 daemon → 纯函数 → 回写 incarnation / 占位 spec。 */
@@ -238,6 +248,110 @@ export type DirListingView = {
 	entries: DirEntryView[],
 	/**  条目数超过单目录上限（5000），已截断。 */
 	truncated: boolean,
+};
+
+/**  diff / 状态里的文件动作。 */
+export type IntegrationAction = 
+/**  新建。 */
+"create" | 
+/**  覆盖更新。 */
+"update" | 
+/**  内容已一致。 */
+"unchanged";
+
+/**  apply / disable 的结果。 */
+export type IntegrationApplyResult = {
+	/**  最新状态。 */
+	view: IntegrationView,
+	/**  本次创建的备份路径。 */
+	backups: string[],
+	/**  部分失败的原因。 */
+	errors: string[],
+	/**  是否建议重启对应 agent。 */
+	restartRequired: boolean,
+};
+
+/**  某个文件的状态投影。 */
+export type IntegrationFileView = {
+	/**  目标绝对路径。 */
+	path: string,
+	/**  当前动作。 */
+	action: IntegrationAction,
+};
+
+/**  应用前 diff 预览。 */
+export type IntegrationPreview = {
+	/**  agent id。 */
+	agentId: string,
+	/**  显示名。 */
+	name: string,
+	/**  是否支持。 */
+	supported: boolean,
+	/**  shim 是否已就绪。 */
+	shimReady: boolean,
+	/**  文件预览。 */
+	files: IntegrationPreviewFile[],
+};
+
+/**  预览中的一个文件。 */
+export type IntegrationPreviewFile = {
+	/**  目标路径。 */
+	path: string,
+	/**  动作。 */
+	action: IntegrationAction,
+	/**  将写入的 unified diff；无变化时为空。 */
+	diff: string,
+	/**  覆盖前会创建的备份路径。 */
+	backup: string | null,
+};
+
+/**  集成状态（设置页五态）。 */
+export type IntegrationStatus = 
+/**  未启用（没有任何 Ageminal 注入物）。 */
+"notEnabled" | 
+/**  全部当前版本。 */
+"enabled" | 
+/**  文件已存在但内容落后 / 路径变化。 */
+"updateAvailable" | 
+/**  只有部分文件成功 / 存在。 */
+"partial" | 
+/**  该 agent 不走本框架（Codex 归 #84，dsh 不支持）。 */
+"unsupported";
+
+/**  「测试投递」诊断。 */
+export type IntegrationTestResult = {
+	/**  shim 是否成功完成握手 + 投递。 */
+	delivered: boolean,
+	/**  诊断文本 / 失败原因。 */
+	detail: string,
+	/**  最新成功时间。 */
+	lastDeliveryMs: number | null,
+	/**  失败日志行数。 */
+	failureCount: number,
+};
+
+/**  一个 agent 的集成状态。 */
+export type IntegrationView = {
+	/**  agent id。 */
+	agentId: string,
+	/**  显示名。 */
+	name: string,
+	/**  五态。 */
+	status: IntegrationStatus,
+	/**  已匹配的文件数。 */
+	applied: number,
+	/**  期望文件总数。 */
+	total: number,
+	/**  shim 是否已复制到稳定路径。 */
+	shimReady: boolean,
+	/**  文件清单。 */
+	files: IntegrationFileView[],
+	/**  最近一次成功投递（Unix 毫秒）。 */
+	lastDeliveryMs: number | null,
+	/**  notify-failures.log 中的失败行数。 */
+	failureCount: number,
+	/**  不支持 / 失败原因。 */
+	detail: string | null,
 };
 
 /**  内容类型（判定顺序的产物，#20 决议）。 */

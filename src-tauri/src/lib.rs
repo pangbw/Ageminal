@@ -15,6 +15,7 @@ pub mod agents;
 pub mod daemon;
 pub mod files;
 pub mod heuristic;
+pub mod integrations;
 pub mod notifications;
 pub mod restore;
 pub mod storage;
@@ -135,6 +136,11 @@ pub fn builder() -> Builder<tauri::Wry> {
         set_confirm_close,
         agents::get_agents,
         agents::set_agent,
+        integrations::integration_list,
+        integrations::integration_preview,
+        integrations::integration_apply,
+        integrations::integration_disable,
+        integrations::integration_test_delivery,
         restore::save_tabs,
         restore::restore_tabs,
         restore::terminal_set_agent_session,
@@ -396,6 +402,8 @@ pub fn run() {
                 }
                 Err(error) => eprintln!("[watch] 初始化失败：{error}"),
             }
+            // 集成注入物使用稳定 shim 路径（#31 / #83）；复制失败只记录，不阻塞启动。
+            integrations::ensure_shim();
             // 守护进程常驻（#64）：后台确保它在跑（复用优先），不阻塞窗口创建。
             daemon::spawn_ensure();
             // 终端服务（#68）：连接 daemon、按会话合批转发到前端 Channel。

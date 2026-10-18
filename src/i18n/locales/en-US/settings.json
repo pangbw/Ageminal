@@ -32,5 +32,42 @@
     "color": "Icon color",
     "save": "Save",
     "hint": "Runs in the worktree directory. Put the executable in Command and flags in Arguments."
+  },
+  "integration": {
+    "title": "Integrations",
+    "subtitle": "Nothing is written until you review the diff and confirm. Restart the agent after enabling.",
+    "status": {
+      "notEnabled": "Not enabled",
+      "enabled": "Enabled",
+      "updateAvailable": "Update available",
+      "partial": "Partially applied",
+      "unsupported": "Unsupported"
+    },
+    "action": {
+      "create": "Create",
+      "update": "Update",
+      "unchanged": "Unchanged"
+    },
+    "count": "{applied}/{total} files applied",
+    "lastDelivery": "Last delivery: {time}",
+    "never": "Never",
+    "failures": "Failures: {count}",
+    "shimMissing": "ageminal-notify.exe is not yet copied to its stable path; enabling may fail.",
+    "enable": "Review and enable",
+    "reapply": "Review and re-apply",
+    "disable": "Disable and roll back",
+    "test": "Test delivery",
+    "previewTitle": "Enable {name} integration",
+    "previewHint": "These files will be written after confirmation. Existing files are backed up as .ageminal-backup-[timestamp] first. No other config keys or PATH are touched.",
+    "backup": "Backup before overwrite: {path}",
+    "noChanges": "Already up to date.",
+    "cancel": "Cancel",
+    "confirm": "Apply",
+    "applied": "{name} integration enabled. Restart the agent to make it effective.",
+    "appliedWithBackups": "{name} integration enabled.\nBackups:\n{paths}\nRestart the agent to make it effective.",
+    "disabled": "Integration disabled and rolled back.",
+    "testOk": "Test delivery succeeded ({time}).",
+    "testFailed": "Test delivery failed: {detail}",
+    "refresh": "Refresh"
   }
 }

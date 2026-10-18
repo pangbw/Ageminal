@@ -118,6 +118,13 @@ fn map_name(raw: &str, payload: &Value) -> Option<Mapping> {
                 }
             }
             "ui_prompt_end" | "ui_prompt_ended" => AgentState::Running,
+            "tool_result" => {
+                if bool_any(payload, &[&["isError"], &["is_error"]]) == Some(true) {
+                    AgentState::Error
+                } else {
+                    AgentState::Running
+                }
+            }
 
             // —— 错误 ——
             "stopfailure"
@@ -214,9 +221,12 @@ fn session_status(payload: &Value) -> Option<AgentState> {
             &["status", "type"],
             &["properties", "type"],
             &["properties", "status", "type"],
+            &["data", "status", "type"],
+            &["data", "type"],
             &["type"],
             &["status"],
             &["properties", "status"],
+            &["data", "status"],
         ],
     )?;
     Some(match status.to_ascii_lowercase().as_str() {
@@ -367,7 +377,17 @@ pub(crate) fn lineage_child(event: &AgentEvent) -> Option<(String, String)> {
     }
     let payload = event.payload.as_ref()?;
     let parent = parent_session_id(payload)?;
-    let child = session_id(payload).or_else(|| text_any(payload, &[&["id"], &["info", "id"]]))?;
+    let child = session_id(payload).or_else(|| {
+        text_any(
+            payload,
+            &[
+                &["id"],
+                &["info", "id"],
+                &["data", "id"],
+                &["properties", "id"],
+            ],
+        )
+    })?;
     Some((child, parent))
 }
 
@@ -401,6 +421,10 @@ fn session_id(payload: &Value) -> Option<String> {
             &["sessionId"],
             &["session_id"],
             &["session", "id"],
+            &["data", "sessionID"],
+            &["data", "sessionId"],
+            &["properties", "sessionID"],
+            &["properties", "sessionId"],
         ],
     )
 }
@@ -417,6 +441,12 @@ fn parent_session_id(payload: &Value) -> Option<String> {
             &["info", "parentID"],
             &["info", "parentId"],
             &["info", "parent_id"],
+            &["data", "parentID"],
+            &["data", "parentId"],
+            &["data", "parent_id"],
+            &["properties", "parentID"],
+            &["properties", "parentId"],
+            &["properties", "parent_id"],
         ],
     )
 }
