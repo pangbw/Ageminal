@@ -384,7 +384,12 @@ pub fn run_cli() -> bool {
 
 pub fn run() {
     logging::init();
-    tauri::Builder::default()
+    let app_builder = tauri::Builder::default();
+    #[cfg(feature = "e2e")]
+    let app_builder = app_builder
+        .plugin(tauri_plugin_wdio::init())
+        .plugin(tauri_plugin_wdio_webdriver::init());
+    app_builder
         // 必须最先注册：重复启动时在进入 setup / 拉起 daemon 之前就聚焦已有窗口并退出。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);

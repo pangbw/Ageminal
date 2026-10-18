@@ -1,0 +1,11 @@
+{
+  "app": {
+    "withGlobalTauri": true,
+    "security": {
+      "capabilities": ["default", "e2e"]
+    }
+  },
+  "build": {
+    "beforeBuildCommand": "pnpm build:e2e"
+  }
+}

@@ -16,6 +16,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [features]
 # 仅供本地生成 TypeScript 绑定使用；默认关闭，避免被打进安装包。
 bindgen = []
+# E2E 构建：注册 WDIO embedded WebDriver（生产构建不注册）。
+e2e = []
 
 [[bin]]
 name = "export_bindings"
@@ -53,6 +55,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
 sysinfo = "0.39.6"
+# E2E 测试插件；只在 `--features e2e` 时注册，见 lib.rs。
+tauri-plugin-wdio = "1.5.0"
+tauri-plugin-wdio-webdriver = "1.5.0"
 
 [target."cfg(windows)".dependencies]
 clipboard-win = "5.4.1"

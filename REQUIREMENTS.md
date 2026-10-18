@@ -616,7 +616,7 @@ Ageminal/
 | 属性 / 快照 | `proptest` + `insta` | 协议帧**往返性质**、ANSI 快照、迁移链幂等 |
 | 前端单元 / 组件 | `vitest` + `@vue/test-utils` + `happy-dom` | store、组件、**i18n key 完整性 + 中文字面量检查** |
 | 前端集成 | WebdriverIO **browser mode** | 前端在 Chrome 跑、`invoke()` 被 mock |
-| **e2e（真应用）** | WebdriverIO + `@wdio/tauri-service`（**embedded** provider，Windows 可用、无需外部 driver） | **仅冒烟**：启动 + 开终端页签 + 关窗 |
+| **e2e（真应用）** ✅（#92） | WebdriverIO + `@wdio/tauri-service`（**embedded** provider，Windows 可用、无需外部 driver） | **仅冒烟**：启动 + 开终端页签 + 关窗；`pnpm e2e:build && pnpm e2e`，CI `e2e.yml` 在 main / tag 运行 |
 | **VT 一致性** | **#42 专用夹具** ✅ | daemon 快照 → xterm.js **逐格** parity（真机达标：0 差异；哑管道基线同 fixture 下 30 行全错） |
 
 - **架构约束** ✅：**`crates/daemon` 不依赖 tauri**（才能脱离 UI 独立测试）；协议与纯逻辑**跨平台可测**；**PTY/ConPTY 测试标 `#[cfg(windows)]`**。

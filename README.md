@@ -46,6 +46,8 @@ pnpm test:unit        # 前端单元测试（vitest，含 i18n 两道门禁）
 pnpm build            # 前端构建（tauri.conf.json 的 beforeBuildCommand）
 pnpm sidecars         # 构建 daemon / notify 并复制为 Tauri sidecar 命名
 pnpm bindings         # 由 Rust 侧重新生成 src/bindings.ts
+pnpm e2e:build        # 构建带 WDIO embedded provider 的 debug 应用（Windows）
+pnpm e2e              # WebdriverIO 真应用冒烟：启动 / 开终端 / 关窗
 ```
 
 `pnpm check` 是**平台感知**的：Windows 上检查整个 workspace 与绑定一致性；

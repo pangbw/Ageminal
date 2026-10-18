@@ -17,6 +17,7 @@ const ALLOW = new Set([
   "BSD-3-Clause",
   "BlueOak-1.0.0",
   "CC-BY-4.0",
+  "CC-BY-3.0",
   "CC0-1.0",
   "ISC",
   "MIT",
@@ -25,6 +26,16 @@ const ALLOW = new Set([
   "Python-2.0",
   "Unlicense",
   "Zlib",
+]);
+
+/**
+ * 少数包的元数据不完整 / 双许可，但人工核验后可按宽松许可使用：
+ * - css-value 0.0.1：package.json 无 license 字段，Readme 明确 MIT；
+ * - jszip：MIT OR GPL-3.0-or-later，本项目按 MIT 使用。
+ */
+const PACKAGE_LICENSE_OVERRIDES = new Map([
+  ["css-value@0.0.1", "MIT"],
+  ["jszip@3.10.2", "MIT"],
 ]);
 
 /** 直接拒绝的许可（含 LGPL —— 比 §20 的「GPL/AGPL/SSPL」更严，杜绝一切著佐权）。 */
@@ -68,10 +79,12 @@ const violations = [];
 let total = 0;
 for (const [license, packages] of Object.entries(report)) {
   total += packages.length;
-  const offenders = offendingTokens(license);
-  if (offenders.length > 0) {
-    for (const pkg of packages) {
-      violations.push(`${pkg.name}@${pkg.versions?.join(",") ?? "?"} → ${license}`);
+  for (const pkg of packages) {
+    const versions = pkg.versions?.join(",") ?? "?";
+    const override = PACKAGE_LICENSE_OVERRIDES.get(`${pkg.name}@${versions}`);
+    const offenders = offendingTokens(override ?? license);
+    if (offenders.length > 0) {
+      violations.push(`${pkg.name}@${versions} → ${license}`);
     }
   }
 }

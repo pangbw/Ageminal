@@ -9,6 +9,11 @@ async function bootstrap() {
   // 语言定下来之前先别挂载：否则会闪一屏别的语言。
   applyLocale(await resolveInitialLocale());
 
+  // E2E 构建才加载 WDIO 前端插件；生产包不引入。
+  if (import.meta.env.VITE_E2E === "1") {
+    await import("@wdio/tauri-plugin");
+  }
+
   createApp(App).use(createPinia()).use(i18n).mount("#app");
 }
 
