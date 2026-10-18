@@ -969,6 +969,58 @@ fn failure_count(local: &Path) -> u32 {
         .unwrap_or(0)
 }
 
+/// 卸载钩子：只清理仍带 Ageminal 标记的集成；用户改过的文件保持不动。
+///
+/// 不删除 `%LOCALAPPDATA%\Ageminal` 用户数据；只清理 agent 全局注入物。
+pub fn uninstall_cleanup() {
+    let Ok(context) = IntegrationContext::load() else {
+        return;
+    };
+    cleanup_marked(&context);
+}
+
+fn cleanup_marked(context: &IntegrationContext) {
+    let claude_root = context.home.join(".claude").join("skills").join("ageminal");
+    let manifest = claude_root.join(".claude-plugin").join("plugin.json");
+    if fs::read_to_string(&manifest)
+        .map(|content| content.contains(GENERATED_MARKER))
+        .unwrap_or(false)
+    {
+        let _ = fs::remove_dir_all(&claude_root);
+    }
+
+    for (path, _) in context
+        .files("opencode")
+        .into_iter()
+        .chain(context.files("pi"))
+    {
+        if fs::read_to_string(&path)
+            .map(|content| content.contains(GENERATED_MARKER))
+            .unwrap_or(false)
+        {
+            let _ = fs::remove_file(&path);
+            if let Some(parent) = path.parent() {
+                let _ = fs::remove_dir(parent);
+            }
+        }
+    }
+
+    let codex = context.codex_path();
+    if let Ok(old) = fs::read_to_string(&codex) {
+        if let Some(span) = find_notify_span(&old) {
+            let block = &old[span.start..span.value_end];
+            if block.contains("ageminal-notify") {
+                let updated = codex_remove(&old);
+                if updated.trim().is_empty() {
+                    let _ = fs::remove_file(&codex);
+                } else {
+                    let _ = fs::write(&codex, updated);
+                }
+            }
+        }
+    }
+}
+
 /// 应用启动时把 sidecar 复制到稳定路径；失败只记录，不影响启动。
 pub fn ensure_shim() {
     match IntegrationContext::load().and_then(|context| context.ensure_shim()) {
@@ -1224,6 +1276,38 @@ mod tests {
         context.disable("codex").unwrap();
         assert!(!context.codex_path().exists());
         assert_eq!(context.view("codex").status, IntegrationStatus::NotEnabled);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn uninstall_cleanup_only_removes_marked_integrations() {
+        let (context, root) = fixture();
+        context.apply("claude").unwrap();
+        context.apply("opencode").unwrap();
+        let pi = context.files("pi").remove(0).0;
+        fs::create_dir_all(pi.parent().unwrap()).unwrap();
+        fs::write(&pi, "// user-owned extension\n").unwrap();
+        let codex = context.codex_path();
+        fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        fs::write(&codex, "# keep\nmodel = \"gpt-5\"\n").unwrap();
+        context.apply("codex").unwrap();
+
+        cleanup_marked(&context);
+
+        let claude = context.home.join(".claude").join("skills").join("ageminal");
+        assert!(!claude.exists(), "带标记的 Claude 插件目录应清理");
+        assert!(
+            !context.files("opencode")[0].0.exists(),
+            "带标记的 opencode 文件应清理"
+        );
+        assert_eq!(
+            fs::read_to_string(&pi).unwrap(),
+            "// user-owned extension\n",
+            "用户改过的 pi 文件不能删"
+        );
+        let codex_text = fs::read_to_string(&codex).unwrap();
+        assert!(!codex_text.contains("notify"));
+        assert!(codex_text.contains("model = \"gpt-5\""));
         let _ = fs::remove_dir_all(root);
     }
 

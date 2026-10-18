@@ -19,6 +19,17 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // 卸载钩子：不写 stdout，优雅结束会话后退出。
+    if args.iter().any(|arg| arg == "--shutdown") {
+        #[cfg(windows)]
+        {
+            if let Ok(config) = ageminal_daemon::paths::config_dir() {
+                let _ = ageminal_daemon::launch::shutdown_running(&config);
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
+
     serve(&args)
 }
 

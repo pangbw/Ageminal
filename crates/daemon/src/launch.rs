@@ -108,6 +108,23 @@ pub fn terminate_process(info: &DaemonInfo) -> bool {
     terminated
 }
 
+/// 优雅结束正在运行的 daemon 及其所有会话（卸载钩子用）。
+///
+/// 没有 daemon / 已停止都视为成功；超时后兜底终止进程，保证卸载流程不悬挂。
+pub fn shutdown_running(config_dir: &Path) -> Result<(), DaemonError> {
+    let Some(info) = try_reuse(config_dir) else {
+        return Ok(());
+    };
+    let mut client = client::connect(&info, Duration::from_secs(3))?;
+    client.shutdown()?;
+    drop(client);
+    if !wait_stopped(&info, Duration::from_secs(10)) {
+        let _ = terminate_process(&info);
+        let _ = wait_stopped(&info, Duration::from_secs(3));
+    }
+    Ok(())
+}
+
 /// 在 `timeout` 内反复探测「有没有在线 daemon」。**`timeout` 为 0 也会先试一次**。
 ///
 /// 两处用它：拉起后等就绪（[`wait_ready`]），以及 daemon 侧区分「单例冲突」与「真的建不起管道」

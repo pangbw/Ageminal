@@ -373,6 +373,15 @@ fn window_position_visible(
 
 /// 启动 Tauri 应用。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 无窗口 CLI 模式（卸载钩子等）；返回 `true` 时已处理并应直接退出。
+pub fn run_cli() -> bool {
+    if std::env::args().any(|arg| arg == "--uninstall-cleanup") {
+        integrations::uninstall_cleanup();
+        return true;
+    }
+    false
+}
+
 pub fn run() {
     logging::init();
     tauri::Builder::default()

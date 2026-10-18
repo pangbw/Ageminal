@@ -2,5 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    if ageminal_desktop_lib::run_cli() {
+        return;
+    }
     ageminal_desktop_lib::run()
 }

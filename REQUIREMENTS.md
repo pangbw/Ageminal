@@ -643,10 +643,10 @@ Ageminal/
 
 ## 22. 打包与分发 ✅（G7 #37）
 
-- **安装器 = NSIS**，**per-user（`currentUser`）** → 装到 `%LOCALAPPDATA%\Programs\Ageminal`，**免 UAC**；**不写 PATH、不做开机自启**（安装器只做标准应用安装，E2 #23）。
+- **安装器 = NSIS** ✅（#90），**per-user（`currentUser`）** → 装到 `%LOCALAPPDATA%\Programs\Ageminal`，**免 UAC**；**不写 PATH、不做开机自启**（安装器只做标准应用安装，E2 #23）。自定义 NSIS 模板仅改默认安装目录；`nsis.installerHooks` 提供卸载钩子。
 - **WebView2 引导 = `embedBootstrapper`**（约 1.5 MB 嵌入安装器，缺失时联网下载 runtime）；完全离线的 `offlineInstaller` 🕓。
 - **sidecar 与首次运行** ✅（#89）：`externalBin` 随包 → 首次运行把 daemon 复制到 `daemon-host\<version>\ageminal-daemon.exe`（保留最近 2 版），shim 复制到稳定 `%LOCALAPPDATA%\Ageminal\bin\`；app 从版本镜像拉起，hook 配置跨更新无需重写；安装器创建 **Start Menu 快捷方式**（也是通知 AUMID 的前提）。
-- **卸载**：NSIS `installerHooks` **先优雅结束守护进程与会话**、**清理我们写入的 agent 全局集成**（**仅在内容仍带我们的标记时**移除），再删应用文件；**保留用户数据** `%LOCALAPPDATA%\Ageminal\`（文档说明）。
+- **卸载** ✅（#90）：`NSIS_HOOK_PREUNINSTALL` 先执行 `ageminal-daemon.exe --shutdown`（协议 `Shutdown`，优雅终止所有会话并等待 daemon 退出），再执行 `ageminal-desktop.exe --uninstall-cleanup`（**仅在内容仍带 Ageminal 标记时**清理 Claude/opencode/pi/Codex 注入物），然后删除应用文件；**保留用户数据** `%LOCALAPPDATA%\Ageminal\`。
 - **更新 = 手动**（§12 不接 updater）：只有 **stable 通道**，下载新 NSIS **覆盖安装**；**旧 daemon 继续跑**（`daemon-host\<版本>\` 搬迁正为此），新 app 启动按版本拉起新镜像（保留 2 版）；「关于」页显示版本，「检查更新」🕓。
 - **产物**：NSIS 安装器 + **`SHA256SUMS`**（G4 #34）；**MVP 不签名**，发布后申请 SignPath Foundation。
 - **「关于 / 许可」页**：字体 OFL（C3 #11）+ codicon CC-BY 署名（G5 #35）+ 依赖许可清单。
