@@ -65,6 +65,7 @@ export function createBindingsMock() {
       revealInExplorer: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       openTerminal: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       terminalList: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
+      agentStatuses: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
       setWatchedFiles: vi.fn().mockResolvedValue({ status: "ok", data: null }),
     },
   };

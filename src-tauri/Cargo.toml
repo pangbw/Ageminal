@@ -42,6 +42,7 @@ specta = { version = "=2.0.0-rc.25", features = ["derive"] }
 specta-typescript = "0.0.12"
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 tauri-plugin-os = "2.0.0-rc.1"
+tauri-plugin-notification = "2"
 # 目录选择器（#32 D1）；**只从 Rust 侧调用**（D3），capabilities 不放开给它。
 tauri-plugin-dialog = "2"
 # 外部打开（#60 D6 #20）；同样只从 Rust 侧调用，capabilities 不放开 plugin:opener。

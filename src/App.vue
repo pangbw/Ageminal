@@ -31,6 +31,7 @@ import TerminalPanel from "./features/terminal/TerminalPanel.vue";
 import { translate as t } from "./i18n/translate";
 import { unwrap } from "./lib/ipc";
 import { isSameOrUnder } from "./lib/path";
+import { useAgentStatusStore } from "./stores/agentStatus";
 import { useAgentsStore } from "./stores/agents";
 import { useFilesStore } from "./stores/files";
 import { usePreferencesStore } from "./stores/preferences";
@@ -44,6 +45,7 @@ const files = useFilesStore();
 const tabs = useTabsStore();
 const preferences = usePreferencesStore();
 const agents = useAgentsStore();
+const agentStatus = useAgentStatusStore();
 
 // 窗口标题跟着激活 worktree 走（§6）。
 useWindowTitle();
@@ -80,7 +82,7 @@ function closeTerminal(): void {
 /** 启动顺序：工作区快照 → 设置 / agent 配置 → 页签对账。 */
 async function bootstrap(): Promise<void> {
   await workspace.refresh();
-  await Promise.all([preferences.load(), agents.ensureLoaded()]);
+  await Promise.all([preferences.load(), agents.ensureLoaded(), agentStatus.start()]);
   // #78：Rust 会先按 state.json + daemon ListSessions 做四象限对账，再把骨架交回这里。
   try {
     await restoreWorkspaceTabs();
@@ -131,7 +133,10 @@ watch(
   { deep: true },
 );
 
-onBeforeUnmount(() => clearTimeout(persistTimer));
+onBeforeUnmount(() => {
+  clearTimeout(persistTimer);
+  agentStatus.stop();
+});
 
 /** 「添加项目」的实体：Rust 侧弹系统目录选择器（#32 D1）。 */
 function addProject(): void {

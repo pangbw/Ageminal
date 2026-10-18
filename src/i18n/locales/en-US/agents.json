@@ -1,5 +1,16 @@
 {
   "menuTitle": "Start an agent",
   "launch": "Start {name}",
-  "openMenu": "Start an agent"
+  "openMenu": "Start an agent",
+  "status": {
+    "running": "Running",
+    "waiting": "Waiting for input",
+    "permission": "Permission required",
+    "done": "Done",
+    "idle": "Idle",
+    "error": "Error",
+    "exited": "Exited",
+    "degraded": "Status incomplete",
+    "degradedTitle": "{state} (status incomplete)"
+  }
 }

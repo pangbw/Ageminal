@@ -15,6 +15,7 @@ pub mod agents;
 pub mod daemon;
 pub mod files;
 pub mod heuristic;
+pub mod notifications;
 pub mod restore;
 pub mod storage;
 pub mod terminal;
@@ -336,6 +337,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }))
+        .plugin(tauri_plugin_notification::init())
         // 目录选择器只从 Rust 侧调用（#32 D3）；capabilities 不放开它的命令。
         .plugin(tauri_plugin_dialog::init())
         // 外部打开同样只从 Rust 侧调用（#60 D6 #20）；capabilities 不放开 plugin:opener。

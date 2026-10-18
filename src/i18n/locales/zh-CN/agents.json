@@ -1,5 +1,16 @@
 {
   "menuTitle": "启动 Agent",
   "launch": "启动 {name}",
-  "openMenu": "启动 Agent"
+  "openMenu": "启动 Agent",
+  "status": {
+    "running": "运行中",
+    "waiting": "等待输入",
+    "permission": "需要授权",
+    "done": "已完成",
+    "idle": "空闲",
+    "error": "出错",
+    "exited": "已退出",
+    "degraded": "状态不完整",
+    "degradedTitle": "{state}（状态不完整）"
+  }
 }

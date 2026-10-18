@@ -10,6 +10,8 @@ vi.mock("../../terminal/runtime", () => ({
 
 import { project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
 import { localeString } from "../../../i18n/__tests__/locale-files";
+import type { AgentStatusView } from "../../../bindings";
+import { useAgentStatusStore } from "../../../stores/agentStatus";
 import { useTabsStore } from "../../../stores/tabs";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import TabStrip from "../TabStrip.vue";
@@ -82,6 +84,35 @@ describe("TabStrip", () => {
       "three.ts",
     ]);
     expect(wrapper.get(".tab--active").text()).toBe("two.ts");
+  });
+
+  it("shows the per-tab agent status dot", async () => {
+    const { tabs, wrapper } = mountStrip();
+    const sid = "terminal:/ws/a:agent";
+    tabs.openTerminal(ROOT, sid, ROOT, "Claude Code", {
+      agentId: "claude",
+      agentColor: "#d97757",
+    });
+    const status: AgentStatusView = {
+      sid,
+      agent: "claude",
+      incarnationId: "inc-1",
+      state: "permission",
+      source: "native",
+      degraded: false,
+      timestampMs: 1,
+      seq: 0,
+      exitCode: null,
+      reason: null,
+    };
+    useAgentStatusStore().apply(status);
+    await nextTick();
+
+    const dot = wrapper.get(".tab__status");
+    expect(dot.classes()).toContain("tab__status--attention");
+    expect(dot.attributes("aria-label")).toBe(
+      localeString("zh-CN", "agents", ["status", "permission"]),
+    );
   });
 
   it("closes a preview from the close button", async () => {

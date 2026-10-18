@@ -3,8 +3,8 @@
  * 左侧项目树（REQUIREMENTS.md §6 / §4.1）。
  *
  * 只渲染**已加入左侧栏**的 worktree（`sidebarProjects`）；一个都没加入的项目整组不出现。
- * 行显示名称 + 分支 + 标记（bare / locked / 已失效）。**agent 状态列**归 #80 的统一状态，
- * 那是运行期事件、不在工作区快照里。
+ * 行显示名称 + 分支 + 标记（bare / locked / 已失效）与 agent 状态彩点（#82）。
+ * 状态是运行期事件、不在工作区快照里；本组件只投影 `stores/agentStatus`。
  */
 import IconAdd from "~icons/codicon/add";
 import IconChevronDown from "~icons/codicon/chevron-down";
@@ -12,15 +12,56 @@ import IconGitBranch from "~icons/codicon/git-branch";
 import IconLock from "~icons/codicon/lock";
 import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 
+import type { AgentStatusView } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
+import { useAgentStatusStore } from "../../stores/agentStatus";
+import { useTabsStore } from "../../stores/tabs";
 import { useWorkspaceStore } from "../../stores/workspace";
+import {
+  aggregateStatus,
+  statusLabelKey,
+  statusTone,
+} from "../agents/status";
 import AgentMenu from "../agents/AgentMenu.vue";
 import EmptyState from "../shell/EmptyState.vue";
 import { openTerminalTab } from "../tabs/actions";
 
 const workspace = useWorkspaceStore();
+const tabs = useTabsStore();
+const agentStatus = useAgentStatusStore();
+
+/** worktree 根 → 该组终端页签里最需要展示的一条状态。 */
+const statusByRoot = computed<Record<string, AgentStatusView | null>>(() => {
+  const result: Record<string, AgentStatusView | null> = {};
+  for (const project of workspace.sidebarProjects) {
+    for (const worktree of project.worktrees) {
+      const statuses = tabs
+        .tabsFor(worktree.path)
+        .filter((tab) => tab.kind === "terminal")
+        .map((tab) => agentStatus.statusFor(tab.sid));
+      result[worktree.path] = aggregateStatus(statuses);
+    }
+  }
+  return result;
+});
+
+function statusOf(path: string): AgentStatusView | null {
+  return statusByRoot.value[path] ?? null;
+}
+
+function statusToneOf(path: string): string {
+  const status = statusOf(path);
+  return status === null ? "" : `row__status--${statusTone(status.state)}`;
+}
+
+function statusTitleOf(path: string): string {
+  const status = statusOf(path);
+  if (status === null) return "";
+  const label = t(statusLabelKey(status.state));
+  return status.degraded ? t("agents.status.degradedTitle", { state: label }) : label;
+}
 
 /** 当前打开的 ✦ 菜单；固定定位，避免被侧栏滚动容器裁切。 */
 const agentMenu = ref<{ root: string; x: number; y: number } | null>(null);
@@ -137,6 +178,17 @@ function openTerminal(path: string): void {
                   {{ worktree.branchLabel }}
                 </span>
               </span>
+              <span
+                v-if="statusOf(worktree.path)"
+                class="row__status"
+                :class="[
+                  statusToneOf(worktree.path),
+                  { 'row__status--degraded': statusOf(worktree.path)?.degraded },
+                ]"
+                :title="statusTitleOf(worktree.path)"
+                :aria-label="statusTitleOf(worktree.path)"
+                role="img"
+              />
               <span
                 v-if="worktree.bare"
                 class="row__tag"
@@ -337,6 +389,45 @@ function openTerminal(path: string): void {
   color: var(--color-faint);
   font-size: var(--font-size-xs);
   white-space: nowrap;
+}
+
+.row__status {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.row__status--running {
+  color: var(--color-accent);
+}
+
+.row__status--attention {
+  color: var(--color-yellow);
+}
+
+.row__status--done {
+  color: var(--color-green);
+}
+
+.row__status--error {
+  color: var(--color-red);
+}
+
+.row__status--idle {
+  color: var(--color-muted);
+}
+
+.row__status--exited {
+  color: var(--color-faint);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.row__status--degraded {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .row__tag {

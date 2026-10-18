@@ -3,7 +3,10 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fail, ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
+import type { AgentStatusView } from "../../../bindings";
 import { commands } from "../../../bindings";
+import { localeString } from "../../../i18n/__tests__/locale-files";
+import { useAgentStatusStore } from "../../../stores/agentStatus";
 import { useTabsStore } from "../../../stores/tabs";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import ProjectTree from "../ProjectTree.vue";
@@ -103,6 +106,37 @@ describe("ProjectTree", () => {
       agentId: "claude",
       agentColor: "#d97757",
     });
+  });
+
+  it("shows the aggregate agent status and marks degraded snapshots", async () => {
+    const { wrapper, tabs } = mountTree();
+    const sid = "terminal:/ws/a:1";
+    tabs.openTerminal("/ws/a", sid, "/ws/a", "Claude Code", {
+      agentId: "claude",
+      agentColor: "#d97757",
+    });
+    const statuses = useAgentStatusStore();
+    const status: AgentStatusView = {
+      sid,
+      agent: "claude",
+      incarnationId: "inc-1",
+      state: "waiting",
+      source: "heuristic",
+      degraded: true,
+      timestampMs: 1,
+      seq: 0,
+      exitCode: null,
+      reason: null,
+    };
+    statuses.apply(status);
+    await wrapper.vm.$nextTick();
+
+    const dot = wrapper.get(".row__status");
+    expect(dot.classes()).toContain("row__status--attention");
+    expect(dot.classes()).toContain("row__status--degraded");
+    expect(dot.attributes("aria-label")).toContain(
+      localeString("zh-CN", "agents", ["status", "degraded"]),
+    );
   });
 
   it("collapses a group through the header", async () => {

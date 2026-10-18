@@ -1075,6 +1075,7 @@ fn heuristic_tick(
 /// 把归约结果推给前端；`agent-status` 是全局低频事件（#80 / #82 消费）。
 #[cfg(windows)]
 fn emit_agent_status(app: &tauri::AppHandle, update: StatusUpdate) {
+    crate::notifications::notify(app, &update);
     let previous = update.previous.map(AgentStatusState::from);
     let current = AgentStatusView::from(update.current);
     let _ = app.emit(

@@ -6,7 +6,7 @@
  * 切回时按 `activeByRoot` 恢复上次激活的页签。
  *
  * 支持拖拽排序、右键关闭 / 关闭其他 / 关闭右侧；关闭运行中的终端统一走
- * `tabs/actions.ts` 的确认流程。
+ * `tabs/actions.ts` 的确认流程。终端页签同时显示 agent 状态彩点（#82）。
  */
 import IconClose from "~icons/codicon/close";
 import IconFile from "~icons/codicon/file";
@@ -14,7 +14,9 @@ import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
 import { computed, ref, watch } from "vue";
 
+import type { AgentStatusView } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
+import { useAgentStatusStore } from "../../stores/agentStatus";
 import { useTabsStore, type Tab } from "../../stores/tabs";
 import { useWorkspaceStore } from "../../stores/workspace";
 import {
@@ -22,12 +24,14 @@ import {
   requestCloseOthers,
   requestCloseRight,
 } from "../tabs/actions";
+import { statusLabelKey, statusTone } from "../agents/status";
 import TabContextMenu from "./TabContextMenu.vue";
 
 type TabMenuAction = "close" | "closeOthers" | "closeRight";
 
 const tabs = useTabsStore();
 const workspace = useWorkspaceStore();
+const agentStatus = useAgentStatusStore();
 
 const root = computed(() => workspace.activePath);
 const list = computed(() => (root.value === null ? [] : tabs.tabsFor(root.value)));
@@ -53,6 +57,22 @@ const canCloseRight = computed(() => {
   const index = list.value.findIndex((tab) => tabs.tabId(tab) === tabs.tabId(menu.value!.tab));
   return index !== -1 && index < list.value.length - 1;
 });
+
+function statusOf(tab: Tab): AgentStatusView | null {
+  return tab.kind === "terminal" ? agentStatus.statusFor(tab.sid) : null;
+}
+
+function statusToneOf(tab: Tab): string {
+  const status = statusOf(tab);
+  return status === null ? "" : `tab__status--${statusTone(status.state)}`;
+}
+
+function statusTitleOf(tab: Tab): string {
+  const status = statusOf(tab);
+  if (status === null) return "";
+  const label = t(statusLabelKey(status.state));
+  return status.degraded ? t("agents.status.degradedTitle", { state: label }) : label;
+}
 
 function activate(tab: Tab): void {
   if (root.value === null) return;
@@ -156,6 +176,17 @@ function onWheel(event: WheelEvent): void {
         v-else
         class="tab__icon"
       />
+      <span
+        v-if="statusOf(tab)"
+        class="tab__status"
+        :class="[
+          statusToneOf(tab),
+          { 'tab__status--degraded': statusOf(tab)?.degraded },
+        ]"
+        :title="statusTitleOf(tab)"
+        :aria-label="statusTitleOf(tab)"
+        role="img"
+      />
       <span class="tab__name">{{ tab.name }}</span>
       <button
         class="tab__close"
@@ -229,6 +260,45 @@ function onWheel(event: WheelEvent): void {
 
 .tab--active .tab__icon {
   color: var(--color-accent);
+}
+
+.tab__status {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tab__status--running {
+  color: var(--color-accent);
+}
+
+.tab__status--attention {
+  color: var(--color-yellow);
+}
+
+.tab__status--done {
+  color: var(--color-green);
+}
+
+.tab__status--error {
+  color: var(--color-red);
+}
+
+.tab__status--idle {
+  color: var(--color-muted);
+}
+
+.tab__status--exited {
+  color: var(--color-faint);
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.tab__status--degraded {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px currentColor;
 }
 
 .tab__name {
