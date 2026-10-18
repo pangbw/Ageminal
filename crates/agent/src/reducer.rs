@@ -1,7 +1,14 @@
 //! 状态归约：版本化、优先级、幂等、防抖与子代理过滤（#80）。
 //!
-//! 归约器是**纯内存**的：不读时钟、不做 I/O。事件 timestamp 由 shim 带入；进程退出的
-//! timestamp 由调用方传入。这样夹具与 proptest 完全可重复。
+//! 归约器是**纯内存**的：不读时钟、不做 I/O。事件 timestamp 由 shim 带入；进程退出与
+//! 降级轮询的 timestamp 由调用方传入。这样夹具与 proptest 完全可重复。
+//!
+//! # 降级（#81）
+//!
+//! [`AgentReducer::observe_degraded`] 接收进程树识别结果与 daemon 的最后输出时间。
+//! 降级模式只产生 `running` / `idle` / `exited`，全部 `source=heuristic` 且
+//! `degraded=true`；`t_idle=60s` 需连续两次轮询，输出立即回 `running`。原生模式只用
+//! `T_interrupt=120s` 兜底，绝不覆盖原生 `waiting` / `permission` / `done` / `error`。
 //!
 //! # 版本
 //!
@@ -34,6 +41,29 @@ use crate::{AgentState, AgentStatusSnapshot, StatusSource, StatusUpdate};
 /// 没有稳定 id 的同源事件在这个窗口内只处理一次。
 pub const DEBOUNCE_MS: u64 = 300;
 
+/// 降级模式：输出静默达到这个阈值后进入 `idle`（需连续两次轮询）。
+pub const T_IDLE_MS: u64 = 60_000;
+
+/// 原生模式：`running` 且无事件 / 输出达到这个阈值后降为 `idle`（明确标注不完整）。
+pub const T_INTERRUPT_MS: u64 = 120_000;
+
+/// 一次降级轮询的输入。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DegradedObservation {
+    /// 会话根进程是否还活着；`false` 时状态归为 `exited`。
+    pub root_alive: bool,
+    /// `sysinfo` 进程树里实际识别到的 agent id。
+    pub process_agent_id: Option<String>,
+    /// 一等入口 / 会话元数据里已知的 agent id（进程尚未被识别时的回退）。
+    pub configured_agent_id: Option<String>,
+    /// 本次 spawn 的世代 id（app-core 从 SessionCreated / SessionInfo 传入）。
+    pub incarnation_id: Option<String>,
+    /// daemon 记录的最后输出时间（Unix 毫秒）；隐藏会话也准确。
+    pub last_output_ms: u64,
+    /// 本次轮询时间（Unix 毫秒）。
+    pub now_ms: u64,
+}
+
 /// 稳定 id 的保留上限；超过后按时间清理，避免长会话内存无限增长。
 const MAX_STABLE_IDS: usize = 4096;
 
@@ -49,6 +79,18 @@ pub struct AgentReducer {
     stable_seen: HashMap<String, u64>,
     debounce_seen: HashMap<u64, u64>,
     subagent_sessions: HashSet<String>,
+    /// 是否已收到过原生事件（一旦 native，不再让降级 running/idle 覆盖）。
+    native_mode: bool,
+    /// 最近一次输出活动（daemon 时间或本地观察）。
+    last_output_ms: u64,
+    /// 最近一次原生事件时间。
+    last_native_event_ms: u64,
+    /// 降级模式连续满足静默阈值的轮询次数。
+    idle_streak: u8,
+    /// 是否曾识别到 agent 进程（用于区分「进程退出」与「尚未启动」）。
+    seen_agent: bool,
+    /// 原生模式下是否已因 T_interrupt 降为启发式 idle。
+    fallback_idle: bool,
 }
 
 impl AgentReducer {
@@ -61,6 +103,12 @@ impl AgentReducer {
             stable_seen: HashMap::new(),
             debounce_seen: HashMap::new(),
             subagent_sessions: HashSet::new(),
+            native_mode: false,
+            last_output_ms: 0,
+            last_native_event_ms: 0,
+            idle_streak: 0,
+            seen_agent: false,
+            fallback_idle: false,
         }
     }
 
@@ -78,18 +126,25 @@ impl AgentReducer {
             return None;
         }
         self.begin_incarnation(event.incarnation_id.as_deref());
+        // T_interrupt 的启发式 idle 会被任何新原生事件立即恢复；若能映射出具体状态，
+        // 则让该事件直接覆盖（例如 Stop → done），只有未知 / 重复事件才单独恢复 running。
+        let was_fallback = std::mem::take(&mut self.fallback_idle);
+        // 原生事件是「集成已生效」的证据；即使事件本身被忽略（未知 / 子代理），也说明
+        // 不再处于纯降级模式。
+        self.native_mode = true;
+        self.last_native_event_ms = event.ts;
         self.observe_lineage(event);
         if mapping::is_subagent_event(event)
             || mapping::event_session_id(event)
                 .is_some_and(|session| self.subagent_sessions.contains(&session))
         {
-            return None;
+            return self.recover_fallback(was_fallback, event.ts);
         }
         let Mapping::State(mapped) = mapping::map_event(event) else {
-            return None;
+            return self.recover_fallback(was_fallback, event.ts);
         };
         if self.is_duplicate(event) {
-            return None;
+            return self.recover_fallback(was_fallback, event.ts);
         }
         self.merge(Observation {
             state: mapped.state,
@@ -99,7 +154,155 @@ impl AgentReducer {
             agent: Some(event.agent.clone()),
             reason: mapped.reason,
             exit_code: None,
+            degraded: false,
         })
+        .or_else(|| self.recover_fallback(was_fallback, event.ts))
+    }
+
+    fn recover_fallback(&mut self, was_fallback: bool, timestamp_ms: u64) -> Option<StatusUpdate> {
+        if !was_fallback
+            || self.current.as_ref().map(|current| current.state) != Some(AgentState::Idle)
+        {
+            return None;
+        }
+        self.force_state(
+            AgentState::Running,
+            StatusSource::Native,
+            timestamp_ms,
+            false,
+            None,
+        )
+    }
+
+    /// 输出活动：降级模式下立即回 `running`；原生模式下只处理 T_interrupt 兜底后的恢复。
+    ///
+    /// `timestamp_ms` 来自 app-core 收到数据帧的时间，或 daemon 的 `lastOutputMs`。
+    pub fn note_output(&mut self, timestamp_ms: u64) -> Option<StatusUpdate> {
+        let timestamp_ms = timestamp_ms.max(self.last_output_ms);
+        self.last_output_ms = timestamp_ms;
+        self.idle_streak = 0;
+
+        if self.native_mode {
+            if self.fallback_idle {
+                self.fallback_idle = false;
+                return self.force_state(
+                    AgentState::Running,
+                    StatusSource::Native,
+                    timestamp_ms,
+                    false,
+                    None,
+                );
+            }
+            return None;
+        }
+
+        let state = self.current.as_ref()?.state;
+        if matches!(state, AgentState::Running | AgentState::Exited) {
+            return None;
+        }
+        self.force_state(
+            AgentState::Running,
+            StatusSource::Heuristic,
+            timestamp_ms,
+            true,
+            None,
+        )
+    }
+
+    /// 一次降级轮询：进程树识别 + 输出静默。
+    ///
+    /// - 降级模式只产生 `running` / `idle` / `exited`，全部 `source=heuristic` 且 `degraded=true`；
+    /// - 原生模式只用 `T_interrupt` 兜底，不覆盖原生 `waiting` / `permission` / `done` / `error`；
+    /// - agent 进程从有到无 → `exited`；从未识别到（例如一等入口的命令还没起来）不误判。
+    pub fn observe_degraded(&mut self, obs: &DegradedObservation) -> Option<StatusUpdate> {
+        self.begin_incarnation(obs.incarnation_id.as_deref());
+        let output_changed = obs.last_output_ms > self.last_output_ms;
+        self.last_output_ms = self.last_output_ms.max(obs.last_output_ms);
+
+        if !obs.root_alive {
+            return self.force_exited(obs.now_ms);
+        }
+
+        let process_agent = non_empty(obs.process_agent_id.as_deref());
+        let configured_agent = non_empty(obs.configured_agent_id.as_deref());
+        if process_agent.is_some() {
+            self.seen_agent = true;
+        }
+
+        if self.native_mode {
+            if self.seen_agent && process_agent.is_none() {
+                return self.force_exited(obs.now_ms);
+            }
+            if self.fallback_idle && output_changed {
+                self.fallback_idle = false;
+                return self.force_state(
+                    AgentState::Running,
+                    StatusSource::Native,
+                    obs.now_ms,
+                    false,
+                    None,
+                );
+            }
+            let current = self.current.as_ref()?;
+            if current.state == AgentState::Running
+                && obs.now_ms.saturating_sub(self.last_activity_ms()) >= T_INTERRUPT_MS
+            {
+                self.fallback_idle = true;
+                return self.force_state(
+                    AgentState::Idle,
+                    StatusSource::Heuristic,
+                    obs.now_ms,
+                    true,
+                    None,
+                );
+            }
+            return None;
+        }
+
+        if self.seen_agent && process_agent.is_none() {
+            return self.force_exited(obs.now_ms);
+        }
+        let agent = process_agent.or(configured_agent);
+        let agent = agent?;
+
+        let Some(current) = self.current.as_ref() else {
+            return self.force_new(&agent, obs);
+        };
+        if current.state == AgentState::Exited {
+            return self.force_new(&agent, obs);
+        }
+
+        if output_changed && current.state != AgentState::Running {
+            self.idle_streak = 0;
+            return self.force_state(
+                AgentState::Running,
+                StatusSource::Heuristic,
+                obs.now_ms,
+                true,
+                None,
+            );
+        }
+        if current.state == AgentState::Running {
+            if output_changed {
+                self.idle_streak = 0;
+                return None;
+            }
+            if obs.now_ms.saturating_sub(self.last_output_ms) >= T_IDLE_MS {
+                self.idle_streak = self.idle_streak.saturating_add(1);
+                if self.idle_streak >= 2 {
+                    return self.force_state(
+                        AgentState::Idle,
+                        StatusSource::Heuristic,
+                        obs.now_ms,
+                        true,
+                        None,
+                    );
+                }
+            } else {
+                self.idle_streak = 0;
+            }
+        }
+        None
     }
 
     /// 归约进程退出事实。
@@ -116,11 +319,9 @@ impl AgentReducer {
                 return None;
             }
         }
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|current| current.state.is_terminal())
-        {
+        if self.current.as_ref().is_some_and(|current| {
+            current.state.is_terminal() && current.source != StatusSource::Heuristic
+        }) {
             return None;
         }
         self.incarnation_id = Some(exit.incarnation_id.clone());
@@ -134,6 +335,7 @@ impl AgentReducer {
             incarnation_id: self.incarnation_id.clone(),
             state: AgentState::Exited,
             source: StatusSource::Process,
+            degraded: false,
             timestamp_ms,
             seq: self
                 .current
@@ -147,10 +349,10 @@ impl AgentReducer {
                 .and_then(|current| current.reason.clone()),
         };
         let changed = previous != Some(AgentState::Exited)
-            || self
-                .current
-                .as_ref()
-                .is_some_and(|old| old.exit_code != current.exit_code);
+            || self.current.as_ref().is_some_and(|old| {
+                old.exit_code != current.exit_code || old.source != current.source
+            });
+        self.fallback_idle = false;
         self.current = Some(current.clone());
         Some(StatusUpdate {
             previous,
@@ -173,6 +375,12 @@ impl AgentReducer {
         self.stable_seen.clear();
         self.debounce_seen.clear();
         self.subagent_sessions.clear();
+        self.native_mode = false;
+        self.last_output_ms = 0;
+        self.last_native_event_ms = 0;
+        self.idle_streak = 0;
+        self.seen_agent = false;
+        self.fallback_idle = false;
     }
 
     /// opencode 的子会话谱系：记录 child → parent，后续 child 的状态事件直接丢。
@@ -225,6 +433,7 @@ impl AgentReducer {
             incarnation_id: self.incarnation_id.clone(),
             state: incoming.state,
             source: incoming.source,
+            degraded: incoming.degraded,
             timestamp_ms: incoming.timestamp_ms,
             seq: if incoming.seq > 0 {
                 incoming.seq
@@ -241,7 +450,11 @@ impl AgentReducer {
             },
         };
         let changed = previous_state != Some(current.state)
-            || previous.is_some_and(|old| old.exit_code != current.exit_code);
+            || previous.is_some_and(|old| {
+                old.exit_code != current.exit_code
+                    || old.source != current.source
+                    || old.degraded != current.degraded
+            });
         self.current = Some(current.clone());
         Some(StatusUpdate {
             previous: previous_state,
@@ -249,6 +462,109 @@ impl AgentReducer {
             changed,
         })
     }
+}
+
+impl AgentReducer {
+    fn last_activity_ms(&self) -> u64 {
+        self.last_output_ms.max(self.last_native_event_ms)
+    }
+
+    fn force_new(&mut self, agent: &str, obs: &DegradedObservation) -> Option<StatusUpdate> {
+        let previous = self.current.as_ref().map(|current| current.state);
+        let current = AgentStatusSnapshot {
+            sid: self.sid.clone(),
+            agent: Some(agent.to_owned()),
+            incarnation_id: self.incarnation_id.clone(),
+            state: AgentState::Running,
+            source: StatusSource::Heuristic,
+            degraded: true,
+            timestamp_ms: obs.now_ms,
+            seq: self
+                .current
+                .as_ref()
+                .map(|current| current.seq)
+                .unwrap_or(0),
+            exit_code: None,
+            reason: None,
+        };
+        // 刚识别到 agent 时给一个完整静默窗口；否则会把 shell 启动前的旧时间算进来。
+        self.last_output_ms = obs.last_output_ms.max(obs.now_ms);
+        self.idle_streak = 0;
+        self.current = Some(current.clone());
+        Some(StatusUpdate {
+            previous,
+            current,
+            changed: previous != Some(AgentState::Running),
+        })
+    }
+
+    fn force_state(
+        &mut self,
+        state: AgentState,
+        source: StatusSource,
+        timestamp_ms: u64,
+        degraded: bool,
+        reason: Option<String>,
+    ) -> Option<StatusUpdate> {
+        let previous_snapshot = self.current.as_ref()?;
+        let previous = previous_snapshot.state;
+        let current = AgentStatusSnapshot {
+            sid: self.sid.clone(),
+            agent: previous_snapshot.agent.clone(),
+            incarnation_id: self.incarnation_id.clone(),
+            state,
+            source,
+            degraded,
+            timestamp_ms,
+            seq: previous_snapshot.seq,
+            exit_code: None,
+            reason,
+        };
+        let changed = previous != current.state
+            || previous_snapshot.source != current.source
+            || previous_snapshot.degraded != current.degraded;
+        self.current = Some(current.clone());
+        Some(StatusUpdate {
+            previous: Some(previous),
+            current,
+            changed,
+        })
+    }
+
+    fn force_exited(&mut self, timestamp_ms: u64) -> Option<StatusUpdate> {
+        let previous_snapshot = self.current.as_ref()?;
+        if previous_snapshot.state == AgentState::Exited {
+            return None;
+        }
+        let previous = previous_snapshot.state;
+        let current = AgentStatusSnapshot {
+            sid: self.sid.clone(),
+            agent: previous_snapshot.agent.clone(),
+            incarnation_id: self.incarnation_id.clone(),
+            state: AgentState::Exited,
+            source: StatusSource::Heuristic,
+            degraded: true,
+            timestamp_ms,
+            seq: previous_snapshot.seq,
+            exit_code: None,
+            reason: previous_snapshot.reason.clone(),
+        };
+        let changed =
+            previous != AgentState::Exited || previous_snapshot.source != StatusSource::Heuristic;
+        self.current = Some(current.clone());
+        Some(StatusUpdate {
+            previous: Some(previous),
+            current,
+            changed,
+        })
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 /// 一个 app-core 生命周期内的所有会话状态。
@@ -267,6 +583,28 @@ impl StatusBook {
             .entry(event.sid.clone())
             .or_insert_with(|| AgentReducer::new(event.sid.clone()))
             .apply_event(event)
+    }
+
+    /// 输出活动；没有状态的普通 shell 直接忽略。
+    pub fn note_output(&mut self, sid: &str, timestamp_ms: u64) -> Option<StatusUpdate> {
+        self.sessions.get_mut(sid)?.note_output(timestamp_ms)
+    }
+
+    /// 一次降级轮询；普通 shell（无 agent 进程、无 configured agent）不创建状态。
+    pub fn observe_degraded(
+        &mut self,
+        sid: &str,
+        obs: &DegradedObservation,
+    ) -> Option<StatusUpdate> {
+        if !self.sessions.contains_key(sid) {
+            if obs.process_agent_id.is_none() && obs.configured_agent_id.is_none() {
+                return None;
+            }
+            self.sessions.insert(sid.to_owned(), AgentReducer::new(sid));
+        }
+        self.sessions
+            .get_mut(sid)
+            .and_then(|reducer| reducer.observe_degraded(obs))
     }
 
     /// 归约进程退出。
@@ -319,6 +657,7 @@ struct Observation {
     agent: Option<String>,
     reason: Option<String>,
     exit_code: Option<i32>,
+    degraded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -339,6 +678,10 @@ fn accept(current: Option<&AgentStatusSnapshot>, incoming: &Observation) -> bool
     if incoming.state == AgentState::Exited {
         // 进程消失是硬事实，绕过时间 / seq；当前已经 exited 的错误路径在上面处理。
         return true;
+    }
+    // 原生事实永远优先于启发式；否则轮询时间戳可能比事件晚几百毫秒，把刚到的原生状态挡掉。
+    if current.source == StatusSource::Heuristic && incoming.source == StatusSource::Native {
+        return transition_allowed(current.state, incoming.state);
     }
 
     let order = compare_version(current, incoming);
@@ -410,6 +753,7 @@ mod tests {
             incarnation_id: Some("inc-1".to_owned()),
             state,
             source: StatusSource::Native,
+            degraded: false,
             timestamp_ms,
             seq,
             exit_code: None,
@@ -427,6 +771,7 @@ mod tests {
         Observation {
             state,
             source: StatusSource::Native,
+            degraded: false,
             timestamp_ms,
             seq,
             agent: Some("claude".to_owned()),

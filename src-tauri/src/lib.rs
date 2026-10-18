@@ -14,6 +14,7 @@ use tauri_specta::{collect_commands, Builder};
 pub mod agents;
 pub mod daemon;
 pub mod files;
+pub mod heuristic;
 pub mod restore;
 pub mod storage;
 pub mod terminal;

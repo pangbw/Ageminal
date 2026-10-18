@@ -197,6 +197,8 @@ export type AgentStatusView = {
 	state: AgentStatusState,
 	/**  事实来源。 */
 	source: AgentStatusSource,
+	/**  降级启发式 / 状态不完整（#81）；UI 据此显示「状态不完整」。 */
+	degraded: boolean,
 	/**  事件时间（Unix 毫秒）。 */
 	timestampMs: number | null,
 	/**  逻辑序号；0 = 无。 */

@@ -218,6 +218,8 @@ pub struct AgentStatusView {
     pub state: AgentStatusState,
     /// 事实来源。
     pub source: AgentStatusSource,
+    /// 降级启发式 / 状态不完整（#81）；UI 据此显示「状态不完整」。
+    pub degraded: bool,
     /// 事件时间（Unix 毫秒）。
     pub timestamp_ms: f64,
     /// 逻辑序号；0 = 无。
@@ -236,6 +238,7 @@ impl From<AgentStatusSnapshot> for AgentStatusView {
             incarnation_id: snapshot.incarnation_id,
             state: snapshot.state.into(),
             source: snapshot.source.into(),
+            degraded: snapshot.degraded,
             timestamp_ms: snapshot.timestamp_ms as f64,
             seq: snapshot.seq as f64,
             exit_code: snapshot.exit_code,
@@ -931,6 +934,14 @@ enum Request {
 struct SessionState {
     handle: u32,
     event: Channel<TerminalEvent>,
+    /// daemon 侧会话根进程 pid（#81 进程树识别的起点）。
+    pid: u32,
+    /// 一等入口的 agent id；普通终端为 `None`。
+    agent_id: Option<String>,
+    /// 本次 spawn 的世代 id（#81 状态快照用）。
+    incarnation_id: Option<String>,
+    /// daemon 记录的最后输出时间（#81 静默启发式）。
+    last_output_ms: u64,
     visible: bool,
     /// 合批缓冲。
     batcher: Batcher,
@@ -1005,6 +1016,62 @@ struct Runtime {
     statuses: Arc<Mutex<StatusBook>>,
 }
 
+/// 一次降级轮询：daemon 的根进程存活 / 最后输出 + sysinfo 的进程树。
+///
+/// 返回值交给调用方统一发 `agent-status`，状态机本身不接触 Tauri。
+#[cfg(windows)]
+fn heuristic_tick(
+    runtime: &mut Runtime,
+    scanner: &mut crate::heuristic::ProcessScanner,
+    rules: &[ageminal_agent::RecognitionRule],
+    now_ms: u64,
+) -> Vec<StatusUpdate> {
+    let Some(client) = runtime.client.as_mut() else {
+        return Vec::new();
+    };
+    let sessions = match client.list_sessions() {
+        Ok(sessions) => sessions,
+        Err(error) => {
+            eprintln!("[terminal] 降级轮询 ListSessions 失败：{error}");
+            return Vec::new();
+        }
+    };
+    let by_sid: std::collections::HashMap<_, _> = sessions
+        .into_iter()
+        .map(|info| (info.sid.clone(), info))
+        .collect();
+    let nodes = scanner.scan();
+    let mut updates = Vec::new();
+    for (sid, session) in runtime.sessions.iter_mut() {
+        let info = by_sid.get(sid);
+        if let Some(info) = info {
+            if session.pid == 0 {
+                session.pid = info.pid;
+            }
+            if session.agent_id.is_none() {
+                session.agent_id = info.agent_id.clone();
+            }
+            session.last_output_ms = session.last_output_ms.max(info.last_output_ms);
+        }
+        let root_alive = info.is_some() || nodes.iter().any(|node| node.pid == session.pid);
+        let detected = ageminal_agent::detect_agent(session.pid, &nodes, rules);
+        let observation = ageminal_agent::DegradedObservation {
+            root_alive,
+            process_agent_id: detected.map(|agent| agent.agent_id),
+            configured_agent_id: session.agent_id.clone(),
+            incarnation_id: session.incarnation_id.clone(),
+            last_output_ms: session.last_output_ms,
+            now_ms,
+        };
+        if let Ok(mut statuses) = runtime.statuses.lock() {
+            if let Some(update) = statuses.observe_degraded(sid, &observation) {
+                updates.push(update);
+            }
+        }
+    }
+    updates
+}
+
 /// 把归约结果推给前端；`agent-status` 是全局低频事件（#80 / #82 消费）。
 #[cfg(windows)]
 fn emit_agent_status(app: &tauri::AppHandle, update: StatusUpdate) {
@@ -1032,6 +1099,8 @@ fn service_loop(
         by_handle: std::collections::HashMap::new(),
         statuses,
     };
+    let mut process_scanner = crate::heuristic::ProcessScanner::default();
+    let mut last_heuristic_poll = Instant::now();
 
     loop {
         // 没有会话时阻塞等命令，别每 2 ms 空转。`terminal_list` 会在启动时先连上 daemon，
@@ -1078,7 +1147,20 @@ fn service_loop(
         // 3) 到窗口的批次冲刷。
         flush_due(&mut runtime);
 
-        // 4) 让出 CPU；命令 / 输入的最坏延迟就是这里。
+        // 4) 降级状态轮询（#81）：进程树 + daemon 最后输出时间。
+        if !runtime.sessions.is_empty()
+            && last_heuristic_poll.elapsed() >= crate::heuristic::POLL_INTERVAL
+        {
+            last_heuristic_poll = Instant::now();
+            let rules = crate::heuristic::recognition_rules(&app);
+            for update in
+                heuristic_tick(&mut runtime, &mut process_scanner, &rules, crate::now_ms())
+            {
+                emit_agent_status(&app, update);
+            }
+        }
+
+        // 5) 让出 CPU；命令 / 输入的最坏延迟就是这里。
         std::thread::sleep(POLL_INTERVAL);
     }
 }
@@ -1295,6 +1377,7 @@ fn open_session(
         return;
     }
 
+    let session_agent_id = agent_id.clone();
     let request = ageminal_protocol::CreateSession {
         sid: sid.clone(),
         cwd,
@@ -1322,6 +1405,10 @@ fn open_session(
                 SessionState {
                     handle: created.handle,
                     event,
+                    pid: created.pid,
+                    agent_id: session_agent_id,
+                    incarnation_id: Some(created.incarnation_id.clone()),
+                    last_output_ms: crate::now_ms(),
                     visible: true,
                     batcher: Batcher::default(),
                     last_seq: 0,
@@ -1386,6 +1473,10 @@ fn attach_existing(
     let state = SessionState {
         handle: attached.handle,
         event,
+        pid: info.pid,
+        agent_id: info.agent_id.clone(),
+        incarnation_id: Some(info.incarnation_id.clone()),
+        last_output_ms: info.last_output_ms,
         visible: true,
         batcher: Batcher::default(),
         last_seq: from_seq,
@@ -1648,8 +1739,27 @@ fn handle_message(
 
     match message {
         Message::Data { handle, seq, bytes } => {
+            let sid = runtime.by_handle.get(&handle).cloned();
+            // 纯回放不是「现在有输出」；否则重新 attach 会把已经空闲很久的 agent 短暂显示成
+            // running。混有实时字节的帧 / 实时帧仍立即更新。
+            let live = sid.as_deref().is_some_and(|sid| {
+                runtime
+                    .sessions
+                    .get(sid)
+                    .is_some_and(|session| session.replay_done || seq >= session.replay_end)
+            });
             handle_data(runtime, handle, seq, bytes);
-            None
+            if live {
+                sid.and_then(|sid| {
+                    runtime
+                        .statuses
+                        .lock()
+                        .ok()
+                        .and_then(|mut statuses| statuses.note_output(&sid, crate::now_ms()))
+                })
+            } else {
+                None
+            }
         }
         Message::Snapshot(snapshot) => {
             let session = runtime.sessions.get_mut(&snapshot.sid)?;
@@ -1837,6 +1947,10 @@ mod tests {
             SessionState {
                 handle: 1,
                 event,
+                pid: 0,
+                agent_id: None,
+                incarnation_id: None,
+                last_output_ms: 0,
                 visible: true,
                 batcher: Batcher::default(),
                 last_seq: 0,

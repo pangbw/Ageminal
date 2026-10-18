@@ -164,6 +164,9 @@ struct Session {
     agent_id: Option<String>,
     /// spawn 时间（Unix 毫秒）；用于稳定排序 / 后续启动对账。
     started_at_ms: u64,
+    /// 最近一次 PTY 输出时间（Unix 毫秒）；#81 输出静默启发式用。
+    /// 即使 UI detach 也更新，因为它属于 daemon 的会话事实。
+    last_output_ms: AtomicU64,
     /// PTY 控制端（resize / terminate）。**可取走**：`terminate` 把 PTY 交给独立线程去关，
     /// 免得 `ClosePseudoConsole` 等 conout 排空时卡住连接线程。
     control: Mutex<Option<Box<dyn Pty>>>,
@@ -283,6 +286,7 @@ impl SessionTable {
             cwd: request.cwd.clone(),
             agent_id: request.agent_id.clone(),
             started_at_ms: crate::logging::now_ms(),
+            last_output_ms: AtomicU64::new(crate::logging::now_ms()),
             control: Mutex::new(Some(control)),
             exit: Some(exit),
             writer: Mutex::new(writer),
@@ -430,6 +434,7 @@ impl SessionTable {
                     cols: vt.columns() as u16,
                     rows: vt.screen_lines() as u16,
                     started_at_ms: session.started_at_ms,
+                    last_output_ms: session.last_output_ms.load(Ordering::Relaxed),
                 }
             })
             .collect();
@@ -709,6 +714,9 @@ fn pump_output(session: &Session, reader: &mut dyn Read) {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
+        session
+            .last_output_ms
+            .store(crate::logging::now_ms(), Ordering::Relaxed);
         // 服务端状态必须先于转发更新，且要与 attach 的「快照 + seq」共用一个原子边界。
         // 锁顺序固定为 VT → output → flow（attach / checkpoint 同序）。
         let mut vt = session.vt.lock().expect("vt");
@@ -1046,6 +1054,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().into_owned(),
             agent_id: None,
             started_at_ms: 0,
+            last_output_ms: AtomicU64::new(0),
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
             writer: Mutex::new(Box::new(std::io::sink())),
@@ -1087,6 +1096,7 @@ mod tests {
             cwd: std::env::temp_dir().to_string_lossy().into_owned(),
             agent_id: None,
             started_at_ms: 0,
+            last_output_ms: AtomicU64::new(0),
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
             writer: Mutex::new(Box::new(std::io::sink())),
@@ -1345,6 +1355,10 @@ mod tests {
 
         pump_output(&session, &mut reader);
 
+        assert!(
+            session.last_output_ms.load(Ordering::Relaxed) > 0,
+            "输出后要刷新 lastOutputMs（#81）"
+        );
         let vt = session.vt.lock().expect("vt");
         assert!(
             vt.lines()[0].contains("GREEN vt"),

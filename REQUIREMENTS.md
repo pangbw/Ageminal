@@ -348,9 +348,9 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   - **测试投递**：一键跑一次 `ageminal-notify`，直接看诊断计数。
 - **恢复时** ✅：全局配置已持久生效，**无需重传命令行参数**；新会话由 daemon 注入同一套环境变量（E4 #25）即可继续回调。daemon 按 `AGEMINAL_SESSION_ID` + `AGEMINAL_INCARNATION` 拒绝旧世代事件，未知会话的收尾事件仍放行给状态机。
 - **一键安装边界** ✅：安装器只做标准应用安装；Agent 配置注入走**设置页单独引导页**（默认零全局污染；「写入全局」为显式 opt-in，diff 预览 + 备份 + 回滚；**不写 PATH**）。
-- **降级** ✅（E5 #26）：**只用两个信号**——`sysinfo` 枚举**会话进程树 + 识别清单**（`claude`/`codex`/`opencode`/`pi` + 自定义），与**输出静默**。
+- **降级** ✅（E5 #26 / #81）：**只用两个信号**——`sysinfo` 枚举**会话进程树 + 识别清单**（`claude`/`codex`/`opencode`/`pi` + 自定义），与**输出静默**（daemon 记录 `lastOutputMs`，隐藏会话也准确）。`source=heuristic` + `degraded=true` 显式标注「状态不完整」。
   - **只暴露 `running` / `idle` / `exited`**，并在 worktree 行/页签**显式标注「状态不完整」**；绝不声称 `waiting` / `permission` / `done`。
-  - `t_idle = 60 s`（静默→`idle`，需连续 2 次轮询；有输出**立即**回 `running`）；`T_interrupt = 120 s`（**原生模式下**为「Claude 无中断事件」缺口兜底：`running` + 静默无事件超时 → 降 `idle` 并标注，新事件即恢复）。
+  - `t_idle = 60 s`（静默→`idle`，需连续 2 次轮询；有输出**立即**回 `running`）；`T_interrupt = 120 s`（**原生模式下**为「Claude 无中断事件」缺口兜底：`running` + 静默无事件超时 → 降 `idle` 并标注，新事件或输出立即恢复原生状态）。
   - **不用终端标题、不用 CPU**；**不解析输出内容**。阈值由**本地数据采集**校准（G6 #36）。
 - **识别清单** ✅：命令名匹配（`claude` / `codex` / `opencode` / `pi`）+ 可配置自定义命令。
 

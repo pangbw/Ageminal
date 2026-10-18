@@ -47,6 +47,7 @@ tauri-plugin-dialog = "2"
 # 外部打开（#60 D6 #20）；同样只从 Rust 侧调用，capabilities 不放开 plugin:opener。
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2"
+sysinfo = "0.39.6"
 
 [target."cfg(windows)".dependencies]
 clipboard-win = "5.4.1"

@@ -63,8 +63,9 @@ impl AgentState {
 
 /// 状态事实的来源。
 ///
-/// 首批只实现 `native`（agent 原生事件）与 `process`（进程退出）；#81 会加入 `heuristic`
-/// 降级信号，届时 UI 需要显式标注「状态不完整」。
+/// `native` = agent 原生事件；`process` = 进程退出硬事实；`heuristic` = 进程树 +
+/// 输出静默的降级信号（#81）。`heuristic` 状态的 `degraded` 为 `true`，UI 必须标注
+/// 「状态不完整」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StatusSource {
@@ -96,6 +97,12 @@ pub struct AgentStatusSnapshot {
     pub state: AgentState,
     /// 这条状态来自原生事件、进程事实还是降级启发式。
     pub source: StatusSource,
+    /// 是否来自降级启发式、状态不完整（#81）。
+    ///
+    /// `source == heuristic` 时通常为 `true`；单独的布尔字段让 UI 不必理解每个 source 的
+    /// 语义，也让「原生模式下 T_interrupt 兜底」能明确标注为不完整。
+    #[serde(default)]
+    pub degraded: bool,
     /// 事件时间（Unix 毫秒）。
     pub timestamp_ms: u64,
     /// agent 提供的逻辑序号；没有时为 `0`，排序退回时间戳。

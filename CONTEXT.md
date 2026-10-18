@@ -82,8 +82,8 @@
 | **多客户端口** | daemon 的命名管道实例池：UI 长连接与 notify 短连接并发，不再串行阻塞；事件经 daemon 广播到 UI 连接。 |
 | **版本化状态** | 快照包含 `state + source + timestampMs + seq`；逻辑序号优先、时间戳兜底，状态机在 `crates/agent`（#80）。 |
 | **统一状态** | 由 agent 事件 + 进程事实归并出的会话状态：`running` / `idle` / `waiting` / `permission` / `done` / `error` / `exited`；纯逻辑在 `crates/agent`，app-core 通过 `agent-status` 全局事件推送（#80）。 |
-| **降级模式** | 只拿到进程事实（无事件）时，只暴露 `running` / `idle` / `exited`，并显式标注「不完整」 |
-| **会话树识别** | 通过 `sysinfo` 枚举会话进程树 + 识别名单 + 输出静默；**不解析输出**、不读窗口标题。 |
+| **降级模式** | 只拿到进程事实（无事件）时，只暴露 `running` / `idle` / `exited`，`source=heuristic` 且 `degraded=true` 显式标注不完整；`t_idle=60s`（连续 2 次轮询）、输出立即回 running。 |
+| **会话树识别** | 通过 `sysinfo` 枚举会话进程树 + 识别名单（默认四家 + 设置里的自定义命令）+ daemon 记录的最后输出时间；**不解析输出**、不读窗口标题、不用 CPU。 |
 
 ## 5. 外观与材质
 

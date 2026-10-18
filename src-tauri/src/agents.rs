@@ -18,6 +18,8 @@ use serde_json::{Map, Value};
 use specta::Type;
 use tauri::State;
 
+use ageminal_agent::RecognitionRule;
+
 use crate::storage::{Settings, Store};
 
 /// 一等入口支持的 agent id（顺序 = 菜单顺序）。
@@ -136,6 +138,40 @@ pub const AGENT_DEFAULTS: [AgentDefault; 4] = [
         color: "#8b5cf6",
     },
 ];
+
+/// 默认的四家 agent 识别规则（`settings.json` 缺失时也能用）。
+pub fn default_recognition_rules() -> Vec<RecognitionRule> {
+    AGENT_DEFAULTS
+        .iter()
+        .map(|agent| RecognitionRule {
+            agent_id: agent.id.to_owned(),
+            command: agent.command.to_owned(),
+        })
+        .collect()
+}
+
+/// 当前设置下的进程识别清单。
+///
+/// 同时保留**缺省命令**与**用户覆盖后的命令**：用户把 `claude` 改成 `claude-wrapper` 时，
+/// 直接运行旧的 `claude` 仍应被识别为同一 agent（#81 的手动入口）。
+pub fn recognition_rules(settings: &Settings) -> Vec<RecognitionRule> {
+    let mut rules = default_recognition_rules();
+    for config in resolve_all(settings) {
+        rules.push(RecognitionRule {
+            agent_id: config.id,
+            command: config.command,
+        });
+    }
+    rules.sort_by(|left, right| {
+        (left.agent_id.as_str(), left.command.to_ascii_lowercase())
+            .cmp(&(right.agent_id.as_str(), right.command.to_ascii_lowercase()))
+    });
+    rules.dedup_by(|left, right| {
+        left.agent_id.eq_ignore_ascii_case(&right.agent_id)
+            && left.command.eq_ignore_ascii_case(&right.command)
+    });
+    rules
+}
 
 /// 把 `settings` 里的覆盖项合并到缺省配置。
 pub fn resolve(settings: &Settings, id: &str) -> Option<AgentConfig> {
@@ -352,6 +388,30 @@ mod tests {
         let mut settings = Settings::default();
         settings.agents.insert(id.to_owned(), over);
         settings
+    }
+
+    #[test]
+    fn recognition_rules_include_defaults_and_configured_commands() {
+        let mut settings = Settings::default();
+        settings.agents.insert(
+            "claude".to_owned(),
+            AgentOverride {
+                command: Some("my-claude".to_owned()),
+                ..AgentOverride::default()
+            },
+        );
+        let rules = recognition_rules(&settings);
+        assert!(rules
+            .iter()
+            .any(|rule| rule.agent_id == "claude" && rule.command == "claude"));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.agent_id == "claude" && rule.command == "my-claude"));
+        assert!(rules
+            .iter()
+            .any(|rule| rule.agent_id == "codex" && rule.command == "codex"));
+        assert!(rules.iter().any(|rule| rule.agent_id == "opencode"));
+        assert!(rules.iter().any(|rule| rule.agent_id == "pi"));
     }
 
     #[test]

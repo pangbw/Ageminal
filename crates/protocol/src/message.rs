@@ -148,6 +148,9 @@ pub struct SessionInfo {
     /// spawn 时间（Unix 毫秒）；用于稳定排序 / 后续对账。
     #[serde(default)]
     pub started_at_ms: u64,
+    /// 最近一次 PTY 输出时间（Unix 毫秒）；#81 的输出静默启发式用。
+    #[serde(default)]
+    pub last_output_ms: u64,
 }
 
 /// 会话清单：D→UI（响应 [`Message::ListSessions`]）。
@@ -612,6 +615,7 @@ mod tests {
                     cols: 120,
                     rows: 30,
                     started_at_ms: 1_700_000_000_000,
+                    last_output_ms: 1_700_000_000_500,
                 }],
             }),
             Message::CreateSession(CreateSession {
