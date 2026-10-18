@@ -43,5 +43,7 @@ pub mod paths;
 pub mod server;
 #[cfg(windows)]
 mod session;
+/// 服务端 VT 内核（#70）：屏幕 / 光标 / alt-screen / SGR。
+pub mod vt;
 #[cfg(windows)]
 mod win;

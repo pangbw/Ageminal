@@ -30,6 +30,7 @@ use ageminal_protocol::{Attached, CreateSession, Message, SessionCreated, Sessio
 
 use crate::outbound::Outbound;
 use crate::pty::{self, Pty, PtySize, PtySpec};
+use crate::vt::Vt;
 use crate::DaemonError;
 
 /// exit 监视线程的轮询间隔。
@@ -62,6 +63,8 @@ struct Session {
     seq: AtomicU64,
     /// 客户端已确认消费的字节数（#73 的水位输入）。
     acked_bytes: AtomicU64,
+    /// 服务端 VT 内核（#70）：屏幕 / 光标 / alt-screen / SGR。
+    vt: Mutex<Vt>,
     /// 当前挂着的连接。
     attachment: Mutex<Option<Attachment>>,
 }
@@ -130,6 +133,7 @@ impl SessionTable {
             writer: Mutex::new(writer),
             seq: AtomicU64::new(0),
             acked_bytes: AtomicU64::new(0),
+            vt: Mutex::new(Vt::new(request.cols as usize, request.rows as usize)),
             attachment: Mutex::new(Some(Attachment { handle, outbound })),
         });
 
@@ -239,6 +243,11 @@ impl SessionTable {
             });
         };
         pty.resize(size)?;
+        session
+            .vt
+            .lock()
+            .expect("vt")
+            .resize(size.cols as usize, size.rows as usize);
         Ok(())
     }
 
@@ -295,27 +304,32 @@ impl SessionTable {
     }
 }
 
-/// 输出线程：PTY 字节 → 数据帧（带连接的 handle 与累计字节偏移）。
+/// 输出线程：PTY 字节 → **先喂 VT 内核** → 数据帧（带连接的 handle 与累计字节偏移）。
 fn spawn_output_pump(session: Arc<Session>, mut reader: Box<dyn Read + Send>) {
-    thread::spawn(move || {
-        let mut buffer = vec![0u8; READ_CHUNK];
-        loop {
-            let read = match reader.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => read,
-            };
-            let seq = session.seq.fetch_add(read as u64, Ordering::SeqCst);
-            let attachment = session.attachment.lock().expect("attachment").clone();
-            if let Some(attachment) = attachment {
-                attachment.outbound.send_data(&Message::Data {
-                    handle: attachment.handle,
-                    seq,
-                    bytes: buffer[..read].to_vec(),
-                });
-            }
-            // 没有连接 → 丢弃（#72 的环形缓冲负责留住最近的历史）。
+    thread::spawn(move || pump_output(&session, &mut *reader));
+}
+
+/// 同步排空一个输出流（抽出来好让单测不启线程）。
+fn pump_output(session: &Session, reader: &mut dyn Read) {
+    let mut buffer = vec![0u8; READ_CHUNK];
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        // 服务端状态必须先于转发更新：#71 的快照、#72 的回放都以它为准。
+        session.vt.lock().expect("vt").feed(&buffer[..read]);
+        let seq = session.seq.fetch_add(read as u64, Ordering::SeqCst);
+        let attachment = session.attachment.lock().expect("attachment").clone();
+        if let Some(attachment) = attachment {
+            attachment.outbound.send_data(&Message::Data {
+                handle: attachment.handle,
+                seq,
+                bytes: buffer[..read].to_vec(),
+            });
         }
-    });
+        // 没有连接 → 丢弃（#72 的环形缓冲负责留住最近的历史）。
+    }
 }
 
 /// exit 监视线程：在**自己的**进程句柄上轮询，不碰 `control` 锁。
@@ -499,6 +513,7 @@ mod tests {
             writer: Mutex::new(Box::new(std::io::sink())),
             seq: AtomicU64::new(0),
             acked_bytes: AtomicU64::new(0),
+            vt: Mutex::new(Vt::new(80, 24)),
             attachment: Mutex::new(None),
         })
     }
@@ -524,6 +539,32 @@ mod tests {
         // 同一代只摘一次。
         assert!(table.remove_if_current("s", "inc-2"));
         assert!(!table.remove_if_current("s", "inc-2"));
+    }
+
+    /// #70：输出线程必须在转发之前把字节喂给服务端 VT 内核。
+    #[test]
+    fn output_pump_feeds_the_vt_kernel() {
+        use alacritty_terminal::vte::ansi::{Color, NamedColor};
+
+        let session = session("s", "inc-1");
+        let mut reader = std::io::Cursor::new(b"\x1b[32mGREEN\x1b[0m vt\r\n".to_vec());
+
+        pump_output(&session, &mut reader);
+
+        let vt = session.vt.lock().expect("vt");
+        assert!(
+            vt.lines()[0].contains("GREEN vt"),
+            "VT 内核应看到输出，实际：{:?}",
+            vt.lines()
+        );
+        let first = vt.cell(0, 0).expect("cell");
+        assert_eq!(first.character, 'G');
+        assert_eq!(first.foreground, Color::Named(NamedColor::Green));
+
+        // resize 也要同步到内核。
+        drop(vt);
+        session.vt.lock().expect("vt").resize(40, 12);
+        assert_eq!(session.vt.lock().expect("vt").columns(), 40);
     }
 
     #[test]

@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 ageminal-protocol = { path = "../protocol" }
+alacritty_terminal = "0.26"
 thiserror = "2"
 
 # 只碰内核对象 + 一段安全描述符，按需开 feature（不引任何重依赖）。
