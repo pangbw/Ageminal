@@ -59,6 +59,7 @@
 | **快照 / checkpoint** | 服务端 VT 内核产出的 **ANSI 快照**，用于 attach 时重建屏幕（路线 C）。 |
 | **回放（replay）** | 环形缓冲里按**单调偏移**把「快照之后的字节」补上；与实时流去重衔接。 |
 | **scrollback** | 可滚动历史；10k 行。 |
+| **落盘历史（history）** | daemon 在 `<config>\history\<encoded-sid>\` 写 `checkpoint.json` + 帧化 `output.log`；按 `seq` 续放，单会话 64 MiB、全部目录 256 MiB 预算 GC。`sid` 含 `/` / `:`，目录名做百分号编码。 |
 | **流控** | VS Code 式 **high/low 水位 + 累积 ack**（ack 来自 xterm.js 的 write 回调），档位 256/64/32 KiB。 |
 | **合批（batching）** | Tauri `Channel` 的 `Raw` 帧 **< 1024 字节会退化成 JSON 数组**，故 **≥16 KiB 或 ≥8 ms** 才 flush。 |
 | **隐藏会话不推流** | 不可见的页签不接收数据；切回时用**快照 attach**。 |

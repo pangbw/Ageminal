@@ -12,6 +12,8 @@
 //!   原子单例守卫；管道 DACL 只放当前用户（[`acl`]）。
 //! - **发现靠落盘**：daemon 把 管道名 + 握手令牌 写进 `%LOCALAPPDATA%\Ageminal\daemon.json`
 //!   （[`DaemonInfo`]），客户端读它来连接。
+//! - **终端历史落盘**：每个会话在 `history/<encoded-sid>/` 下维护 checkpoint + 帧化日志
+//!   （[`history`]，issue #74）。
 //!
 //! 面向 app 的入口是 [`launch::ensure_running`]；面向已连接会话的是 [`client`]。
 
@@ -31,6 +33,8 @@ mod acl;
 pub mod client;
 #[cfg(windows)]
 mod framed;
+/// 有界落盘历史（#74）。
+pub mod history;
 #[cfg(windows)]
 pub mod launch;
 #[cfg(windows)]

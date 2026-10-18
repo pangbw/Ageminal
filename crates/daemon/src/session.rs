@@ -14,7 +14,13 @@
 //! - 输出线程与 attach 共用 **VT → output** 锁序，快照 / `seq` / 回放窗口是同一个原子边界。
 //!
 //! **断开期间产生的退出事件仍会丢弃**（`attachment` 为空时无处可送），重连后表现为「没有会话」；
-//! 区分「从未存在 / 离开期间退了」需要更长的持久化历史，归 #74。
+//! 更长的历史由落盘日志补足（#74），但「退出事件对账」仍归 #78。
+//!
+//! # 落盘历史（#74）
+//!
+//! 每个进程的 PTY 字节在喂过 VT 后按 `seq` 追加进 `history/<encoded-sid>/output.log`；内存环
+//! 覆盖不到 `last_seq` 时，`attach` 从日志精确续放。checkpoint 每 1 MiB / 轮转 / 退出时更新，
+//! 单会话 64 MiB、全部目录 256 MiB 预算 GC。历史 IO 失败只会关闭持久化，不影响会话。
 //!
 //! # 流控（#73）
 //!
@@ -39,6 +45,7 @@ use ageminal_protocol::{
     Attached, CreateSession, Message, SessionCreated, SessionExited, SessionInfo, Snapshot,
 };
 
+use crate::history::{self, History, HistoryStore};
 use crate::outbound::Outbound;
 use crate::pty::{self, Pty, PtySize, PtySpec};
 use crate::ring::RingBuffer;
@@ -156,6 +163,8 @@ struct Session {
     flow: Mutex<FlowState>,
     /// 流控门闩的唤醒（ack / detach / terminate）。
     flow_wake: Condvar,
+    /// 有界落盘历史（#74）；`None` = 测试 / 不支持持久化。
+    history: Mutex<Option<History>>,
 }
 
 /// daemon 全局的会话表。
@@ -163,12 +172,23 @@ struct Session {
 pub struct SessionTable {
     sessions: Mutex<HashMap<String, Arc<Session>>>,
     next_incarnation: AtomicU64,
+    /// 所有会话共享的历史根；测试里为 `None`，生产由 server 注入。
+    history: Option<HistoryStore>,
 }
 
 impl SessionTable {
-    /// 建空表。
+    /// 建空表（不落盘历史；测试用）。
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 建带落盘历史的表（生产用）。
+    pub fn with_history(history: HistoryStore) -> Self {
+        Self {
+            history: Some(history),
+            ..Self::default()
+        }
     }
 
     /// 建会话：spawn PTY → 起输出线程 + exit 监视线程。
@@ -199,6 +219,9 @@ impl SessionTable {
             });
         }
 
+        // 历史 GC 放在 spawn 前：清掉旧目录不会碰到刚建好的会话。
+        self.collect_history_garbage(Some(&request.sid));
+
         let mut control = pty::spawn(&spec_from(request))?;
         let pid = control.pid();
         // 解耦「等退出」：自己开一个进程句柄，`terminate` 阻塞也不会影响退出事件。
@@ -214,6 +237,8 @@ impl SessionTable {
             "inc-{}",
             self.next_incarnation.fetch_add(1, Ordering::Relaxed)
         );
+        let vt = Vt::new(request.cols as usize, request.rows as usize);
+        let history = self.open_history(&request.sid, &vt);
         let session = Arc::new(Session {
             sid: request.sid.clone(),
             incarnation_id: incarnation_id.clone(),
@@ -223,7 +248,7 @@ impl SessionTable {
             control: Mutex::new(Some(control)),
             exit: Some(exit),
             writer: Mutex::new(writer),
-            vt: Mutex::new(Vt::new(request.cols as usize, request.rows as usize)),
+            vt: Mutex::new(vt),
             output: Mutex::new(OutputState {
                 seq: 0,
                 ring: RingBuffer::new(OUTPUT_RING_BYTES),
@@ -231,6 +256,7 @@ impl SessionTable {
             }),
             flow: Mutex::new(FlowState::default()),
             flow_wake: Condvar::new(),
+            history: Mutex::new(history),
         });
 
         // spawn 期间表可能被塞进同名会话（单连接下不会，但别赌）。**保住活着的那一个**，
@@ -282,13 +308,30 @@ impl SessionTable {
         let session = self.get(sid)?;
         let vt = session.vt.lock().expect("vt");
         let mut output = session.output.lock().expect("output");
+        // 锁顺序：VT → output → history（输出线程同序）。
+        let history = session.history.lock().expect("history");
         let current = output.seq;
         let alt_screen = vt.alt_screen();
+
+        let disk_replay = |from: u64| -> Option<Vec<u8>> {
+            let history = history.as_ref()?;
+            match history.replay_from(from) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    history.warn(&format!("读取会话 {sid} 的历史失败：{error}"));
+                    None
+                }
+            }
+        };
 
         let (snapshot, from_seq, replay) = if last_seq > 0 && last_seq <= current {
             match output.ring.since(last_seq) {
                 Some(bytes) => (None, last_seq, bytes),
-                None => (Some(vt.snapshot()), current, Vec::new()),
+                // 内存环只覆盖最近 4 MiB；更长的 detach 输出从落盘日志续放（#74）。
+                None => match disk_replay(last_seq) {
+                    Some(bytes) => (None, last_seq, bytes),
+                    None => (Some(vt.snapshot()), current, Vec::new()),
+                },
             }
         } else {
             // `last_seq == 0`：新 UI，没有可信的屏幕；用快照重建。
@@ -506,6 +549,52 @@ impl SessionTable {
         Ok(())
     }
 
+    /// 为一个新会话开历史；失败只记录并降级为「不落盘」。
+    fn open_history(&self, sid: &str, vt: &Vt) -> Option<History> {
+        let store = self.history.as_ref()?;
+        let ansi = vt.snapshot();
+        let snapshot = history::Snapshot {
+            ansi: &ansi,
+            cols: vt.columns() as u16,
+            rows: vt.screen_lines() as u16,
+            alt_screen: vt.alt_screen(),
+        };
+        match store.create(sid, snapshot) {
+            Ok(history) => Some(history),
+            Err(error) => {
+                store.warn(&format!("会话 {sid} 的历史初始化失败：{error}"));
+                None
+            }
+        }
+    }
+
+    /// 按总预算清理历史；`extra` 用于「刚创建 / 还未插入会话表」的 sid。
+    fn collect_history_garbage(&self, extra: Option<&str>) {
+        let Some(store) = self.history.as_ref() else {
+            return;
+        };
+        let mut active: Vec<String> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .keys()
+            .cloned()
+            .collect();
+        if let Some(sid) = extra {
+            if !active.iter().any(|current| current == sid) {
+                active.push(sid.to_owned());
+            }
+        }
+        // `active` 用原始 sid；GC 内部统一编码成目录名再比较。
+        let report = store.collect_garbage(&active);
+        if report.removed_dirs > 0 {
+            store.warn(&format!(
+                "历史 GC 删除 {} 个目录 / {} 字节",
+                report.removed_dirs, report.removed_bytes
+            ));
+        }
+    }
+
     /// 取会话。
     fn get(&self, sid: &str) -> Result<Arc<Session>, DaemonError> {
         self.sessions
@@ -525,6 +614,15 @@ impl SessionTable {
             .lock()
             .expect("sessions")
             .insert(session.sid.clone(), session)
+    }
+
+    /// 这个 `sid` 当前是否仍是这一代（最终 checkpoint 要在摘除前做，避免 GC 抢删目录）。
+    fn is_current(&self, sid: &str, incarnation_id: &str) -> bool {
+        self.sessions
+            .lock()
+            .expect("sessions")
+            .get(sid)
+            .is_some_and(|session| session.incarnation_id == incarnation_id)
     }
 
     /// 「只有**当前世代**的 exit 才上报」——判定与摘除在**同一次加锁**里完成。
@@ -565,6 +663,43 @@ fn pump_output(session: &Session, reader: &mut dyn Read) {
         let seq = output.seq;
         output.seq += read as u64;
         output.ring.push(seq, &buffer[..read]);
+
+        // 有界落盘历史（#74）：在 VT / output 锁内写，保证磁盘尾部与 `seq` 对齐；
+        // 历史 IO 失败只关闭持久化，不影响会话本身。
+        {
+            let mut history = session.history.lock().expect("history");
+            let mut disable = false;
+            if let Some(writer) = history.as_mut() {
+                let rotate = writer.would_rotate(read);
+                let periodic = !rotate && writer.needs_checkpoint(read);
+                let checkpoint_ansi = (rotate || periodic).then(|| vt.snapshot());
+                let checkpoint = checkpoint_ansi.as_deref().map(|ansi| history::Snapshot {
+                    ansi,
+                    cols: vt.columns() as u16,
+                    rows: vt.screen_lines() as u16,
+                    alt_screen: vt.alt_screen(),
+                });
+                let mut failure = writer
+                    .append(seq, &buffer[..read], if rotate { checkpoint } else { None })
+                    .err();
+                if failure.is_none() && periodic {
+                    failure = writer
+                        .checkpoint(
+                            writer.end_seq(),
+                            checkpoint.expect("周期性 checkpoint 快照"),
+                        )
+                        .err();
+                }
+                if let Some(error) = failure {
+                    writer.warn(&format!("会话 {} 停止历史落盘：{error}", session.sid));
+                    disable = true;
+                }
+            }
+            if disable {
+                *history = None;
+            }
+        }
+
         let attachment = output.attachment.clone();
         let attached = attachment.is_some();
         session
@@ -603,6 +738,30 @@ fn release_flow(session: &Session) {
     session.flow_wake.notify_all();
 }
 
+/// 会话退出前补最后一份 checkpoint（日志仍是完整增量，便于冷恢复）。
+fn checkpoint_history(session: &Session) {
+    let vt = session.vt.lock().expect("vt");
+    let output = session.output.lock().expect("output");
+    let mut history = session.history.lock().expect("history");
+    let Some(writer) = history.as_mut() else {
+        return;
+    };
+    let seq = output.seq;
+    let ansi = vt.snapshot();
+    let snapshot = history::Snapshot {
+        ansi: &ansi,
+        cols: vt.columns() as u16,
+        rows: vt.screen_lines() as u16,
+        alt_screen: vt.alt_screen(),
+    };
+    if let Err(error) = writer.checkpoint(seq, snapshot) {
+        writer.warn(&format!(
+            "会话 {} 最终 checkpoint 失败：{error}",
+            session.sid
+        ));
+    }
+}
+
 /// exit 监视线程：在**自己的**进程句柄上轮询，不碰 `control` 锁。
 ///
 /// 用轮询而不是阻塞 `wait`：关控制台那一步可能很久（`terminate` 已挪到独立线程），阻塞式等待会占着
@@ -622,6 +781,10 @@ fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
                     let _ = unsafe { GetExitCodeProcess(handle, &mut code) };
 
                     // 只有「表里当前这一代」才上报（迟到 exit 按 incarnationId 丢弃）。
+                    // 最终 checkpoint 在摘除前做：此时历史目录仍被 active 保护，不会被 GC 抢删。
+                    if table.is_current(&session.sid, &session.incarnation_id) {
+                        checkpoint_history(&session);
+                    }
                     if table.remove_if_current(&session.sid, &session.incarnation_id) {
                         release_flow(&session);
                         let attachment = session.output.lock().expect("output").attachment.clone();
@@ -636,6 +799,8 @@ fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
                                 },
                             ));
                         }
+                        // 会话已经退出：变成 GC 候选（总预算超出时删最旧的）。
+                        table.collect_history_garbage(None);
                     }
                     return;
                 }
@@ -798,6 +963,47 @@ mod tests {
             }),
             flow: Mutex::new(FlowState::default()),
             flow_wake: Condvar::new(),
+            history: Mutex::new(None),
+        })
+    }
+
+    fn session_with_history(
+        sid: &str,
+        incarnation_id: &str,
+        ring_bytes: usize,
+        store: &HistoryStore,
+    ) -> Arc<Session> {
+        let vt = Vt::new(80, 24);
+        let ansi = vt.snapshot();
+        let history = store
+            .create(
+                sid,
+                history::Snapshot {
+                    ansi: &ansi,
+                    cols: vt.columns() as u16,
+                    rows: vt.screen_lines() as u16,
+                    alt_screen: vt.alt_screen(),
+                },
+            )
+            .expect("history");
+        Arc::new(Session {
+            sid: sid.to_owned(),
+            incarnation_id: incarnation_id.to_owned(),
+            pid: 0,
+            cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            started_at_ms: 0,
+            control: Mutex::new(Some(Box::new(FakePty))),
+            exit: None,
+            writer: Mutex::new(Box::new(std::io::sink())),
+            vt: Mutex::new(vt),
+            output: Mutex::new(OutputState {
+                seq: 0,
+                ring: RingBuffer::new(ring_bytes),
+                attachment: None,
+            }),
+            flow: Mutex::new(FlowState::default()),
+            flow_wake: Condvar::new(),
+            history: Mutex::new(Some(history)),
         })
     }
 
@@ -959,6 +1165,44 @@ mod tests {
         assert_eq!(current.from_seq, 10);
         assert_eq!(current.replay_end, 10);
         assert!(drain(&current_out).is_empty());
+    }
+
+    /// #74：内存环滚掉后，`Attach(old_last_seq)` 仍能从落盘日志精确续放。
+    #[test]
+    fn attach_replays_detached_output_from_disk_after_the_ring_rolled() {
+        let root = std::env::temp_dir().join(format!(
+            "ageminal-session-history-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let store = HistoryStore::new(root.clone());
+        let table = SessionTable::new();
+        table.insert(session_with_history("s", "inc-1", 4, &store));
+
+        PumpFixture::feed(&table, b"0123456789");
+        let outbound = outbound();
+        let attached = table.attach("s", 2, 7, outbound.clone()).expect("attach");
+
+        assert!(
+            attached.snapshot.is_none(),
+            "磁盘日志覆盖 last_seq 时不应退化为快照"
+        );
+        assert_eq!(attached.from_seq, 2);
+        assert_eq!(attached.replay_end, 10);
+        let bytes: Vec<u8> = drain(&outbound)
+            .into_iter()
+            .flat_map(|message| match message {
+                Message::Data { bytes, .. } => bytes,
+                _ => Vec::new(),
+            })
+            .collect();
+        assert_eq!(bytes, b"23456789");
+
+        drop(table);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// #72 验收 2：断档恢复走 checkpoint，快照与 seq 必须配对。

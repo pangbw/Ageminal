@@ -520,6 +520,157 @@ fn number_after_marker(text: &str, marker: &str) -> Option<u32> {
     None
 }
 
+/// #74：历史确实落盘；UI detach 后 daemon 继续写，日志还能从文件读出。
+#[test]
+fn history_files_keep_growing_after_ui_detaches() {
+    let fixture = Fixture::new("history");
+    let daemon = Spawned::start(&fixture);
+    let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+    let created = client.create_session(request("history")).expect("建会话");
+
+    client
+        .write_input(created.handle, b"echo HISTORY-BEFORE-DETACH\r\n")
+        .expect("写");
+    let mut collected = Collected::default();
+    collected.wait_for(
+        &mut client,
+        created.handle,
+        "HISTORY-BEFORE-DETACH",
+        TIMEOUT,
+    );
+
+    let dir = fixture
+        .config_dir
+        .join("history")
+        .join(ageminal_daemon::history::encode_sid("history"));
+    let checkpoint_path = dir.join("checkpoint.json");
+    let log_path = dir.join("output.log");
+    assert!(checkpoint_path.is_file(), "应有 checkpoint.json");
+    assert!(log_path.is_file(), "应有 output.log");
+
+    let checkpoint: ageminal_daemon::history::Checkpoint =
+        serde_json::from_slice(&std::fs::read(&checkpoint_path).unwrap()).unwrap();
+    assert_eq!(checkpoint.sid, "history");
+    assert_eq!(checkpoint.seq, 0, "首份 checkpoint 在会话起点");
+    let log = std::fs::read(&log_path).unwrap();
+    assert_eq!(&log[..4], b"AGMH");
+    assert!(
+        log.windows(b"HISTORY-BEFORE-DETACH".len())
+            .any(|window| window == b"HISTORY-BEFORE-DETACH"),
+        "日志应包含 detach 前的输出"
+    );
+    assert!(log.len() as u64 <= ageminal_daemon::history::CHECKPOINT_MAX);
+
+    // UI detach：daemon 仍要读 PTY、写 VT、写历史。
+    client.detach("history").expect("detach");
+    let before = log.len() as u64;
+    client
+        .write_input(created.handle, b"echo HISTORY-AFTER-DETACH\r\n")
+        .expect("detach 后仍可输入");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut after = before;
+    while Instant::now() < deadline {
+        after = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        if after > before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(after > before, "UI detach 后历史日志必须继续增长");
+
+    let log = std::fs::read(&log_path).unwrap();
+    assert!(
+        log.windows(b"HISTORY-AFTER-DETACH".len())
+            .any(|window| window == b"HISTORY-AFTER-DETACH"),
+        "detach 期间输出应落盘，供之后的 Attach 续放"
+    );
+}
+
+/// #74 验收：UI detach 后产出超过 4 MiB 内存环，`Attach(old_seq)` 仍从落盘日志完整续放。
+#[test]
+fn long_detached_output_is_replayed_from_disk_after_reattach() {
+    let fixture = Fixture::new("history-disk");
+    let daemon = Spawned::start(&fixture);
+    let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+    let created = client
+        .create_session(request("history-disk"))
+        .expect("建会话");
+
+    // 先 detach，再让 shell 产出 ~5.6 MiB：这段时间只有落盘历史，没有 UI 收流。
+    client.detach("history-disk").expect("detach");
+    client
+        .write_input(
+            created.handle,
+            b"powershell -NoProfile -Command \"$s='A'*4096; 1..1400 | ForEach-Object { [Console]::Write($s) }; Write-Output ('HISTORY-' + 'END-REAL')\"\r\n",
+        )
+        .expect("写长输出命令");
+
+    let dir = fixture
+        .config_dir
+        .join("history")
+        .join(ageminal_daemon::history::encode_sid("history-disk"));
+    let log_path = dir.join("output.log");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Ok(metadata) = std::fs::metadata(&log_path) {
+            if metadata.len() > 4 * 1024 * 1024 {
+                let log = std::fs::read(&log_path).unwrap_or_default();
+                if log
+                    .windows(b"HISTORY-END-REAL".len())
+                    .any(|window| window == b"HISTORY-END-REAL")
+                {
+                    break;
+                }
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "长输出没在 30 s 内全部落盘；daemon.log:\n{}",
+            support::daemon_log(&fixture)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // last_seq=1 已滑出 4 MiB 内存环；只有磁盘日志能提供完整回放。
+    let attached = client.attach("history-disk", 1).expect("attach");
+    assert!(
+        attached.snapshot.is_none(),
+        "磁盘日志覆盖 last_seq 时不能退化为快照"
+    );
+    assert_eq!(attached.from_seq, 1);
+    let expected = attached.replay_end - attached.from_seq;
+    assert!(
+        expected > 4 * 1024 * 1024,
+        "测试前提是输出超过内存环，实际回放只有 {expected} 字节"
+    );
+
+    let mut replay = Vec::with_capacity(expected as usize);
+    while (replay.len() as u64) < expected {
+        let Some(message) = client
+            .next_event(Duration::from_secs(10))
+            .expect("next_event")
+        else {
+            panic!(
+                "回放中断：已收 {} / {} 字节；daemon.log:\n{}",
+                replay.len(),
+                expected,
+                support::daemon_log(&fixture)
+            );
+        };
+        if let Message::Data { bytes, .. } = message {
+            let remaining = expected as usize - replay.len();
+            replay.extend_from_slice(&bytes[..bytes.len().min(remaining)]);
+        }
+    }
+    assert_eq!(replay.len() as u64, expected);
+    assert!(
+        replay
+            .windows(b"HISTORY-END-REAL".len())
+            .any(|window| window == b"HISTORY-END-REAL"),
+        "从磁盘续放的内容应包含 detach 期间的结尾标记"
+    );
+}
+
 /// #76：托盘退出走 daemon 的 `Shutdown` —— 所有会话被终止，daemon 自己退出并删发现文件。
 #[test]
 fn shutdown_terminates_all_sessions_and_stops_daemon() {

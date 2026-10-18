@@ -31,6 +31,7 @@ use windows_sys::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_WAIT,
 };
 
+use crate::history::HistoryStore;
 use crate::outbound::Outbound;
 use crate::pty::PtySize;
 use crate::session::SessionTable;
@@ -141,7 +142,20 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
     );
 
     // 会话表是 **daemon 全局**的：会话要活过连接（live reattach，REQUIREMENTS.md §5.2）。
-    let sessions = Arc::new(SessionTable::new());
+    // 历史根归 daemon；启动时先按总预算清一次旧目录（#74）。
+    let history = HistoryStore::new(paths::history_dir_in(&config.config_dir))
+        .with_log_path(log_path.clone());
+    let report = history.collect_garbage(&[]);
+    if report.removed_dirs > 0 {
+        logging::append(
+            &log_path,
+            &format!(
+                "历史 GC：删除 {} 个目录 / {} 字节（启动时）",
+                report.removed_dirs, report.removed_bytes
+            ),
+        );
+    }
+    let sessions = Arc::new(SessionTable::with_history(history));
     let shutdown = AtomicBool::new(false);
     let result = accept_loop(&pipe, &info, &sessions, &log_path, &shutdown);
 

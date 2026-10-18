@@ -24,6 +24,11 @@ pub fn log_file_in(config_dir: &Path) -> PathBuf {
     config_dir.join("logs").join("daemon.log")
 }
 
+/// 终端历史根：`<config>/history`（#74）。
+pub fn history_dir_in(config_dir: &Path) -> PathBuf {
+    config_dir.join("history")
+}
+
 /// 命名管道名：**按当前用户隔离**（`\\.\pipe\ageminal-<sid hex>`）。
 ///
 /// 名字带 SID 是「按当前用户隔离」的第一层；第二层是管道 DACL 只放当前用户（见 [`crate::acl`]）。
@@ -52,5 +57,11 @@ mod tests {
     fn logs_hang_off_the_config_dir() {
         let config = Path::new(r"C:\Users\me\AppData\Local\Ageminal");
         assert_eq!(log_file_in(config), config.join("logs").join("daemon.log"));
+    }
+
+    #[test]
+    fn history_hangs_off_the_config_dir() {
+        let config = Path::new(r"C:\Users\me\AppData\Local\Ageminal");
+        assert_eq!(history_dir_in(config), config.join("history"));
     }
 }
