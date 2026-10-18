@@ -251,6 +251,14 @@ fn detach_keeps_the_session_alive() {
         .expect("写");
     collected.wait_for(&mut client, created.handle, "BEFORE", TIMEOUT);
 
+    // 把 BEFORE 提示符之后的残余输出收干净，避免「detach 后无数据」被旧帧误判。
+    while let Some(message) = client
+        .next_event(Duration::from_millis(50))
+        .expect("next_event")
+    {
+        collected.absorb(message);
+    }
+
     // 断开：不回退出事件，会话还在。
     let last = collected.bytes(created.handle);
     client.detach("d").expect("detach 是 fire-and-forget");
@@ -258,6 +266,12 @@ fn detach_keeps_the_session_alive() {
         .write_input(created.handle, b"echo WHILE-AWAY\r\n")
         .expect("写");
     std::thread::sleep(Duration::from_millis(500));
+
+    // #73：不可见时 daemon 不推流（输出只留在 VT / 环形缓冲里）。
+    let hidden = client
+        .next_event(Duration::from_millis(300))
+        .expect("next_event");
+    assert!(hidden.is_none(), "detach 后不应收到数据：{hidden:?}");
 
     // #72：从断开前的 last_seq 精确回放，回放里应包含断开期间产生的输出。
     let attached = client.attach("d", last).expect("attach");
@@ -285,6 +299,158 @@ fn detach_keeps_the_session_alive() {
 
     client.terminate("d", false).expect("terminate");
     wait_for_exit(&mut client, &mut collected, "d", TIMEOUT);
+}
+
+/// 按控制字符切出真正的输出 token：ConPTY / cmd 会插入 OSC 标题（`\x1b]0;…\x07`），
+/// 且标题之后不保证有换行——不能只看 `lines()`。
+fn flow_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(['\r', '\n', '\x1b', '\x07'])
+        .filter(|token| !token.is_empty())
+}
+
+/// 输出结束标记：`FLOW-<随机数>-DONE`；命令回显里的 `%RANDOM%` 不会误匹配。
+fn flow_done(text: &str) -> bool {
+    flow_tokens(text).any(|token| {
+        token
+            .strip_prefix("FLOW-")
+            .and_then(|rest| rest.strip_suffix("-DONE"))
+            .is_some_and(|number| {
+                !number.is_empty() && number.chars().all(|character| character.is_ascii_digit())
+            })
+    })
+}
+
+/// #73 验收 1：高吞吐下不 ack 时输出在高水位停住；ack 后继续，且一行不丢。
+#[test]
+fn flow_control_pauses_at_high_water_and_resumes_without_loss() {
+    const LINES: usize = 20_000;
+    const HIGH: u64 = 256 * 1024;
+
+    let fixture = Fixture::new("flow");
+    let daemon = Spawned::start(&fixture);
+    let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+    let created = client.create_session(request("flow")).expect("建会话");
+
+    // 20k 行 × 43B ≈ 860 KiB，足够跨过 256 KiB 高水位多次。
+    let command = format!(
+        "for /L %i in (1,1,{LINES}) do @echo FLOW-%i-012345678901234567890123456789\r\necho FLOW-%RANDOM%-DONE\r\n"
+    );
+    client
+        .write_input(created.handle, command.as_bytes())
+        .expect("写");
+
+    let mut text = String::new();
+    let mut bytes = 0u64;
+    let mut acked = 0u64;
+    let mut paused_at = None;
+    let deadline = Instant::now() + TIMEOUT;
+
+    loop {
+        if Instant::now() >= deadline {
+            let tail: String = text
+                .chars()
+                .rev()
+                .take(400)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            panic!("流控测试超时：收到 {bytes} 字节，paused_at={paused_at:?}，尾部={tail:?}");
+        }
+        match client
+            .next_event(Duration::from_millis(100))
+            .expect("next_event")
+        {
+            Some(Message::Data { bytes: chunk, .. }) => {
+                bytes += chunk.len() as u64;
+                text.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            Some(Message::Error(error)) => panic!("daemon 报错：{error:?}"),
+            Some(_) => {}
+            None => {
+                if flow_done(&text) {
+                    break;
+                }
+                if bytes < HIGH {
+                    // 命令可能还没开始输出；继续等。
+                    continue;
+                }
+                if paused_at.is_none() {
+                    // 第一次到达高水位：不 ack，确认输出真的停住（而不是恰好管道空了一下）。
+                    let before = bytes;
+                    let probe_deadline = Instant::now() + Duration::from_millis(300);
+                    while Instant::now() < probe_deadline {
+                        match client
+                            .next_event(Duration::from_millis(50))
+                            .expect("next_event")
+                        {
+                            Some(Message::Data { bytes: chunk, .. }) => {
+                                bytes += chunk.len() as u64;
+                                text.push_str(&String::from_utf8_lossy(&chunk));
+                                panic!(
+                                    "高水位后仍继续推流（背压未生效）：{} → {} 字节",
+                                    before, bytes
+                                );
+                            }
+                            Some(_) => {}
+                            None => {}
+                        }
+                    }
+                    assert!(
+                        !flow_done(&text),
+                        "输出已结束却没触发高水位暂停（命令太小或流控没生效）"
+                    );
+                    paused_at = Some(bytes);
+                }
+                if bytes > acked {
+                    client.ack("flow", bytes).expect("ack");
+                    acked = bytes;
+                }
+            }
+        }
+    }
+
+    let paused_at = paused_at.expect("输出应触发高水位暂停");
+    assert!(paused_at < bytes, "ack 之后应继续收到剩余输出");
+    assert!(bytes > HIGH);
+
+    let mut seen = vec![false; LINES + 1];
+    for token in flow_tokens(&text) {
+        let Some(rest) = token.strip_prefix("FLOW-") else {
+            continue;
+        };
+        let Some((number, tail)) = rest.split_once('-') else {
+            continue;
+        };
+        if tail != "012345678901234567890123456789" {
+            continue;
+        }
+        if let Ok(number) = number.parse::<usize>() {
+            if number <= LINES {
+                seen[number] = true;
+            }
+        }
+    }
+    let missing: Vec<_> = (1..=LINES)
+        .filter(|number| !seen[*number])
+        .take(8)
+        .collect();
+    for number in &missing {
+        let needle = format!("FLOW-{number}-");
+        match text.find(&needle) {
+            Some(position) => {
+                let start = position.saturating_sub(40);
+                let end = (position + needle.len() + 120).min(text.len());
+                eprintln!(
+                    "缺失 {number} 的上下文：{:?}",
+                    text.get(start..end).unwrap_or("<非 UTF-8 边界>")
+                );
+            }
+            None => eprintln!("缺失 {number}：原始文本里找不到 {needle:?}"),
+        }
+    }
+    assert!(missing.is_empty(), "流控丢字，缺失行：{missing:?}");
+    assert!(flow_done(&text), "没收到结束标记");
 }
 
 /// 不存在的会话：daemon 回一条 `Error`，**连接不断**（回完还能继续用）。

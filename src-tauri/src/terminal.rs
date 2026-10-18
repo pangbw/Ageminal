@@ -24,12 +24,15 @@
 //! # 隐藏会话
 //!
 //! 页签不可见时前端调 [`terminal_set_visible`]：app-core 向 daemon 发 `Detach`，不再转发字节。
-//! 切回时 `Attach` 从 `last_seq` 之后回放 daemon 环形缓冲；窗口外则用 ANSI 快照重建。
-//! 数据帧按 `seq` 对账：重复只取尾巴，出现空洞就丢弃并请求 checkpoint（#72）。
+//! 切回时用 `Attach(lastSeq = 0)` 取 ANSI 快照刷新屏幕（#73）；精确回放留给 UI 重启 /
+//! 显式重连（#75）。数据帧按 `seq` 对账：重复只取尾巴，出现空洞就丢弃并请求 checkpoint（#72）。
+//!
+//! # 流控（#73）
+//!
+//! daemon 按未确认字节做 256 / 64 KiB 高低水位；前端在 xterm `write` 回调里每 32 KiB（或空闲
+//! 25 ms）回一次累计 ack。高水位时 daemon 暂停读 PTY，背压经 ConPTY 传回子进程。
 //!
 //! # 尚未实现（后续票）
-//!
-//! - 流控高低水位与 daemon 侧暂停发送：见 #73；这里只把 ack 原样转给 daemon 记账。
 //! - 关闭页签的「detach 而不是 terminate」语义：见 #75；本票的关闭是显式结束会话。
 //! - 流内「—— 已重新连接 ——」分隔线：回放边界可能落在转义序列中间，直接注入会截断序列；
 //!   归 #75 随 attach 语义一起做（当前只在面板标题显示可见提示）。
@@ -683,12 +686,10 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
                 }
             }
         }
-        let last_seq = runtime
-            .sessions
-            .get(sid)
-            .map_or(0, |session| session.last_seq);
+        // #73：隐藏页签切回一律用快照刷新（`lastSeq = 0`），不在可见性切换时回放
+        // 整段隐藏输出；精确回放留给 UI 重启 / 显式重连（#75）。
         let attached = match runtime.client.as_mut() {
-            Some(client) => client.attach(sid, last_seq),
+            Some(client) => client.attach(sid, 0),
             None => return,
         };
         match attached {
@@ -742,7 +743,7 @@ fn set_visible(runtime: &mut Runtime, sid: &str, visible: bool) {
         }
         if let Some(session) = runtime.sessions.get_mut(sid) {
             session.visible = false;
-            // 断开期间的输出留在 daemon 环形缓冲里；切回时按 last_seq 回放或走快照。
+            // 断开期间的输出留在 daemon 环形缓冲里；切回时取快照刷新（#73）。
             session.batcher = Batcher::default();
         }
     }

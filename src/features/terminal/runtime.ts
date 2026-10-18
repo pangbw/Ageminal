@@ -4,8 +4,9 @@
  * 三条边界：
  * - xterm 实例与宿主 `<div>` **不进 Pinia**（CONTEXT.md §0.2）；本模块用普通 `Map` 持有。
  * - 只有**当前可见**的页签在收流；不可见时向 app-core 发 `set_visible(false)`，由它 `Detach`。
- * - 合批与背压在 Rust 侧（≥16 KiB / ≥8 ms）；这里只按 xterm `write` 回调做累计 ack。
- * - 切回时 app-core 从 `lastSeq` 回放；窗口外则发 ANSI 快照，前端 `reset()` 后重放（#72）。
+ * - 合批与背压在 Rust 侧（≥16 KiB / ≥8 ms）；这里按 xterm `write` 回调做累计 ack，
+ *   每 32 KiB 或空闲 25 ms 发一次（#73 的 256 / 64 KiB 高低水位输入）。
+ * - 切回可见时 app-core 发 ANSI 快照，前端 `reset()` 后重放（#73）；精确回放留给显式重连。
  */
 import { Channel } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
@@ -55,10 +56,17 @@ type Pooled = {
   parsed: number;
   /** 已报给 app-core 的字节数。 */
   acked: number;
+  /** attach 世代：旧写入的 xterm 回调不能污染新 ack 基点。 */
+  epoch: number;
+  /** 空闲补 ack 的定时器（高水位暂停后，最后不足 32 KiB 的尾巴也必须确认）。 */
+  ackTimer: number | undefined;
 };
 
-/** 一次 ack 的最小间隔，避免 ack 风暴（阈值取 VS Code 量级）。 */
+/** 一次 ack 的字节阈值（VS Code 档位 32 KiB）。 */
 const ACK_BYTES = 32 * 1024;
+
+/** 空闲补 ack 的等待时间：保证背压暂停时最后一块也能被确认。 */
+const ACK_IDLE_MS = 25;
 
 const states = reactive(new Map<string, TerminalState>());
 const pooledTerms = new Map<string, Pooled>();
@@ -131,7 +139,16 @@ export function ensureTerm(sid: string): Pooled {
       .catch((failure: unknown) => console.warn("[terminal] write failed", failure));
   });
 
-  const entry: Pooled = { term, fit, host, input, parsed: 0, acked: 0 };
+  const entry: Pooled = {
+    term,
+    fit,
+    host,
+    input,
+    parsed: 0,
+    acked: 0,
+    epoch: 0,
+    ackTimer: undefined,
+  };
   pooledTerms.set(sid, entry);
   return entry;
 }
@@ -159,7 +176,7 @@ export function fitTerm(target: string | Pooled): { cols: number; rows: number }
   return { cols: entry.term.cols, rows: entry.term.rows };
 }
 
-/** 显示：首次创建会话，之后 `Attach` 续流。 */
+/** 显示：首次创建会话，之后 `Attach` 取快照刷新（#73）。 */
 export function show(sid: string, cwd: string): Promise<void> {
   const created: TerminalState = states.get(sid) ?? {
     sid,
@@ -221,6 +238,7 @@ export async function close(sid: string): Promise<void> {
 
   const entry = pooledTerms.get(sid);
   if (entry) {
+    if (entry.ackTimer !== undefined) window.clearTimeout(entry.ackTimer);
     entry.input.dispose();
     entry.term.dispose();
     entry.host.remove();
@@ -328,21 +346,51 @@ function onMessage(sid: string, message: ArrayBuffer | TerminalControl): void {
 function write(sid: string, data: Uint8Array): void {
   const entry = pooledTerms.get(sid);
   if (!entry) return;
+  const epoch = entry.epoch;
   entry.term.write(data, () => {
+    // attach 之前的写入可能在 reset 之后才解析完；它们不属于新 ack 基点。
+    if (entry.epoch !== epoch) return;
     entry.parsed += data.byteLength;
     if (entry.parsed - entry.acked >= ACK_BYTES) {
-      entry.acked = entry.parsed;
-      void commands
-        .terminalAck(sid, entry.acked)
-        .then(unwrap)
-        .catch((failure: unknown) => console.warn("[terminal] ack failed", failure));
+      flushAck(sid, entry);
+    } else {
+      scheduleAck(sid, entry);
     }
   });
+}
+
+/** 立即把已解析的字节报给 daemon（不超过已解析量）。 */
+function flushAck(sid: string, entry: Pooled): void {
+  if (entry.parsed <= entry.acked) return;
+  entry.acked = entry.parsed;
+  void commands
+    .terminalAck(sid, entry.acked)
+    .then(unwrap)
+    .catch((failure: unknown) => console.warn("[terminal] ack failed", failure));
+}
+
+/**
+ * 空闲补 ack：daemon 在高水位暂停后，最后一块可能不足 32 KiB；
+ * 没有这个定时器，xterm 不再产生写回调，双方会互相等死。
+ */
+function scheduleAck(sid: string, entry: Pooled): void {
+  if (entry.ackTimer !== undefined) return;
+  const epoch = entry.epoch;
+  entry.ackTimer = window.setTimeout(() => {
+    entry.ackTimer = undefined;
+    if (entry.epoch !== epoch) return;
+    flushAck(sid, entry);
+  }, ACK_IDLE_MS);
 }
 
 function resetAck(sid: string): void {
   const entry = pooledTerms.get(sid);
   if (!entry) return;
+  entry.epoch += 1;
+  if (entry.ackTimer !== undefined) {
+    window.clearTimeout(entry.ackTimer);
+    entry.ackTimer = undefined;
+  }
   entry.parsed = 0;
   entry.acked = 0;
 }

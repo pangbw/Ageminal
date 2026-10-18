@@ -16,16 +16,19 @@
 //! **断开期间产生的退出事件仍会丢弃**（`attachment` 为空时无处可送），重连后表现为「没有会话」；
 //! 区分「从未存在 / 离开期间退了」需要更长的持久化历史，归 #74。
 //!
-//! # 流控
+//! # 流控（#73）
 //!
-//! `Ack` 只记账（[`SessionTable::ack`]）；高低水位暂停发送 / 停读 PTY 归 #73。
+//! VS Code 式 high / low 水位 + 累计 ack：
+//! - 未确认字节 = 已读入 PTY 的 `seq` − 客户端 ack；
+//! - 超过 **256 KiB** 就暂停**读 PTY**（把背压传回 ConPTY / 子进程），低于 **64 KiB** 再恢复；
+//! - 隐藏会话没有 attachment，不参与水位，继续读进 VT + 环形缓冲，切回时用快照刷新。
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -54,6 +57,12 @@ const OUTPUT_RING_BYTES: usize = 4 * 1024 * 1024;
 /// 回放时单条 `Data` 帧的上限；`MAX_FRAME_BYTES` 是 1 MiB，留足余量。
 const REPLAY_CHUNK: usize = 64 * 1024;
 
+/// 流控高水位：未确认字节超过它就暂停读 PTY。
+const FLOW_HIGH_BYTES: u64 = 256 * 1024;
+
+/// 流控低水位：未确认字节回落到它以下就恢复读 PTY。
+const FLOW_LOW_BYTES: u64 = 64 * 1024;
+
 /// 输出推给谁。
 #[derive(Clone)]
 struct Attachment {
@@ -71,6 +80,55 @@ struct OutputState {
     attachment: Option<Attachment>,
 }
 
+/// 每会话的流控记账。
+///
+/// `sent` 是输出线程已经读入并计入 `seq` 的绝对偏移；`acked` 是渲染器确认消费到的绝对偏移。
+/// 两者相减就是「在途未确认字节」。`paused` 只控制**是否继续读 PTY**——暂停后不会再产生新的
+/// 在途字节，背压经 ConPTY 传回子进程。
+#[derive(Debug, Default)]
+struct FlowState {
+    /// 客户端已确认到的绝对偏移。
+    acked: u64,
+    /// 已读入 / 已计入 `seq` 的绝对偏移。
+    sent: u64,
+    /// 是否因高水位暂停读 PTY。
+    paused: bool,
+}
+
+impl FlowState {
+    /// attach 换了一个确认基点：回放路径从 `from_seq` 起算，快照路径从当前 `sent` 起算。
+    fn reset(&mut self, from_seq: u64, sent: u64) {
+        self.acked = from_seq;
+        self.sent = sent;
+        self.paused = sent.saturating_sub(from_seq) > FLOW_HIGH_BYTES;
+    }
+
+    /// 记录新读入的输出；只有挂着可见连接时才可能触发高水位。
+    fn observe(&mut self, sent: u64, attached: bool) {
+        self.sent = sent;
+        if attached && sent.saturating_sub(self.acked) > FLOW_HIGH_BYTES {
+            self.paused = true;
+        }
+    }
+
+    /// 累计 ack；返回是否从暂停恢复（调用方据此唤醒输出线程）。
+    fn ack(&mut self, acked: u64) -> bool {
+        // 迟到 / 跨 attach 的旧 ack 不能把确认值往回拽，也不能超过已发送量。
+        self.acked = acked.min(self.sent).max(self.acked);
+        if self.paused && self.sent.saturating_sub(self.acked) <= FLOW_LOW_BYTES {
+            self.paused = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 隐藏 / 终止：不再需要水位门闩。
+    fn release(&mut self) {
+        self.paused = false;
+    }
+}
+
 /// 一个会话（跨连接存活）。
 struct Session {
     /// 逻辑会话 id。
@@ -84,12 +142,14 @@ struct Session {
     exit: Option<OwnedHandle>,
     /// PTY 写端（键盘输入）。
     writer: Mutex<Box<dyn Write + Send>>,
-    /// 客户端已确认消费的字节数（#73 的水位输入）。
-    acked_bytes: AtomicU64,
     /// 服务端 VT 内核（#70）：屏幕 / 光标 / alt-screen / SGR。
     vt: Mutex<Vt>,
     /// 输出偏移 / 回放窗口 / 当前连接（#72）。
     output: Mutex<OutputState>,
+    /// 流控记账（#73）。
+    flow: Mutex<FlowState>,
+    /// 流控门闩的唤醒（ack / detach / terminate）。
+    flow_wake: Condvar,
 }
 
 /// daemon 全局的会话表。
@@ -154,13 +214,14 @@ impl SessionTable {
             control: Mutex::new(Some(control)),
             exit: Some(exit),
             writer: Mutex::new(writer),
-            acked_bytes: AtomicU64::new(0),
             vt: Mutex::new(Vt::new(request.cols as usize, request.rows as usize)),
             output: Mutex::new(OutputState {
                 seq: 0,
                 ring: RingBuffer::new(OUTPUT_RING_BYTES),
                 attachment: Some(Attachment { handle, outbound }),
             }),
+            flow: Mutex::new(FlowState::default()),
+            flow_wake: Condvar::new(),
         });
 
         // spawn 期间表可能被塞进同名会话（单连接下不会，但别赌）。**保住活着的那一个**，
@@ -241,6 +302,10 @@ impl SessionTable {
             offset += chunk.len();
         }
 
+        // 新连接的新确认基点：回放字节算在途，快照 / 已到末尾则是零。
+        session.flow.lock().expect("flow").reset(from_seq, current);
+        session.flow_wake.notify_all();
+
         Ok(Attached {
             sid: sid.to_owned(),
             handle,
@@ -255,6 +320,7 @@ impl SessionTable {
     pub fn detach(&self, sid: &str) {
         if let Some(session) = self.sessions.lock().expect("sessions").get(sid) {
             session.output.lock().expect("output").attachment = None;
+            release_flow(session);
         }
     }
 
@@ -275,6 +341,8 @@ impl SessionTable {
                 .is_some_and(|current| Arc::ptr_eq(&current.outbound, outbound))
             {
                 output.attachment = None;
+                drop(output);
+                release_flow(&session);
             }
         }
     }
@@ -289,8 +357,10 @@ impl SessionTable {
         // `ClosePseudoConsole` 要等 conout 排空，会话刚创建就终止时这一步可能很久。
         let pty = session.control.lock().expect("control").take();
         let Some(mut pty) = pty else {
+            release_flow(&session);
             return Ok(()); // 已经终止过：幂等。
         };
+        release_flow(&session);
         std::thread::spawn(move || {
             let _ = pty.terminate();
             drop(pty);
@@ -325,10 +395,13 @@ impl SessionTable {
         Ok(())
     }
 
-    /// 记下客户端已消费的字节数（流控归 #73）。
+    /// 记下客户端已消费的绝对字节偏移；跨过低水位时唤醒输出线程（#73）。
     pub fn ack(&self, sid: &str, acked_bytes: u64) -> Result<(), DaemonError> {
         let session = self.get(sid)?;
-        session.acked_bytes.store(acked_bytes, Ordering::SeqCst);
+        let resumed = session.flow.lock().expect("flow").ack(acked_bytes);
+        if resumed {
+            session.flow_wake.notify_all();
+        }
         Ok(())
     }
 
@@ -406,12 +479,13 @@ fn spawn_output_pump(session: Arc<Session>, mut reader: Box<dyn Read + Send>) {
 fn pump_output(session: &Session, reader: &mut dyn Read) {
     let mut buffer = vec![0u8; READ_CHUNK];
     loop {
+        wait_for_flow(session);
         let read = match reader.read(&mut buffer) {
             Ok(0) | Err(_) => break,
             Ok(read) => read,
         };
         // 服务端状态必须先于转发更新，且要与 attach 的「快照 + seq」共用一个原子边界。
-        // 锁顺序固定为 VT → output（attach / checkpoint 同序）。
+        // 锁顺序固定为 VT → output → flow（attach / checkpoint 同序）。
         let mut vt = session.vt.lock().expect("vt");
         vt.feed(&buffer[..read]);
         let mut output = session.output.lock().expect("output");
@@ -419,6 +493,12 @@ fn pump_output(session: &Session, reader: &mut dyn Read) {
         output.seq += read as u64;
         output.ring.push(seq, &buffer[..read]);
         let attachment = output.attachment.clone();
+        let attached = attachment.is_some();
+        session
+            .flow
+            .lock()
+            .expect("flow")
+            .observe(output.seq, attached);
         drop(output);
         drop(vt);
         if let Some(attachment) = attachment {
@@ -430,6 +510,24 @@ fn pump_output(session: &Session, reader: &mut dyn Read) {
         }
         // 没有连接 → 只留在环形缓冲里，等 attach 回放（#72）。
     }
+}
+
+/// 高水位期间在**读 PTY 之前**等 ack。隐藏会话没有收件人，不参与水位。
+fn wait_for_flow(session: &Session) {
+    loop {
+        let attached = session.output.lock().expect("output").attachment.is_some();
+        let flow = session.flow.lock().expect("flow");
+        if !attached || !flow.paused {
+            return;
+        }
+        drop(session.flow_wake.wait(flow).expect("flow wait"));
+    }
+}
+
+/// 隐藏 / 终止 / 退出：解除门闩，让输出线程继续读（或读到 EOF）。
+fn release_flow(session: &Session) {
+    session.flow.lock().expect("flow").release();
+    session.flow_wake.notify_all();
 }
 
 /// exit 监视线程：在**自己的**进程句柄上轮询，不碰 `control` 锁。
@@ -452,6 +550,7 @@ fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
 
                     // 只有「表里当前这一代」才上报（迟到 exit 按 incarnationId 丢弃）。
                     if table.remove_if_current(&session.sid, &session.incarnation_id) {
+                        release_flow(&session);
                         let attachment = session.output.lock().expect("output").attachment.clone();
                         if let Some(attachment) = attachment {
                             let _ = attachment.outbound.send_control(&Message::SessionExited(
@@ -615,13 +714,14 @@ mod tests {
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
             writer: Mutex::new(Box::new(std::io::sink())),
-            acked_bytes: AtomicU64::new(0),
             vt: Mutex::new(Vt::new(80, 24)),
             output: Mutex::new(OutputState {
                 seq: 0,
                 ring: RingBuffer::new(ring_bytes),
                 attachment: None,
             }),
+            flow: Mutex::new(FlowState::default()),
+            flow_wake: Condvar::new(),
         })
     }
 
@@ -646,6 +746,56 @@ mod tests {
         // 同一代只摘一次。
         assert!(table.remove_if_current("s", "inc-2"));
         assert!(!table.remove_if_current("s", "inc-2"));
+    }
+
+    /// #73：高潮位暂停，确认量回落到低水位才恢复；ack 不能超过已发送量。
+    #[test]
+    fn flow_control_pauses_at_high_and_resumes_at_low() {
+        let mut flow = FlowState::default();
+        let sent = FLOW_HIGH_BYTES + 1;
+        flow.observe(sent, true);
+        assert!(flow.paused, "超过高水位必须暂停读 PTY");
+
+        // 还差 1 字节才到低水位：继续等。
+        assert!(!flow.ack(sent - FLOW_LOW_BYTES - 1));
+        assert!(flow.paused);
+
+        // 回落到低水位：恢复。
+        assert!(flow.ack(sent - FLOW_LOW_BYTES));
+        assert!(!flow.paused);
+
+        // 迟到 / 超量 ack 被夹到 [当前确认, 已发送]。
+        flow.ack(u64::MAX);
+        assert_eq!(flow.acked, sent);
+        flow.ack(0);
+        assert_eq!(flow.acked, sent, "旧 ack 不能把确认值拽回去");
+    }
+
+    /// 隐藏会话没有收件人，水位不该让它停止更新 VT / 环形缓冲。
+    #[test]
+    fn hidden_output_does_not_pause_the_reader() {
+        let mut flow = FlowState::default();
+        flow.observe(FLOW_HIGH_BYTES * 2, false);
+        assert!(!flow.paused);
+
+        // 重新可见后，同样的在途量会立刻重新触发高水位。
+        flow.observe(FLOW_HIGH_BYTES * 2, true);
+        assert!(flow.paused);
+    }
+
+    /// 新 attach 换基点：快照是零在途；回放超过高水位则先暂停，等 ack 追上。
+    #[test]
+    fn attach_resets_the_flow_watermarks() {
+        let mut flow = FlowState::default();
+        flow.reset(1000, 1000);
+        assert!(!flow.paused);
+        assert_eq!((flow.acked, flow.sent), (1000, 1000));
+
+        flow.reset(1000, 1000 + FLOW_HIGH_BYTES + 1);
+        assert!(flow.paused, "大回放要先按高水位节流");
+
+        flow.release();
+        assert!(!flow.paused, "detach / terminate 必须解除门闩");
     }
 
     fn outbound() -> Arc<Outbound> {
