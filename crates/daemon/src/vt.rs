@@ -14,7 +14,7 @@ use alacritty_terminal::grid::{Dimensions, Grid};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, Processor};
+use alacritty_terminal::vte::ansi::{Color, NamedColor, Processor, Rgb};
 
 /// 一格的只读快照（跨引擎比对 / 单测用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +55,61 @@ struct Proxy;
 
 impl EventListener for Proxy {
     fn send_event(&self, _event: Event) {}
+}
+
+/// 命名色 → 30–37 / 90–97（前景）或 40–47 / 100–107（背景）。
+/// 其余命名色（Foreground / Background / Cursor / Dim* …）走默认色 39 / 49。
+fn named_code(color: NamedColor, foreground: bool) -> Option<u16> {
+    let value = color as u16;
+    if value < 8 {
+        Some(30 + value + if foreground { 0 } else { 10 })
+    } else if value < 16 {
+        Some(90 + (value - 8) + if foreground { 0 } else { 10 })
+    } else {
+        None
+    }
+}
+
+/// 一个颜色 → SGR 参数片段。
+fn color_code(color: Color, foreground: bool) -> String {
+    match color {
+        Color::Named(named) => named_code(named, foreground)
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| {
+                if foreground {
+                    "39".to_owned()
+                } else {
+                    "49".to_owned()
+                }
+            }),
+        Color::Indexed(index) => format!("{};5;{index}", if foreground { 38 } else { 48 }),
+        Color::Spec(Rgb { r, g, b }) => {
+            format!("{};2;{r};{g};{b}", if foreground { 38 } else { 48 })
+        }
+    }
+}
+
+/// 一格的完整 SGR（自带 reset，避免与上一格串味）。
+fn sgr_for(foreground: Color, background: Color, flags: Flags) -> String {
+    let mut parts = vec![
+        "0".to_owned(),
+        color_code(foreground, true),
+        color_code(background, false),
+    ];
+    for (flag, code) in [
+        (Flags::BOLD, "1"),
+        (Flags::DIM, "2"),
+        (Flags::ITALIC, "3"),
+        (Flags::UNDERLINE, "4"),
+        (Flags::INVERSE, "7"),
+        (Flags::HIDDEN, "8"),
+        (Flags::STRIKEOUT, "9"),
+    ] {
+        if flags.contains(flag) {
+            parts.push(code.to_owned());
+        }
+    }
+    parts.join(";")
 }
 
 /// 一个会话的服务端 VT 状态。
@@ -168,6 +223,49 @@ impl Vt {
     /// 当前 scrollback 行数（长时运行的内存边界断言用）。
     pub fn history_size(&self) -> usize {
         self.term.grid().history_size()
+    }
+
+    /// ANSI 快照：把当前内核状态序列化成一段可被 xterm.js 重放的字节流（#71）。
+    ///
+    /// 结构：可选 alt-screen 切换 → 隐藏光标 → 复位 SGR → 清屏 → 逐行逐格重绘（带 SGR 运行段）
+    /// → 复原光标 → 显示光标。宽字符的 spacer 格会跳过，否则重放时会把整行向右挤。
+    pub fn snapshot(&self) -> String {
+        let mut out = String::new();
+        if self.alt_screen() {
+            out.push_str("\u{1b}[?1049h");
+        }
+        out.push_str("\u{1b}[?25l\u{1b}[0m\u{1b}[H\u{1b}[2J");
+
+        let grid = self.term.grid();
+        for line in 0..self.screen_lines() {
+            let row = &grid[Line(line as i32)];
+            let mut current: Option<String> = None;
+            let mut rendered = String::new();
+            for column in 0..self.columns() {
+                let cell = &row[Column(column)];
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
+                    // 宽字符前一格已经推进了两列；spacer 再写一次会错位。
+                    continue;
+                }
+                let sgr = sgr_for(cell.fg, cell.bg, cell.flags);
+                if current.as_deref() != Some(sgr.as_str()) {
+                    rendered.push_str(&format!("\u{1b}[{sgr}m"));
+                    current = Some(sgr);
+                }
+                rendered.push(cell.c);
+                if let Some(extra) = cell.zerowidth() {
+                    for ch in extra {
+                        rendered.push(*ch);
+                    }
+                }
+            }
+            rendered.push_str("\u{1b}[0m");
+            out.push_str(&format!("\u{1b}[{};1H{}", line + 1, rendered));
+        }
+
+        let (line, column) = self.cursor();
+        out.push_str(&format!("\u{1b}[{};{}H\u{1b}[?25h", line + 1, column + 1));
+        out
     }
 
     /// 稳定、可存档的状态摘要：尺寸 / alt-screen / 光标 / 文本 / 属性位。
@@ -297,5 +395,62 @@ mod tests {
         assert_eq!((vt.columns(), vt.screen_lines()), (20, 5));
         assert!(vt.lines()[0].contains("hello"));
         assert!(vt.lines()[1].contains("world"));
+    }
+
+    /// #71：快照重放进一台全新内核后，屏幕 / 光标 / alt-screen / 属性位必须与原内核一致。
+    #[test]
+    fn snapshot_round_trips_through_a_fresh_kernel() {
+        let mut vt = Vt::new(100, 30);
+        vt.feed(&parity_fixture());
+
+        let snapshot = vt.snapshot();
+        let mut replay = Vt::new(100, 30);
+        replay.feed(snapshot.as_bytes());
+
+        assert_eq!(replay.render(), vt.render());
+        assert_eq!(replay.cursor(), vt.cursor());
+        assert_eq!(replay.alt_screen(), vt.alt_screen());
+    }
+
+    /// #71：快照覆盖普通屏上的宽字符（spacer 格不能把行挤歪）。
+    #[test]
+    fn snapshot_preserves_wide_characters_on_the_normal_screen() {
+        let mut vt = Vt::new(16, 4);
+        vt.feed("\u{1b}[2J\u{1b}[H中文🙂 ok\r\nnext".as_bytes());
+
+        let snapshot = vt.snapshot();
+        let mut replay = Vt::new(16, 4);
+        replay.feed(snapshot.as_bytes());
+
+        assert_eq!(replay.lines(), vt.lines());
+        assert_eq!(replay.render(), vt.render());
+    }
+
+    /// #71 golden：#42 夹具的 ANSI 快照（UPDATE_GOLDEN=1 时重写）。
+    #[test]
+    fn snapshot_matches_the_parity_golden() {
+        let mut vt = Vt::new(100, 30);
+        vt.feed(&parity_fixture());
+        assert!(vt.alt_screen(), "夹具最终应处于 alt-screen");
+        assert_eq!(vt.cursor(), (27, 6));
+        let snapshot = vt.snapshot();
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/vt-parity/snap.ansi");
+        if std::env::var_os("UPDATE_GOLDEN").is_some() {
+            std::fs::write(&path, &snapshot).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("读不到 {}：{error}", path.display()));
+        assert_eq!(snapshot, expected);
+    }
+
+    fn parity_fixture() -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/vt-parity/full.bin"),
+        )
+        .expect("读不到 #42 fixture")
     }
 }

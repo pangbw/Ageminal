@@ -267,6 +267,14 @@ impl SessionTable {
         Ok(())
     }
 
+    /// 当前会话的 ANSI 快照（#71）；#72 / #75 的 attach 会用它重建屏幕。
+    #[allow(dead_code)] // 生产调用方在 #72 / #75；先把「怎么取快照」收在会话层。
+    pub fn snapshot(&self, sid: &str) -> Result<String, DaemonError> {
+        let session = self.get(sid)?;
+        let snapshot = session.vt.lock().expect("vt").snapshot();
+        Ok(snapshot)
+    }
+
     /// 取会话。
     fn get(&self, sid: &str) -> Result<Arc<Session>, DaemonError> {
         self.sessions
