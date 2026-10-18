@@ -48,6 +48,10 @@ pub enum FrameKind {
     ListSessions,
     /// D→UI：会话清单。
     Sessions,
+    /// UI→D：优雅停机（终止所有会话后 daemon 退出）。
+    Shutdown,
+    /// D→UI：停机确认（会话已清空，daemon 即将退出）。
+    ShutdownAck,
     // —— 会话管理
     /// UI→D：建会话。
     CreateSession,
@@ -93,6 +97,8 @@ impl FrameKind {
             FrameKind::Pong => 0x0005,
             FrameKind::ListSessions => 0x0010,
             FrameKind::Sessions => 0x0011,
+            FrameKind::Shutdown => 0x0012,
+            FrameKind::ShutdownAck => 0x0013,
             FrameKind::CreateSession => 0x0020,
             FrameKind::SessionCreated => 0x0021,
             FrameKind::Attach => 0x0022,
@@ -121,6 +127,8 @@ impl FrameKind {
             0x0005 => FrameKind::Pong,
             0x0010 => FrameKind::ListSessions,
             0x0011 => FrameKind::Sessions,
+            0x0012 => FrameKind::Shutdown,
+            0x0013 => FrameKind::ShutdownAck,
             0x0020 => FrameKind::CreateSession,
             0x0021 => FrameKind::SessionCreated,
             0x0022 => FrameKind::Attach,

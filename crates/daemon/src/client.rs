@@ -82,6 +82,14 @@ impl Client {
         }
     }
 
+    /// 优雅停机：终止 daemon 里所有会话，等它退出（#76 托盘「结束所有会话并退出」）。
+    pub fn shutdown(&mut self) -> Result<(), DaemonError> {
+        self.request(&Message::Shutdown, |message| {
+            matches!(message, Message::ShutdownAck)
+        })?;
+        Ok(())
+    }
+
     /// 建会话。
     pub fn create_session(
         &mut self,

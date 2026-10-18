@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
@@ -408,6 +408,37 @@ impl SessionTable {
             drop(pty);
         });
         Ok(())
+    }
+
+    /// 终止**所有**会话（daemon 停机路径，issue #76）。
+    ///
+    /// 只负责发起终止；真正从表里摘除仍由各自的 exit watcher 完成。调用方用
+    /// [`Self::wait_empty`] 等它们清空。
+    pub fn terminate_all(&self) {
+        let sids: Vec<String> = self
+            .sessions
+            .lock()
+            .expect("sessions")
+            .keys()
+            .cloned()
+            .collect();
+        for sid in sids {
+            let _ = self.terminate(&sid, true);
+        }
+    }
+
+    /// 等会话表清空；返回是否在超时前清空。
+    pub fn wait_empty(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.sessions.lock().expect("sessions").is_empty() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(EXIT_POLL);
+        }
     }
 
     /// 改尺寸。

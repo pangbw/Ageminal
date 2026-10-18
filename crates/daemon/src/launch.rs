@@ -15,7 +15,12 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
+use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, TerminateProcess, WaitForSingleObject, CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS,
+    PROCESS_TERMINATE,
+};
 
 use crate::{client, paths, DaemonError, DaemonInfo};
 
@@ -76,6 +81,31 @@ pub fn try_reuse(config_dir: &Path) -> Option<DaemonInfo> {
     let mut client = client::connect(&info, PROBE_TIMEOUT).ok()?;
     client.ping().ok()?;
     Some(info)
+}
+
+/// 等 daemon 进程退出；返回是否已经停下（进程不存在也视为已停）。
+///
+/// 用于「结束所有会话并退出」：收到 `ShutdownAck` 后再确认进程真的走了。
+pub fn wait_stopped(info: &DaemonInfo, timeout: Duration) -> bool {
+    let process = unsafe { OpenProcess(SYNCHRONIZE, 0, info.pid) };
+    if process.is_null() {
+        return true;
+    }
+    let milliseconds = timeout.as_millis().min(u32::MAX as u128) as u32;
+    let waited = unsafe { WaitForSingleObject(process, milliseconds) };
+    unsafe { CloseHandle(process) };
+    waited == WAIT_OBJECT_0
+}
+
+/// 兜底硬杀 daemon（正常路径是先发 `Shutdown`）。只在已确认同一 daemon 在线时调用。
+pub fn terminate_process(info: &DaemonInfo) -> bool {
+    let process = unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, 0, info.pid) };
+    if process.is_null() {
+        return true;
+    }
+    let terminated = unsafe { TerminateProcess(process, 1) } != 0;
+    unsafe { CloseHandle(process) };
+    terminated
 }
 
 /// 在 `timeout` 内反复探测「有没有在线 daemon」。**`timeout` 为 0 也会先试一次**。

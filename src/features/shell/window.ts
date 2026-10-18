@@ -32,6 +32,7 @@ export function setWindowTitle(title: string): Promise<void> {
   return withCurrentWindow((window) => window.setTitle(title));
 }
 
+/** 最小化到托盘（#76：Rust 侧拦截窗口 Resized，真正执行隐藏）。 */
 export function minimizeWindow(): Promise<void> {
   return withCurrentWindow((window) => window.minimize());
 }
@@ -41,8 +42,8 @@ export function toggleMaximizeWindow(): Promise<void> {
 }
 
 /**
- * 关窗。#76 之前就是真的关窗（会退出应用）；托盘与「关窗 = 隐藏到托盘」的三层
- * 退出语义（§12）由 #76 接管——那时这里改调 hide。
+ * 关窗 = 隐藏到托盘（#76）。Rust 侧拦截 `CloseRequested`；这里保持 `close()`，
+ * 这样纯浏览器预览里仍是普通的窗口关闭语义。
  */
 export function closeWindow(): Promise<void> {
   return withCurrentWindow((window) => window.close());

@@ -15,6 +15,7 @@ pub mod daemon;
 pub mod files;
 pub mod storage;
 pub mod terminal;
+pub mod tray;
 pub mod watch;
 pub mod workspace;
 
@@ -183,6 +184,10 @@ fn spawn_state_flusher(handle: tauri::AppHandle) {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 必须最先注册：重复启动时在进入 setup / 拉起 daemon 之前就聚焦已有窗口并退出。
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            tray::show_main_window(app);
+        }))
         // 目录选择器只从 Rust 侧调用（#32 D3）；capabilities 不放开它的命令。
         .plugin(tauri_plugin_dialog::init())
         // 外部打开同样只从 Rust 侧调用（#60 D6 #20）；capabilities 不放开 plugin:opener。
@@ -190,6 +195,18 @@ pub fn run() {
         // 剪贴板同样只从 Rust 侧调用（#62）；capabilities 不放开 clipboard-manager。
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(builder().invoke_handler())
+        .on_window_event(|window, event| match event {
+            // #76：关窗 = 隐藏到托盘；只有托盘的两条退出路径会放行真正的 close。
+            tauri::WindowEvent::CloseRequested { api, .. } if !tray::exit_allowed() => {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+            // 最小化也收进托盘（Windows 没有单独的 Minimized 事件，靠 Resized 查状态）。
+            tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
+                let _ = window.hide();
+            }
+            _ => {}
+        })
         .setup(|app| {
             match storage::Store::open_default() {
                 Ok(mut store) => {
@@ -224,6 +241,10 @@ pub fn run() {
             daemon::spawn_ensure();
             // 终端服务（#68）：连接 daemon、按会话合批转发到前端 Channel。
             app.manage(terminal::TerminalService::start());
+            // 托盘（#76）：关窗 / 最小化隐藏，菜单承载两层显式退出。
+            if let Err(error) = tray::setup(app.handle()) {
+                eprintln!("[tray] 初始化失败：{error}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

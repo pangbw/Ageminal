@@ -72,6 +72,10 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
 #[cfg(windows)]
 const LIST_TIMEOUT: Duration = Duration::from_secs(32);
 
+/// 「结束所有会话并退出」的总等待上限：daemon 排空会话 + 确认进程退出 + 兜底硬杀。
+#[cfg(windows)]
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// 前端拿到的建会话结果。
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -325,6 +329,23 @@ impl TerminalService {
         }
     }
 
+    /// 结束 daemon 里**所有**会话并等 daemon 退出（#76 托盘的唯一真正结束入口）。
+    pub fn shutdown_all(&self) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            let (reply, receiver) = mpsc::sync_channel(1);
+            self.send(Request::ShutdownAll { reply })?;
+            match receiver.recv_timeout(SHUTDOWN_TIMEOUT) {
+                Ok(result) => result,
+                Err(_) => Err("终端服务在等待 daemon 停机时超时".to_owned()),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(())
+        }
+    }
+
     /// 显式结束会话（关闭页签）；关窗 / 退出 UI 不走这里，连接断开只 detach。
     pub fn close(&self, sid: String) -> Result<(), String> {
         #[cfg(windows)]
@@ -451,6 +472,9 @@ enum Request {
     },
     List {
         reply: mpsc::SyncSender<Result<Vec<TerminalSession>, String>>,
+    },
+    ShutdownAll {
+        reply: mpsc::SyncSender<Result<(), String>>,
     },
     Input {
         sid: String,
@@ -619,6 +643,7 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
             reply,
         } => open_session(runtime, sid, cwd, cols, rows, event, reply),
         Request::List { reply } => list_sessions(runtime, reply),
+        Request::ShutdownAll { reply } => shutdown_all(runtime, reply),
         Request::Input { sid, bytes } => {
             let Some(handle) = runtime.sessions.get(&sid).map(|session| session.handle) else {
                 return;
@@ -655,6 +680,70 @@ fn handle_request(runtime: &mut Runtime, request: Request) {
             remove_session(runtime, &sid, None);
         }
     }
+}
+
+/// 结束所有会话并让 daemon 退出；正常走协议，失败时在**确认 daemon 在线**后硬杀兜底。
+#[cfg(windows)]
+fn shutdown_all(runtime: &mut Runtime, reply: mpsc::SyncSender<Result<(), String>>) {
+    let config = match ageminal_daemon::paths::config_dir() {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = reply.send(Err(error.to_string()));
+            return;
+        }
+    };
+    let info = ageminal_protocol::DaemonInfo::read(&config).ok();
+
+    // 平时启动时的 terminal_list 已经连上；万一没有，先短连接，别为此等 10 s。
+    let mut failure = None;
+    if runtime.client.is_none() {
+        if let Some(info) = info.as_ref() {
+            match ageminal_daemon::client::connect(info, Duration::from_secs(1)) {
+                Ok(client) => runtime.client = Some(client),
+                Err(error) => {
+                    eprintln!("[terminal] 停机前连接 daemon 失败：{error}");
+                    failure = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    let had_client = runtime.client.is_some();
+    if let Some(client) = runtime.client.as_mut() {
+        if let Err(error) = client.shutdown() {
+            failure = Some(error.to_string());
+        }
+    }
+    // daemon 在回 ack 后等客户端断开；先 drop，让它的 read_loop 看到 EOF 并退出。
+    runtime.client = None;
+
+    // 只有确实连上过 daemon 才碰它的 pid：daemon.json 可能是旧世代，不能误杀复用了 pid 的进程。
+    if had_client {
+        if let Some(info) = info.as_ref() {
+            let mut stopped = ageminal_daemon::launch::wait_stopped(info, Duration::from_secs(5));
+            if !stopped {
+                eprintln!("[terminal] daemon 未在停机确认后退出，执行兜底终止");
+                let _ = ageminal_daemon::launch::terminate_process(info);
+                stopped = ageminal_daemon::launch::wait_stopped(info, Duration::from_secs(3));
+                if stopped {
+                    let _ = ageminal_protocol::DaemonInfo::remove(&config);
+                }
+            }
+            if stopped {
+                // 即使 shutdown 请求本身报错，只要 daemon 确实停了，这次停机就是成功的。
+                failure = None;
+            } else {
+                failure = Some("daemon 在兜底终止后仍未退出".to_owned());
+            }
+        }
+    }
+
+    runtime.sessions.clear();
+    runtime.by_handle.clear();
+    let _ = reply.send(match failure {
+        Some(error) => Err(error),
+        None => Ok(()),
+    });
 }
 
 #[cfg(windows)]

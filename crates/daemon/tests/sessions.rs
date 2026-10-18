@@ -12,7 +12,11 @@ use std::time::{Duration, Instant};
 
 use ageminal_daemon::client;
 use ageminal_protocol::{CreateSession, Message, SessionExited};
-use support::{Fixture, Spawned};
+use support::{wait_for_exit as wait_for_daemon_exit, Fixture, Spawned};
+use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+use windows_sys::Win32::System::Threading::{
+    GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -514,6 +518,67 @@ fn number_after_marker(text: &str, marker: &str) -> Option<u32> {
         }
     }
     None
+}
+
+/// #76：托盘退出走 daemon 的 `Shutdown` —— 所有会话被终止，daemon 自己退出并删发现文件。
+#[test]
+fn shutdown_terminates_all_sessions_and_stops_daemon() {
+    let fixture = Fixture::new("shutdown");
+    let mut daemon = Spawned::start(&fixture);
+    let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+    let created = client.create_session(request("shutdown")).expect("建会话");
+
+    client
+        .write_input(created.handle, b"echo SHUTDOWN-READY\\r\\n")
+        .expect("写");
+    let mut collected = Collected::default();
+    collected.wait_for(&mut client, created.handle, "SHUTDOWN-READY", TIMEOUT);
+    assert!(process_alive(created.pid), "会话进程应该还活着");
+
+    client.shutdown().expect("优雅停机");
+    // daemon 在 ack 后等这条连接关闭再退出。
+    drop(client);
+
+    let status =
+        wait_for_daemon_exit(&mut daemon.child, Duration::from_secs(10)).unwrap_or_else(|| {
+            panic!(
+                "daemon 没有在 Shutdown 后退出；daemon.log:\n{}",
+                support::daemon_log(&fixture)
+            )
+        });
+    assert!(status.success(), "daemon 应正常退出，实际 {status}");
+    assert!(
+        wait_until_dead(created.pid, Duration::from_secs(5)),
+        "daemon 停机后 shell 进程（pid {}）仍然活着",
+        created.pid
+    );
+    assert!(
+        ageminal_protocol::DaemonInfo::read(&fixture.config_dir).is_err(),
+        "daemon 退出时应删除 daemon.json"
+    );
+}
+
+/// 轮询等某个 pid 消失 / 退出。
+fn wait_until_dead(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !process_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !process_alive(pid)
+}
+
+fn process_alive(pid: u32) -> bool {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return false;
+    }
+    let mut code = 0;
+    let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+    unsafe { CloseHandle(handle) };
+    ok != 0 && code == STILL_ACTIVE as u32
 }
 
 /// 不存在的会话：daemon 回一条 `Error`，**连接不断**（回完还能继续用）。

@@ -357,6 +357,10 @@ pub enum Message {
     ListSessions,
     /// [`Sessions`]：D→UI。
     Sessions(Sessions),
+    /// 优雅停机：UI→D。终止所有会话后 daemon 退出。
+    Shutdown,
+    /// 停机确认：D→UI。收到时会话已清空，daemon 即将关闭连接并退出。
+    ShutdownAck,
     /// [`CreateSession`]。
     CreateSession(CreateSession),
     /// [`SessionCreated`]。
@@ -410,6 +414,8 @@ impl Message {
             Message::Pong => FrameKind::Pong,
             Message::ListSessions => FrameKind::ListSessions,
             Message::Sessions(_) => FrameKind::Sessions,
+            Message::Shutdown => FrameKind::Shutdown,
+            Message::ShutdownAck => FrameKind::ShutdownAck,
             Message::CreateSession(_) => FrameKind::CreateSession,
             Message::SessionCreated(_) => FrameKind::SessionCreated,
             Message::Attach(_) => FrameKind::Attach,
@@ -450,7 +456,11 @@ impl Message {
             Message::Resize(value) => serde_json::to_vec(value)?,
             Message::Ack(value) => serde_json::to_vec(value)?,
             // 心跳与枚举请求没有负载。
-            Message::Ping | Message::Pong | Message::ListSessions => Vec::new(),
+            Message::Ping
+            | Message::Pong
+            | Message::ListSessions
+            | Message::Shutdown
+            | Message::ShutdownAck => Vec::new(),
         };
         Ok(Frame::control(kind, 0, 0, payload))
     }
@@ -478,6 +488,8 @@ impl Message {
             FrameKind::Error => Ok(Message::Error(serde_json::from_slice(&frame.payload)?)),
             FrameKind::ListSessions => Ok(Message::ListSessions),
             FrameKind::Sessions => Ok(Message::Sessions(serde_json::from_slice(&frame.payload)?)),
+            FrameKind::Shutdown => Ok(Message::Shutdown),
+            FrameKind::ShutdownAck => Ok(Message::ShutdownAck),
             FrameKind::CreateSession => Ok(Message::CreateSession(serde_json::from_slice(
                 &frame.payload,
             )?)),
@@ -543,6 +555,8 @@ mod tests {
             Message::Ping,
             Message::Pong,
             Message::ListSessions,
+            Message::Shutdown,
+            Message::ShutdownAck,
             Message::Sessions(Sessions {
                 sessions: vec![SessionInfo {
                     sid: "wt/main/shell/1".to_owned(),

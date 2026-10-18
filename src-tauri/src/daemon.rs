@@ -10,6 +10,9 @@
 //! 为什么放后台线程：首次拉起要等 daemon 就绪（最长 [`ageminal_daemon::launch::READY_TIMEOUT`]），
 //! 不该卡住窗口创建。
 
+#[cfg(windows)]
+use std::time::Duration;
+
 /// 在后台确保 daemon 在跑。失败只记录——daemon 起不来不应该让 app 起不来。
 ///
 /// # ⚠️ 开发期：daemon 会锁住构建产物
@@ -41,6 +44,30 @@ fn ensure_running() {
 
 #[cfg(not(windows))]
 fn ensure_running() {}
+
+/// 兜底停止 daemon（正常路径是协议 `Shutdown`）。
+///
+/// 先 `try_reuse` 确认「当前 daemon.json 对应的 daemon 真的在线」，再按 pid 硬杀，
+/// 避免拿上一世代文件里的 pid 误杀复用了 PID 的进程。
+pub fn force_stop() {
+    #[cfg(windows)]
+    {
+        let Ok(config) = ageminal_daemon::paths::config_dir() else {
+            return;
+        };
+        if ageminal_daemon::launch::try_reuse(&config).is_none() {
+            return;
+        }
+        let Ok(info) = ageminal_protocol::DaemonInfo::read(&config) else {
+            return;
+        };
+        if !ageminal_daemon::launch::wait_stopped(&info, Duration::ZERO) {
+            let _ = ageminal_daemon::launch::terminate_process(&info);
+            let _ = ageminal_daemon::launch::wait_stopped(&info, Duration::from_secs(2));
+        }
+        let _ = ageminal_protocol::DaemonInfo::remove(&config);
+    }
+}
 
 /// daemon 可执行文件：Tauri 把 `bundle.externalBin` 的 sidecar 放在**主程序同目录**
 /// （dev 与安装后都是如此）。

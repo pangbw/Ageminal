@@ -13,6 +13,7 @@ use std::mem::ManuallyDrop;
 use std::os::windows::io::FromRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,6 +44,12 @@ const COLLISION_GRACE: Duration = Duration::from_secs(2);
 
 /// 等对端数据时的轮询间隔（见 [`wait_for_incoming`]）。
 const READ_POLL: Duration = Duration::from_millis(2);
+
+/// Shutdown 时等会话真正退出的上限；超时也回 ack 并让进程退出（OS 关句柄会收尾）。
+const SHUTDOWN_DRAIN: Duration = Duration::from_secs(5);
+
+/// 回 `ShutdownAck` 后等客户端关闭连接的宽限；客户端异常不关也不至于让 daemon 永久挂着。
+const SHUTDOWN_LINGER: Duration = Duration::from_secs(5);
 
 /// 服务端配置。
 pub struct ServerConfig {
@@ -135,7 +142,8 @@ pub fn serve(config: &ServerConfig) -> Result<(), DaemonError> {
 
     // 会话表是 **daemon 全局**的：会话要活过连接（live reattach，REQUIREMENTS.md §5.2）。
     let sessions = Arc::new(SessionTable::new());
-    let result = accept_loop(&pipe, &info, &sessions, &log_path);
+    let shutdown = AtomicBool::new(false);
+    let result = accept_loop(&pipe, &info, &sessions, &log_path, &shutdown);
 
     let _ = DaemonInfo::remove(&config.config_dir);
     logging::append(
@@ -200,13 +208,17 @@ fn accept_loop(
     info: &DaemonInfo,
     sessions: &Arc<SessionTable>,
     log_path: &Path,
+    shutdown: &AtomicBool,
 ) -> Result<(), DaemonError> {
     loop {
         wait_for_client(pipe.0, log_path)?;
-        if let Err(error) = serve_connection(pipe.0, info, sessions, log_path) {
+        if let Err(error) = serve_connection(pipe.0, info, sessions, log_path, shutdown) {
             logging::append(log_path, &format!("连接结束：{error}"));
         }
         unsafe { DisconnectNamedPipe(pipe.0) };
+        if shutdown.load(Ordering::SeqCst) {
+            return Ok(());
+        }
     }
 }
 
@@ -237,6 +249,7 @@ fn serve_connection(
     info: &DaemonInfo,
     sessions: &Arc<SessionTable>,
     log_path: &Path,
+    shutdown: &AtomicBool,
 ) -> Result<(), DaemonError> {
     // **只借用**句柄：`ManuallyDrop` 防止 `File` 析构时把它关掉——这个管道实例还要复用。
     let owned = ManuallyDrop::new(unsafe { File::from_raw_handle(handle) });
@@ -290,7 +303,15 @@ fn serve_connection(
     let result = std::thread::scope(|scope| {
         let writer_thread = scope.spawn(|| outbound.run(&mut writer));
 
-        let result = read_loop(&mut reader, handle, sessions, &outbound, &handles, log_path);
+        let result = read_loop(
+            &mut reader,
+            handle,
+            sessions,
+            &outbound,
+            &handles,
+            log_path,
+            shutdown,
+        );
 
         outbound.close();
         match writer_thread.join() {
@@ -314,6 +335,7 @@ fn read_loop(
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
     log_path: &Path,
+    shutdown: &AtomicBool,
 ) -> Result<(), DaemonError> {
     loop {
         if !wait_for_incoming(handle, log_path) {
@@ -333,10 +355,54 @@ fn read_loop(
                 ) {
                     logging::append(log_path, &format!("<- {:?}", message.kind()));
                 }
-                dispatch(message, sessions, outbound, handles)?
+                dispatch(message, sessions, outbound, handles, shutdown)?;
+                if shutdown.load(Ordering::SeqCst) {
+                    // ack 已入控制优先队列；等客户端读走并关闭连接再让 accept_loop 退出，
+                    // 否则 `DisconnectNamedPipe` 可能把未读的 ack 一起丢掉。
+                    return wait_until_peer_closes(reader, handle);
+                }
             }
             Err(error) => return Err(error),
         }
+    }
+}
+
+/// 停机后等客户端读走 `ShutdownAck` 并关闭连接。
+///
+/// **不能直接阻塞在 `ReadFile` 上**：同步管道上，读线程一旦挂起，写线程的 ack 就写不出去。
+/// 所以复用 `wait_for_incoming` 的 peek 轮询；客户端关闭（ERROR_BROKEN_PIPE / NO_DATA）即返回。
+fn wait_until_peer_closes(
+    reader: &mut impl std::io::Read,
+    handle: HANDLE,
+) -> Result<(), DaemonError> {
+    let deadline = std::time::Instant::now() + SHUTDOWN_LINGER;
+    loop {
+        if std::time::Instant::now() >= deadline {
+            return Ok(());
+        }
+        let mut available: u32 = 0;
+        let ok = unsafe {
+            PeekNamedPipe(
+                handle,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            // 客户端已关闭（或管道已断）：可以退出。
+            return Ok(());
+        }
+        if available > 0 {
+            match framed::read_message(reader) {
+                Ok(None) => return Ok(()),
+                Ok(Some(_)) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        std::thread::sleep(READ_POLL);
     }
 }
 
@@ -388,9 +454,18 @@ fn dispatch(
     sessions: &Arc<SessionTable>,
     outbound: &Arc<Outbound>,
     handles: &HandleMap,
+    shutdown: &AtomicBool,
 ) -> Result<(), DaemonError> {
     match message {
         Message::Ping => outbound.send_control(&Message::Pong),
+        Message::Shutdown => {
+            // 这是托盘「结束所有会话并退出」的唯一入口：先真终止会话，再确认，最后退出。
+            sessions.terminate_all();
+            let _drained = sessions.wait_empty(SHUTDOWN_DRAIN);
+            outbound.send_control(&Message::ShutdownAck)?;
+            shutdown.store(true, Ordering::SeqCst);
+            Ok(())
+        }
         Message::ListSessions => outbound.send_control(&Message::Sessions(Sessions {
             sessions: sessions.list(),
         })),
