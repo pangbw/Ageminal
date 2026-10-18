@@ -6,8 +6,24 @@
  */
 import { vi } from "vitest";
 
-import type { PreviewView, ProjectView, WorkspaceSnapshot, WorktreeView } from "../bindings";
+import type {
+  AgentConfig,
+  PreviewView,
+  ProjectView,
+  WorkspaceSnapshot,
+  WorktreeView,
+} from "../bindings";
 import type { CommandResult } from "../lib/ipc";
+
+/** 与 Rust 缺省值一致的四家 agent（测试里不依赖 Tauri）。 */
+export function defaultAgents(): AgentConfig[] {
+  return [
+    { id: "claude", name: "Claude Code", command: "claude", args: "", color: "#d97757" },
+    { id: "opencode", name: "opencode", command: "opencode", args: "", color: "#f5a742" },
+    { id: "codex", name: "Codex", command: "codex", args: "", color: "#10a37f" },
+    { id: "pi", name: "pi", command: "pi", args: "", color: "#8b5cf6" },
+  ];
+}
 
 /** 与 `src/bindings.ts` 同形状的替身模块。 */
 export function createBindingsMock() {
@@ -19,6 +35,13 @@ export function createBindingsMock() {
       setLanguage: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       getConfirmClose: vi.fn().mockResolvedValue(true),
       setConfirmClose: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      getAgents: vi.fn().mockResolvedValue({ status: "ok", data: defaultAgents() }),
+      setAgent: vi.fn().mockImplementation((config: AgentConfig) =>
+        Promise.resolve({
+          status: "ok",
+          data: defaultAgents().map((agent) => (agent.id === config.id ? { ...config } : agent)),
+        }),
+      ),
       workspaceSnapshot: vi.fn(),
       addProject: vi.fn(),
       removeProject: vi.fn(),

@@ -11,18 +11,25 @@
 import { commands } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
 import { unwrap } from "../../lib/ipc";
+import { useAgentsStore } from "../../stores/agents";
 import { useTabsStore } from "../../stores/tabs";
 
 /** 拉取存活会话并重建页签；返回恢复的数量。 */
 export async function restoreTerminalTabs(): Promise<number> {
-  const sessions = await commands.terminalList().then(unwrap);
+  const [sessions] = await Promise.all([
+    commands.terminalList().then(unwrap),
+    useAgentsStore().ensureLoaded(),
+  ]);
   const tabs = useTabsStore();
+  const agents = useAgentsStore();
   for (const session of sessions) {
+    const agent = session.agentId ? agents.byId(session.agentId) : undefined;
     tabs.openTerminal(
       session.cwd,
       session.sid,
       session.cwd,
-      t("terminal.defaultName"),
+      agent?.name ?? t("terminal.defaultName"),
+      agent ? { agentId: agent.id, agentColor: agent.color } : undefined,
     );
   }
   return sessions.length;

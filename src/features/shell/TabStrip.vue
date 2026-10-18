@@ -10,6 +10,7 @@
  */
 import IconClose from "~icons/codicon/close";
 import IconFile from "~icons/codicon/file";
+import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
 import { computed, ref, watch } from "vue";
 
@@ -142,8 +143,13 @@ function onWheel(event: WheelEvent): void {
       @drop="drop($event, index)"
       @dragend="dragEnd"
     >
+      <IconSparkle
+        v-if="tab.kind === 'terminal' && tab.agentId"
+        class="tab__icon"
+        :style="{ color: tab.agentColor }"
+      />
       <IconTerminal
-        v-if="tab.kind === 'terminal'"
+        v-else-if="tab.kind === 'terminal'"
         class="tab__icon"
       />
       <IconFile

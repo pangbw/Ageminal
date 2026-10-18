@@ -22,12 +22,22 @@ export type PreviewTab = {
   stale: boolean;
 };
 
+/** Agent 终端页签的显示元数据（#77）；普通终端不填。 */
+export type AgentTabMeta = {
+  agentId: string;
+  agentColor: string;
+};
+
 /** 一个终端页签（#68）。`sid` 是 daemon 会话的逻辑 id。 */
 export type TerminalTab = {
   kind: "terminal";
   sid: string;
   cwd: string;
   name: string;
+  /** 一等入口的 agent id；普通终端 / 手动入口为 `undefined`。 */
+  agentId?: string;
+  /** 打开时的图标颜色快照；来自设置（#77）。 */
+  agentColor?: string;
 };
 
 /** 一个页签。 */
@@ -94,15 +104,25 @@ export const useTabsStore = defineStore("tabs", () => {
     activeByRoot.value[root] = path;
   }
 
-  /** 打开（或激活已有的）终端页签。 */
-  function openTerminal(root: string, sid: string, cwd: string, name: string): TerminalTab {
+  /** 打开（或激活已有的）终端页签；`agent` 只由一等入口传入。 */
+  function openTerminal(
+    root: string,
+    sid: string,
+    cwd: string,
+    name: string,
+    agent?: AgentTabMeta,
+  ): TerminalTab {
     const tabs = (tabsByRoot.value[root] ??= []);
     const existing = findTerminal(root, sid);
     if (existing) {
+      if (agent) {
+        existing.agentId = agent.agentId;
+        existing.agentColor = agent.agentColor;
+      }
       activeByRoot.value[root] = sid;
       return existing;
     }
-    const tab: TerminalTab = { kind: "terminal", sid, cwd, name };
+    const tab: TerminalTab = { kind: "terminal", sid, cwd, name, ...agent };
     tabs.push(tab);
     activeByRoot.value[root] = sid;
     return tab;

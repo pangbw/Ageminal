@@ -11,6 +11,7 @@ use specta::Type;
 use tauri::{Emitter, Manager};
 use tauri_specta::{collect_commands, Builder};
 
+pub mod agents;
 pub mod daemon;
 pub mod files;
 pub mod storage;
@@ -121,6 +122,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         set_language,
         get_confirm_close,
         set_confirm_close,
+        agents::get_agents,
+        agents::set_agent,
         workspace::workspace_snapshot,
         workspace::add_project,
         workspace::remove_project,

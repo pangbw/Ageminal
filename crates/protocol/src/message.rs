@@ -136,6 +136,9 @@ pub struct SessionInfo {
     pub pid: u32,
     /// 会话的工作目录（用于 UI 重建页签）。
     pub cwd: String,
+    /// 一等入口的 agent id（普通终端为 `None`）；UI 重开时恢复图标 / 名称。
+    #[serde(default)]
+    pub agent_id: Option<String>,
     /// 当前列数。
     #[serde(default)]
     pub cols: u16,
@@ -190,9 +193,12 @@ pub struct CreateSession {
     /// 要起的 shell（缺省由 daemon 定）。
     #[serde(default)]
     pub shell: Option<String>,
-    /// 启动命令（agent 页签会用到）。
+    /// 启动命令（agent 页签用；daemon 在 shell 起来后写入 PTY）。
     #[serde(default)]
     pub command: Option<String>,
+    /// 一等入口的 agent id（普通终端为 `None`）；仅作会话元数据，不参与 launch。
+    #[serde(default)]
+    pub agent_id: Option<String>,
     /// 初始列数。
     pub cols: u16,
     /// 初始行数。
@@ -563,6 +569,7 @@ mod tests {
                     incarnation_id: "inc-1".to_owned(),
                     pid: 4242,
                     cwd: r"C:\code\wt".to_owned(),
+                    agent_id: None,
                     cols: 120,
                     rows: 30,
                     started_at_ms: 1_700_000_000_000,
@@ -573,6 +580,7 @@ mod tests {
                 cwd: r"C:\code\wt".to_owned(),
                 shell: Some("pwsh".to_owned()),
                 command: None,
+                agent_id: None,
                 cols: 120,
                 rows: 30,
                 env: vec![EnvVar {

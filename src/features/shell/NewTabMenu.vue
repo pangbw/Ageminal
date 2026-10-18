@@ -8,24 +8,37 @@
 import IconEllipsis from "~icons/codicon/ellipsis";
 import IconFile from "~icons/codicon/file";
 import IconGlobe from "~icons/codicon/globe";
+import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
-import { ref } from "vue";
+import { onMounted, ref } from "vue";
 
-import { commands } from "../../bindings";
+import { commands, type AgentConfig } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
 import { errorMessage, unwrap } from "../../lib/ipc";
 import { basename } from "../../lib/path";
-import { openPreviewTab, openTerminalTab } from "../tabs/actions";
+import { useAgentsStore } from "../../stores/agents";
+import { openAgentTab, openPreviewTab, openTerminalTab } from "../tabs/actions";
 
 const props = defineProps<{ root: string | null }>();
 const emit = defineEmits<{ close: [] }>();
 
 const error = ref<string | null>(null);
 const picking = ref(false);
+const agents = useAgentsStore();
+
+onMounted(() => {
+  void agents.ensureLoaded();
+});
 
 function newTerminal(): void {
   if (props.root === null) return;
   openTerminalTab(props.root);
+  emit("close");
+}
+
+function newAgent(agent: AgentConfig): void {
+  if (props.root === null) return;
+  openAgentTab(props.root, agent);
   emit("close");
 }
 
@@ -66,6 +79,21 @@ async function newPreview(): Promise<void> {
         <IconTerminal />
         <span>{{ t("tabs.menu.terminal") }}</span>
       </button>
+      <div class="newtab__divider" />
+      <button
+        v-for="agent in agents.list"
+        :key="agent.id"
+        class="newtab__item newtab__item--agent"
+        type="button"
+        role="menuitem"
+        :data-agent-id="agent.id"
+        :disabled="root === null"
+        @click="newAgent(agent)"
+      >
+        <IconSparkle :style="{ color: agent.color }" />
+        <span>{{ t("agents.launch", { name: agent.name }) }}</span>
+      </button>
+      <div class="newtab__divider" />
       <button
         class="newtab__item"
         type="button"
@@ -145,6 +173,12 @@ async function newPreview(): Promise<void> {
 .newtab__item:disabled {
   color: var(--color-faint);
   cursor: default;
+}
+
+.newtab__divider {
+  height: 1px;
+  margin: var(--space-1) 0;
+  background: var(--color-border-soft);
 }
 
 .newtab__tag {

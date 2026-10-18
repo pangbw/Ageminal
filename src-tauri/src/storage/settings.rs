@@ -1,8 +1,12 @@
 //! `settings.json`：通用 / 外观 / 快捷键 / Agent / 项目级设置（REQUIREMENTS.md §11、§14）。
 
+use std::collections::BTreeMap;
+
 use ageminal_workspace::ProjectSettings;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+
+use crate::agents::AgentOverrides;
 
 use super::doc::{Document, Migration};
 
@@ -24,6 +28,9 @@ pub struct Settings {
     pub schema_version: u32,
     #[serde(default)]
     pub general: General,
+    /// Agent 一等入口的覆盖项（#77）；缺省值在 [`crate::agents`]。
+    #[serde(default)]
+    pub agents: AgentOverrides,
     /// 项目级设置（§14；#57 只填 worktree 显示名，#86 再加 shell 覆盖 / 环境变量 / agent 覆盖）。
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -36,6 +43,7 @@ impl Default for Settings {
         Self {
             schema_version: CURRENT_SETTINGS_VERSION,
             general: General::default(),
+            agents: BTreeMap::new(),
             projects: Vec::new(),
             extra: Map::new(),
         }

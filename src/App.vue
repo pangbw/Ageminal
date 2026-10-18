@@ -27,6 +27,7 @@ import {
 import { restoreTerminalTabs } from "./features/tabs/restore";
 import TerminalPanel from "./features/terminal/TerminalPanel.vue";
 import { translate as t } from "./i18n/translate";
+import { useAgentsStore } from "./stores/agents";
 import { useFilesStore } from "./stores/files";
 import { usePreferencesStore } from "./stores/preferences";
 import { useTabsStore } from "./stores/tabs";
@@ -38,6 +39,7 @@ const workspace = useWorkspaceStore();
 const files = useFilesStore();
 const tabs = useTabsStore();
 const preferences = usePreferencesStore();
+const agents = useAgentsStore();
 
 // 窗口标题跟着激活 worktree 走（§6）。
 useWindowTitle();
@@ -74,6 +76,7 @@ function closeTerminal(): void {
 onMounted(() => {
   void workspace.refresh();
   void preferences.load();
+  void agents.ensureLoaded();
   // #75：daemon 里存活的会话在新 UI 里重建页签；面板挂载时会 attach 快照。
   void restoreTerminalTabs().catch((failure: unknown) =>
     console.warn("[terminal] restore failed", failure),
@@ -110,6 +113,7 @@ function addProject(): void {
       />
       <TerminalPanel
         v-else-if="terminal"
+        :key="terminal.tab.sid"
         :tab="terminal.tab"
         @close="closeTerminal"
       />

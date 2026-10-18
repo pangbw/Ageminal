@@ -193,7 +193,7 @@ export function fitTerm(target: string | Pooled): { cols: number; rows: number }
 }
 
 /** 显示：首次创建会话，之后 `Attach` 取快照刷新（#73）。 */
-export function show(sid: string, cwd: string): Promise<void> {
+export function show(sid: string, cwd: string, agentId?: string): Promise<void> {
   const created: TerminalState = states.get(sid) ?? {
     sid,
     cwd,
@@ -213,7 +213,7 @@ export function show(sid: string, cwd: string): Promise<void> {
   if (!opened.has(sid)) {
     const pending = opening.get(sid);
     if (pending) return pending;
-    const starting = open(sid, cwd).finally(() => opening.delete(sid));
+    const starting = open(sid, cwd, agentId).finally(() => opening.delete(sid));
     opening.set(sid, starting);
     return starting;
   }
@@ -280,7 +280,7 @@ export function resize(sid: string, cols: number, rows: number): void {
 }
 
 /** 首次建会话：用当前 fit 出来的尺寸作为 CreateSession 的初始 cols / rows。 */
-function open(sid: string, cwd: string): Promise<void> {
+function open(sid: string, cwd: string, agentId?: string): Promise<void> {
   const entry = ensureTerm(sid);
   const { cols, rows } = fitTerm(entry);
   // CreateSession 与 attach 前的 resize 都使用这个尺寸；首次 resize 可安全跳过。
@@ -297,7 +297,7 @@ function open(sid: string, cwd: string): Promise<void> {
   channel.onmessage = (message) => onMessage(sid, message);
 
   return commands
-    .terminalOpen(sid, cwd, cols, rows, channel as unknown as Channel<number>)
+    .terminalOpen(sid, cwd, cols, rows, agentId ?? null, channel as unknown as Channel<number>)
     .then(unwrap)
     .then(() => {
       opened.add(sid);

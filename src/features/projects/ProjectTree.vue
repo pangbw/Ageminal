@@ -10,14 +10,20 @@ import IconAdd from "~icons/codicon/add";
 import IconChevronDown from "~icons/codicon/chevron-down";
 import IconGitBranch from "~icons/codicon/git-branch";
 import IconLock from "~icons/codicon/lock";
+import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
+import { ref } from "vue";
 
 import { translate as t } from "../../i18n/translate";
 import { useWorkspaceStore } from "../../stores/workspace";
-import { openTerminalTab } from "../tabs/actions";
+import AgentMenu from "../agents/AgentMenu.vue";
 import EmptyState from "../shell/EmptyState.vue";
+import { openTerminalTab } from "../tabs/actions";
 
 const workspace = useWorkspaceStore();
+
+/** 当前打开的 ✦ 菜单；固定定位，避免被侧栏滚动容器裁切。 */
+const agentMenu = ref<{ root: string; x: number; y: number } | null>(null);
 
 function addProject(): void {
   void workspace.addProject();
@@ -29,6 +35,21 @@ function toggleGroup(project: (typeof workspace.sidebarProjects)[number]): void 
 
 function activate(path: string): void {
   void workspace.setActive(path);
+}
+
+/** 打开 worktree 行的 Agent 启动菜单。 */
+function openAgentMenu(event: MouseEvent, path: string): void {
+  // 从非激活 worktree 打开菜单时先切过去，启动后的页签才会出现在当前主区。
+  if (!workspace.isActive(path)) void workspace.setActive(path);
+  const button = event.currentTarget;
+  if (!(button instanceof HTMLElement)) return;
+  const rect = button.getBoundingClientRect();
+  const width = 240;
+  agentMenu.value = {
+    root: path,
+    x: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
+    y: Math.min(rect.bottom + 4, window.innerHeight - 240),
+  };
 }
 
 /** 在这个 worktree 里开一个终端页签；会话本身由面板挂载时创建（#68）。 */
@@ -136,18 +157,36 @@ function openTerminal(path: string): void {
                 {{ t("shell.projectPanel.stale") }}
               </span>
             </button>
-            <button
-              class="icon-button row__terminal"
-              type="button"
-              :title="t('terminal.new')"
-              @click.stop="openTerminal(worktree.path)"
-            >
-              <IconTerminal />
-            </button>
+            <div class="row__actions">
+              <button
+                class="icon-button row__agent"
+                type="button"
+                :title="t('agents.openMenu')"
+                @click.stop="openAgentMenu($event, worktree.path)"
+              >
+                <IconSparkle />
+              </button>
+              <button
+                class="icon-button row__terminal"
+                type="button"
+                :title="t('terminal.new')"
+                @click.stop="openTerminal(worktree.path)"
+              >
+                <IconTerminal />
+              </button>
+            </div>
           </div>
         </li>
       </ul>
     </div>
+
+    <AgentMenu
+      v-if="agentMenu"
+      :root="agentMenu.root"
+      :x="agentMenu.x"
+      :y="agentMenu.y"
+      @close="agentMenu = null"
+    />
   </div>
 </template>
 
@@ -240,23 +279,29 @@ function openTerminal(path: string): void {
   align-items: center;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-2) 34px var(--space-2) var(--space-6);
+  padding: var(--space-2) 64px var(--space-2) var(--space-6);
   text-align: left;
 }
 
-.row__terminal {
+.row__actions {
   position: absolute;
   top: 50%;
   right: var(--space-2);
-  width: 22px;
-  height: 22px;
+  display: flex;
+  gap: var(--space-1);
   opacity: 0;
   pointer-events: none;
   transform: translateY(-50%);
 }
 
-.row-wrap:hover .row__terminal,
-.row-wrap:focus-within .row__terminal {
+.row__agent,
+.row__terminal {
+  width: 22px;
+  height: 22px;
+}
+
+.row-wrap:hover .row__actions,
+.row-wrap:focus-within .row__actions {
   opacity: 1;
   pointer-events: auto;
 }

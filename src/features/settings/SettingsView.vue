@@ -9,9 +9,11 @@
 import IconAdd from "~icons/codicon/add";
 import IconArrowLeft from "~icons/codicon/arrow-left";
 import IconEdit from "~icons/codicon/edit";
-import { computed, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 
+import type { AgentConfig } from "../../bindings";
 import { translate as t, type MessagePath } from "../../i18n/translate";
+import { useAgentsStore } from "../../stores/agents";
 import { usePreferencesStore } from "../../stores/preferences";
 import { useUiStore } from "../../stores/ui";
 import { useWorkspaceStore } from "../../stores/workspace";
@@ -31,16 +33,33 @@ const SECTIONS = [
 const ui = useUiStore();
 const workspace = useWorkspaceStore();
 const preferences = usePreferencesStore();
+const agents = useAgentsStore();
 /** 设置写入失败时显示；成功后清空。 */
 const error = ref<string | null>(null);
 
 const section = ref<Section>("project");
+/** Agent 卡片的本地草稿：输入时不直接改 Pinia 投影，保存成功后再同步。 */
+const agentDrafts = reactive<Record<string, AgentConfig>>({});
+const savingAgent = ref<string | null>(null);
 /** 正在重命名的 worktree 路径；`null` = 没有在编辑。 */
 const editing = ref<string | null>(null);
 const draft = ref("");
 
 const heading = computed<MessagePath>(
   () => SECTIONS.find((item) => item.id === section.value)?.label ?? "settings.nav.project",
+);
+
+onMounted(() => {
+  void agents.ensureLoaded();
+});
+
+// Rust 是事实来源：首次加载 / 保存成功后把草稿整体刷新。用户正在编辑时 store 不会自行变化。
+watch(
+  () => agents.list,
+  (list) => {
+    for (const agent of list) agentDrafts[agent.id] = { ...agent };
+  },
+  { immediate: true },
 );
 
 function startRename(path: string, name: string): void {
@@ -68,6 +87,23 @@ function removeProject(path: string): void {
 
 function setPinned(projectPath: string, worktreePath: string, pinned: boolean): void {
   void workspace.setWorktreePinned(projectPath, worktreePath, pinned);
+}
+
+/** 保存一个 Agent 的草稿；Rust 返回完整清单后再刷新本地值。 */
+async function saveAgent(id: string): Promise<void> {
+  const draft = agentDrafts[id];
+  if (!draft) return;
+  error.value = null;
+  savingAgent.value = id;
+  try {
+    await agents.save({ ...draft });
+    const saved = agents.byId(id);
+    if (saved) agentDrafts[id] = { ...saved };
+  } catch (failure) {
+    error.value = failure instanceof Error ? failure.message : String(failure);
+  } finally {
+    savingAgent.value = null;
+  }
 }
 
 /** 通用分页目前只有「关闭确认」；其余项归 #86。 */
@@ -125,6 +161,12 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
             >
               {{ t("settings.project.subtitle") }}
             </p>
+            <p
+              v-else-if="section === 'agents'"
+              class="page__subtitle"
+            >
+              {{ t("settings.agents.subtitle") }}
+            </p>
           </div>
           <button
             v-if="section === 'project'"
@@ -137,7 +179,84 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
           </button>
         </div>
 
-        <template v-if="section === 'general'">
+        <template v-if="section === 'agents'">
+          <article
+            v-for="agent in agents.list"
+            :key="agent.id"
+            class="agent-card"
+          >
+            <header class="agent-card__head">
+              <span
+                class="agent-card__swatch"
+                :style="{ background: agentDrafts[agent.id]?.color ?? agent.color }"
+              />
+              <div>
+                <h3 class="agent-card__name">
+                  {{ agentDrafts[agent.id]?.name || agent.name }}
+                </h3>
+                <code class="agent-card__id">{{ agent.id }}</code>
+              </div>
+            </header>
+
+            <div class="agent-card__fields">
+              <label class="agent-field">
+                <span class="agent-field__label">{{ t("settings.agents.name") }}</span>
+                <input
+                  v-model="agentDrafts[agent.id].name"
+                  class="agent-field__input"
+                  type="text"
+                >
+              </label>
+              <label class="agent-field">
+                <span class="agent-field__label">{{ t("settings.agents.command") }}</span>
+                <input
+                  v-model="agentDrafts[agent.id].command"
+                  class="agent-field__input"
+                  type="text"
+                >
+              </label>
+              <label class="agent-field">
+                <span class="agent-field__label">{{ t("settings.agents.args") }}</span>
+                <input
+                  v-model="agentDrafts[agent.id].args"
+                  class="agent-field__input"
+                  type="text"
+                  :placeholder="t('settings.agents.argsPlaceholder')"
+                >
+              </label>
+              <label class="agent-field agent-field--color">
+                <span class="agent-field__label">{{ t("settings.agents.color") }}</span>
+                <input
+                  v-model="agentDrafts[agent.id].color"
+                  class="agent-field__color"
+                  type="color"
+                  :aria-label="t('settings.agents.color')"
+                >
+              </label>
+            </div>
+
+            <div class="agent-card__foot">
+              <span class="agent-card__hint">{{ t("settings.agents.hint") }}</span>
+              <button
+                class="button"
+                type="button"
+                :disabled="savingAgent === agent.id"
+                @click="saveAgent(agent.id)"
+              >
+                {{ t("settings.agents.save") }}
+              </button>
+            </div>
+          </article>
+          <p
+            v-if="error"
+            class="setting__error"
+            role="alert"
+          >
+            {{ error }}
+          </p>
+        </template>
+
+        <template v-else-if="section === 'general'">
           <div class="setting">
             <div class="setting__text">
               <h3 class="setting__title">
@@ -444,6 +563,92 @@ async function setConfirmClose(enabled: boolean): Promise<void> {
 
 .wt__rename {
   font-size: var(--font-size-sm);
+}
+
+.agent-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+
+.agent-card + .agent-card {
+  margin-top: var(--space-4);
+}
+
+.agent-card__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.agent-card__swatch {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.agent-card__name {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
+.agent-card__id {
+  color: var(--color-faint);
+  font-size: var(--font-size-xs);
+}
+
+.agent-card__fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1.6fr) 58px;
+  gap: var(--space-3);
+}
+
+.agent-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.agent-field__label {
+  color: var(--color-faint);
+  font-size: var(--font-size-xs);
+}
+
+.agent-field__input {
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.agent-field__color {
+  width: 42px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+}
+
+.agent-card__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.agent-card__hint {
+  color: var(--color-faint);
+  font-size: var(--font-size-xs);
 }
 
 .setting {

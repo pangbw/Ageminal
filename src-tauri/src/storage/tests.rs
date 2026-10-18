@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::agents::{resolve, AgentOverride};
+
 use super::doc::{self, Document, Migration};
 use super::{atomic, settings, Notice, Store, WindowState};
 
@@ -234,6 +236,38 @@ fn settings_are_written_immediately() {
 
     let raw = read_json(&dir.path().join("settings.json"));
     assert_eq!(raw["general"]["confirmClose"], false);
+}
+
+#[test]
+fn agent_overrides_survive_restart_and_keep_defaults_for_missing_fields() {
+    let dir = TempDir::new("agents");
+
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        store
+            .update_settings(|settings| {
+                settings.agents.insert(
+                    "claude".to_owned(),
+                    AgentOverride {
+                        name: Some("Claude X".to_owned()),
+                        args: Some("--model sonnet".to_owned()),
+                        ..AgentOverride::default()
+                    },
+                );
+            })
+            .unwrap();
+    }
+
+    let store = Store::open(dir.path()).unwrap();
+    let config = resolve(store.settings(), "claude").expect("claude");
+    assert_eq!(config.name, "Claude X");
+    assert_eq!(config.command, "claude");
+    assert_eq!(config.args, "--model sonnet");
+    assert_eq!(config.color, "#d97757");
+
+    let raw = read_json(&dir.path().join("settings.json"));
+    assert_eq!(raw["agents"]["claude"]["name"], "Claude X");
+    assert!(raw["agents"]["claude"].get("command").is_none());
 }
 
 #[test]

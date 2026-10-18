@@ -27,6 +27,7 @@ fn request(sid: &str) -> CreateSession {
         cwd: std::env::temp_dir().to_string_lossy().into_owned(),
         shell: Some("cmd.exe".to_owned()),
         command: None,
+        agent_id: None,
         cols: 80,
         rows: 24,
         env: Vec::new(),
@@ -176,6 +177,32 @@ fn create_write_ack_and_terminate() {
     );
 
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+/// #77：CreateSession.command 在 shell 起来后执行；agentId 随会话元数据返回。
+#[test]
+fn create_session_runs_the_launch_command_and_keeps_agent_id() {
+    let fixture = Fixture::new("agent-command");
+    let daemon = Spawned::start(&fixture);
+    let mut client = client::connect(&daemon.info, Duration::from_secs(5)).unwrap();
+
+    let mut create = request("agent");
+    create.command = Some("echo AGENT-COMMAND-OK".to_owned());
+    create.agent_id = Some("claude".to_owned());
+    let created = client.create_session(create).expect("建 agent 会话");
+
+    let mut collected = Collected::default();
+    collected.wait_for(&mut client, created.handle, "AGENT-COMMAND-OK", TIMEOUT);
+
+    let listed = client.list_sessions().expect("list");
+    let info = listed
+        .iter()
+        .find(|info| info.sid == "agent")
+        .expect("存活会话应在清单里");
+    assert_eq!(info.agent_id.as_deref(), Some("claude"));
+
+    client.terminate("agent", false).expect("terminate");
+    wait_for_exit(&mut client, &mut collected, "agent", TIMEOUT);
 }
 
 /// 验收 2：多会话输出不串线。

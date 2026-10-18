@@ -1,1 +1,5 @@
-{}
+{
+  "menuTitle": "Start an agent",
+  "launch": "Start {name}",
+  "openMenu": "Start an agent"
+}

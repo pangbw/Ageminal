@@ -6,6 +6,7 @@
  */
 import { ref } from "vue";
 
+import { type AgentConfig } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
 import { usePreferencesStore } from "../../stores/preferences";
 import { useTabsStore, type Tab, type TerminalTab } from "../../stores/tabs";
@@ -21,14 +22,34 @@ export type PendingClose = {
 /** 非空时 App 渲染确认弹层。 */
 export const pendingClose = ref<PendingClose | null>(null);
 
-/** 新建一个终端页签；会话在面板挂载时才真正创建。 */
-export function openTerminalTab(root: string): TerminalTab {
-  const tabs = useTabsStore();
+/** 终端会话的逻辑 id；与保存的 launch spec（#78）共用这个形状。 */
+function newTerminalSid(root: string): string {
   const unique =
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return tabs.openTerminal(root, `terminal:${root}:${unique}`, root, t("terminal.defaultName"));
+  return `terminal:${root}:${unique}`;
+}
+
+/** 新建一个终端页签；会话在面板挂载时才真正创建。 */
+export function openTerminalTab(root: string): TerminalTab {
+  return useTabsStore().openTerminal(
+    root,
+    newTerminalSid(root),
+    root,
+    t("terminal.defaultName"),
+  );
+}
+
+/** 新建一个 agent 终端页签（#77）；命令由 app-core 按设置解析，面板挂载时启动。 */
+export function openAgentTab(root: string, agent: AgentConfig): TerminalTab {
+  return useTabsStore().openTerminal(
+    root,
+    newTerminalSid(root),
+    root,
+    agent.name,
+    { agentId: agent.id, agentColor: agent.color },
+  );
 }
 
 /** 打开文件预览页签（+ 菜单 / 文件选择器之后使用）。 */

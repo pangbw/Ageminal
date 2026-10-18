@@ -22,6 +22,12 @@
 //! 覆盖不到 `last_seq` 时，`attach` 从日志精确续放。checkpoint 每 1 MiB / 轮转 / 退出时更新，
 //! 单会话 64 MiB、全部目录 256 MiB 预算 GC。历史 IO 失败只会关闭持久化，不影响会话。
 //!
+//! # 启动命令（#77）
+//!
+//! `CreateSession.command` 是一行 shell 命令：会话的 PTY / shell 先按正常路径起来，命令再写进
+//! 输入管道。这样 agent 是 shell 的子进程，`cwd` 是 worktree，且与手动终端共享同一条进程树
+//! 识别路径（#79）。命令失败只影响该会话的启动，不改变会话表语义。
+//!
 //! # 流控（#73）
 //!
 //! VS Code 式 high / low 水位 + 累计 ack：
@@ -146,6 +152,8 @@ struct Session {
     pid: u32,
     /// spawn 时的工作目录（UI 重开时重建页签）。
     cwd: String,
+    /// 一等入口的 agent id（普通终端为 `None`）。
+    agent_id: Option<String>,
     /// spawn 时间（Unix 毫秒）；用于稳定排序 / 后续启动对账。
     started_at_ms: u64,
     /// PTY 控制端（resize / terminate）。**可取走**：`terminate` 把 PTY 交给独立线程去关，
@@ -200,13 +208,6 @@ impl SessionTable {
         handle: u32,
         outbound: Arc<Outbound>,
     ) -> Result<SessionCreated, DaemonError> {
-        if request.command.is_some() {
-            // 启动命令是 Agent 页签的东西（#79）；默默忽略会让用户以为生效了。
-            return Err(DaemonError::Session {
-                reason: "会话的启动命令（command）尚未支持——Agent 页签归 #79".to_owned(),
-            });
-        }
-
         // 先查一次（便宜且在锁外 spawn 之前），spawn 之后再原子地抢一次座。
         if self
             .sessions
@@ -229,9 +230,14 @@ impl SessionTable {
         let reader = control.take_reader().ok_or_else(|| DaemonError::Protocol {
             reason: "PTY 没有输出流".to_owned(),
         })?;
-        let writer = control.take_writer().ok_or_else(|| DaemonError::Protocol {
+        let mut writer = control.take_writer().ok_or_else(|| DaemonError::Protocol {
             reason: "PTY 没有输入流".to_owned(),
         })?;
+        // Agent 一等入口（#77）：在输出线程起跑前把一行命令写进 PTY。此时 shell 已创建、
+        // 输入管道会缓冲这一行；输出泵稍后启动，不会因为命令先于读线程而丢字节。
+        if let Some(command) = request.command.as_deref() {
+            write_launch_command(writer.as_mut(), command)?;
+        }
 
         let incarnation_id = format!(
             "inc-{}",
@@ -244,6 +250,7 @@ impl SessionTable {
             incarnation_id: incarnation_id.clone(),
             pid,
             cwd: request.cwd.clone(),
+            agent_id: request.agent_id.clone(),
             started_at_ms: crate::logging::now_ms(),
             control: Mutex::new(Some(control)),
             exit: Some(exit),
@@ -388,6 +395,7 @@ impl SessionTable {
                     incarnation_id: session.incarnation_id.clone(),
                     pid: session.pid,
                     cwd: session.cwd.clone(),
+                    agent_id: session.agent_id.clone(),
                     cols: vt.columns() as u16,
                     rows: vt.screen_lines() as u16,
                     started_at_ms: session.started_at_ms,
@@ -812,6 +820,26 @@ fn spawn_exit_watcher(table: Arc<SessionTable>, session: Arc<Session>) {
     });
 }
 
+/// 把 agent 启动命令写进 PTY。命令必须是一行；`\r` 是终端里的 Enter。
+fn write_launch_command(writer: &mut dyn Write, command: &str) -> Result<(), DaemonError> {
+    let command = command.trim();
+    if command.is_empty() {
+        return Ok(());
+    }
+    if command.contains(['\r', '\n']) {
+        return Err(DaemonError::Session {
+            reason: "启动命令不能包含换行".to_owned(),
+        });
+    }
+    writer
+        .write_all(command.as_bytes())
+        .and_then(|()| writer.write_all(b"\r"))
+        .and_then(|()| writer.flush())
+        .map_err(|error| DaemonError::Session {
+            reason: format!("写入启动命令失败：{error}"),
+        })
+}
+
 /// `CreateSession` → [`PtySpec`]。
 fn spec_from(request: &CreateSession) -> PtySpec {
     let (program, args) = match &request.shell {
@@ -951,6 +979,7 @@ mod tests {
             incarnation_id: incarnation_id.to_owned(),
             pid: 0,
             cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            agent_id: None,
             started_at_ms: 0,
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
@@ -991,6 +1020,7 @@ mod tests {
             incarnation_id: incarnation_id.to_owned(),
             pid: 0,
             cwd: std::env::temp_dir().to_string_lossy().into_owned(),
+            agent_id: None,
             started_at_ms: 0,
             control: Mutex::new(Some(Box::new(FakePty))),
             exit: None,
@@ -1296,6 +1326,7 @@ mod tests {
             cwd: r"C:\work".to_owned(),
             shell: Some("cmd.exe".to_owned()),
             command: None,
+            agent_id: None,
             cols: 100,
             rows: 40,
             env: vec![ageminal_protocol::EnvVar {

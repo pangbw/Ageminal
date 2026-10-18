@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fail, ok, project, snapshot, worktree } from "../../../__tests__/workspace-fixture";
 import { commands } from "../../../bindings";
+import { useTabsStore } from "../../../stores/tabs";
 import { useWorkspaceStore } from "../../../stores/workspace";
 import ProjectTree from "../ProjectTree.vue";
 
@@ -33,7 +34,8 @@ function mountTree(state = snapshot(groups())) {
   setActivePinia(pinia);
   const workspace = useWorkspaceStore();
   workspace.hydrate(state);
-  return { wrapper: mount(ProjectTree, { global: { plugins: [pinia] } }), workspace };
+  const tabs = useTabsStore();
+  return { wrapper: mount(ProjectTree, { global: { plugins: [pinia] } }), workspace, tabs };
 }
 
 describe("ProjectTree", () => {
@@ -77,6 +79,30 @@ describe("ProjectTree", () => {
     await wrapper.findAll(".row")[1].trigger("click");
 
     expect(commands.setActiveWorktree).toHaveBeenCalledWith("/ws/a/feat");
+  });
+
+  it("opens the worktree agent menu with the four configured agents and no dsh", async () => {
+    const { wrapper, tabs } = mountTree();
+
+    await wrapper.findAll(".row__agent")[0].trigger("click");
+
+    const entries = wrapper.findAll("[data-agent-id]");
+    expect(entries.map((entry) => entry.attributes("data-agent-id"))).toEqual([
+      "claude",
+      "opencode",
+      "codex",
+      "pi",
+    ]);
+    expect(wrapper.text()).not.toContain("dsh");
+
+    await entries[0].trigger("click");
+
+    expect(tabs.tabsFor("/ws/a")[0]).toMatchObject({
+      kind: "terminal",
+      name: "Claude Code",
+      agentId: "claude",
+      agentColor: "#d97757",
+    });
   });
 
   it("collapses a group through the header", async () => {

@@ -6,6 +6,7 @@
  * 面板挂载 = 会话可见；卸载 = `Detach`（会话继续活在 daemon 里，切回时 `Attach` 续流）。
  */
 import IconClose from "~icons/codicon/close";
+import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
@@ -73,7 +74,7 @@ onMounted(() => {
     lastCols = fitted.cols;
     lastRows = fitted.rows;
     // 失败已经写进 runtime 状态，面板会显示。
-    void show(props.tab.sid, props.tab.cwd)
+    void show(props.tab.sid, props.tab.cwd, props.tab.agentId)
       .then(() => {
         if (!disposed) resize(props.tab.sid, lastCols, lastRows);
       })
@@ -93,7 +94,15 @@ onBeforeUnmount(() => {
 <template>
   <div class="terminal">
     <header class="terminal__head">
-      <IconTerminal class="terminal__icon" />
+      <IconSparkle
+        v-if="tab.agentId"
+        class="terminal__icon"
+        :style="{ color: tab.agentColor }"
+      />
+      <IconTerminal
+        v-else
+        class="terminal__icon"
+      />
       <span
         class="terminal__name"
         :title="tab.cwd"

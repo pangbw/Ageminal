@@ -127,6 +127,39 @@ describe("SettingsView", () => {
     expect(commands.setConfirmClose).toHaveBeenCalledWith(false);
   });
 
+  it("edits the four agent launch settings from the Agent section", async () => {
+    const { wrapper } = mountSettings();
+
+    await wrapper.findAll(".nav__item")[3].trigger("click");
+
+    const cards = wrapper.findAll(".agent-card");
+    expect(cards).toHaveLength(4);
+    expect(cards.map((card) => card.find(".agent-card__id").text())).toEqual([
+      "claude",
+      "opencode",
+      "codex",
+      "pi",
+    ]);
+    expect(wrapper.text()).not.toContain("dsh");
+
+    const fields = cards[0].findAll(".agent-field__input");
+    await fields[0].setValue("Claude X");
+    await fields[1].setValue("claude-x");
+    await fields[2].setValue("--model sonnet");
+    await cards[0].find(".agent-field__color").setValue("#123456");
+    await cards[0].find(".button").trigger("click");
+
+    await vi.waitFor(() =>
+      expect(commands.setAgent).toHaveBeenCalledWith({
+        id: "claude",
+        name: "Claude X",
+        command: "claude-x",
+        args: "--model sonnet",
+        color: "#123456",
+      }),
+    );
+  });
+
   it("shows a placeholder for the sections still owned by #86", async () => {
     const { wrapper } = mountSettings();
 

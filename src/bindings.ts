@@ -22,6 +22,10 @@ export const commands = {
 	getConfirmClose: () => __TAURI_INVOKE<boolean>("get_confirm_close"),
 	/**  写入「关闭运行中页签需确认」并**立即落盘**（#69）。 */
 	setConfirmClose: (enabled: boolean) => typedError<null, string>(__TAURI_INVOKE("set_confirm_close", { enabled })),
+	/**  取全部 agent 配置（设置页 / 菜单初始化）。 */
+	getAgents: () => typedError<AgentConfig[], string>(__TAURI_INVOKE("get_agents")),
+	/**  保存一个 agent 的配置，返回合并后的完整清单。 */
+	setAgent: (config: AgentConfig) => typedError<AgentConfig[], string>(__TAURI_INVOKE("set_agent", { config })),
 	/**  启动 hydrate：前端拿到的唯一工作区事实。 */
 	workspaceSnapshot: () => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("workspace_snapshot")),
 	/**
@@ -96,7 +100,7 @@ export const commands = {
 	/**  在系统终端中打开 `dir`（#62；终端子系统落地前先用系统终端）。 */
 	openTerminal: (root: string, dir: string) => typedError<null, string>(__TAURI_INVOKE("open_terminal", { root, dir })),
 	/**  Tauri 命令：建会话。`async` + `spawn_blocking`，建会话期间不占住 UI 线程。 */
-	terminalOpen: (sid: string, cwd: string, cols: number, rows: number, onEvent: Channel<number>) => typedError<TerminalOpened, string>(__TAURI_INVOKE("terminal_open", { sid, cwd, cols, rows, onEvent })),
+	terminalOpen: (sid: string, cwd: string, cols: number, rows: number, agentId: string | null, onEvent: Channel<number>) => typedError<TerminalOpened, string>(__TAURI_INVOKE("terminal_open", { sid, cwd, cols, rows, agentId, onEvent })),
 	/**  Tauri 命令：枚举存活会话（UI 重开时恢复终端页签，#75）。 */
 	terminalList: () => typedError<TerminalSession[], string>(__TAURI_INVOKE("terminal_list")),
 	/**  Tauri 命令：键盘输入。`data` 是 xterm `onData` 给的字符串（UTF-8）。 */
@@ -119,6 +123,20 @@ export const commands = {
 };
 
 /* Types */
+/**  一个 agent 的完整可编辑配置（Rust → 前端）。 */
+export type AgentConfig = {
+	/**  稳定 id（`claude` / `opencode` / `codex` / `pi`）。 */
+	id: string,
+	/**  菜单、页签与设置页显示的名称。 */
+	name: string,
+	/**  可执行命令（只填程序；参数放 [`Self::args`]）。 */
+	command: string,
+	/**  原样追加在命令后的参数串（例如 `--model sonnet`）。 */
+	args: string,
+	/**  图标颜色（十六进制，如 `#d97757`）。 */
+	color: string,
+};
+
 /**  应用与运行时的基础信息。 */
 export type AppInfo = {
 	/**  产品名。 */
@@ -230,6 +248,8 @@ export type TerminalSession = {
 	pid: number,
 	/**  本次 spawn 的世代 id。 */
 	incarnationId: string,
+	/**  一等入口的 agent id；普通终端为 `None`。 */
+	agentId: string | null,
 };
 
 /**  前端唯一的工作区事实来源。 */

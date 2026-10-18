@@ -39,13 +39,22 @@
 //!   下次启动用 `ListSessions` 找回并 `Attach` 快照。
 //! - 重连成功后，前端在回放边界之后写一行「—— 已重新连接 ——」；它由前端直接写进 xterm，
 //!   不注入 PTY 字节流，因此不会截断可能落在边界中间的转义序列。
+//!
+//! # Agent 一等入口（#77）
+//!
+//! 前端只传 `agentId`；这里从 `settings.json` 解析命令 / 参数并交给 daemon 的
+//! `CreateSession.command`。daemon 在 shell 起来后把这一行写进 PTY，所以 `.cmd` / `.exe` /
+//! Git Bash 脚本都由 shell 解析，agent 仍留在 shell 的进程树里（#79 的可识别路径）。
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
 use specta::Type;
 use tauri::ipc::{Channel, InvokeResponseBody, IpcResponse};
+
+use crate::agents;
+use crate::storage::Store;
 
 /// 合批上限：攒到这个字节数立刻发，不等 8 ms 窗口。
 const BATCH_BYTES: usize = 16 * 1024;
@@ -88,6 +97,17 @@ pub struct TerminalOpened {
     pub incarnation_id: String,
 }
 
+/// 打开一个终端所需的参数（避免服务内部函数参数太多）。
+#[derive(Debug, Clone)]
+pub(crate) struct OpenSpec {
+    sid: String,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    agent_id: Option<String>,
+    command: Option<String>,
+}
+
 /// 一个存活终端会话的概要（`terminal_list`，UI 重开恢复用）。
 #[derive(Debug, Clone, Serialize, Type)]
 #[serde(rename_all = "camelCase")]
@@ -100,6 +120,8 @@ pub struct TerminalSession {
     pub pid: u32,
     /// 本次 spawn 的世代 id。
     pub incarnation_id: String,
+    /// 一等入口的 agent id；普通终端为 `None`。
+    pub agent_id: Option<String>,
 }
 
 /// 走 Channel JSON 帧的控制消息。
@@ -229,25 +251,15 @@ impl TerminalService {
     }
 
     /// 建会话。
-    pub fn open(
+    pub(crate) fn open(
         &self,
-        sid: String,
-        cwd: String,
-        cols: u16,
-        rows: u16,
+        spec: OpenSpec,
         event: Channel<TerminalEvent>,
     ) -> Result<TerminalOpened, String> {
         #[cfg(windows)]
         {
             let (reply, receiver) = mpsc::sync_channel(1);
-            self.send(Request::Open {
-                sid,
-                cwd,
-                cols,
-                rows,
-                event,
-                reply,
-            })?;
+            self.send(Request::Open { spec, event, reply })?;
             match receiver.recv_timeout(OPEN_TIMEOUT) {
                 Ok(result) => result,
                 Err(_) => Err("终端服务在等待 daemon 建会话时超时".to_owned()),
@@ -255,7 +267,7 @@ impl TerminalService {
         }
         #[cfg(not(windows))]
         {
-            let _ = (sid, cwd, cols, rows, event);
+            let _ = (spec, event);
             Err(windows_only())
         }
     }
@@ -375,16 +387,36 @@ fn windows_only() -> String {
 /// Tauri 命令：建会话。`async` + `spawn_blocking`，建会话期间不占住 UI 线程。
 #[tauri::command]
 #[specta::specta]
+// Tauri 的命令面就是扁平参数；内部用 `OpenSpec` 降低服务函数参数。
+#[allow(clippy::too_many_arguments)]
 pub async fn terminal_open(
     state: tauri::State<'_, TerminalService>,
+    store: tauri::State<'_, Mutex<Store>>,
     sid: String,
     cwd: String,
     cols: u16,
     rows: u16,
+    agent_id: Option<String>,
     on_event: Channel<TerminalEvent>,
 ) -> Result<TerminalOpened, String> {
+    // Agent 启动命令在进入服务线程前解析：设置是单一事实来源，失败就直接报给 UI。
+    let command = match agent_id.as_deref() {
+        Some(id) => {
+            let store = store.lock().map_err(|_| "设置锁已被污染".to_owned())?;
+            Some(agents::launch_command(store.settings(), id)?)
+        }
+        None => None,
+    };
+    let spec = OpenSpec {
+        sid,
+        cwd,
+        cols,
+        rows,
+        agent_id,
+        command,
+    };
     let service = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.open(sid, cwd, cols, rows, on_event))
+    tauri::async_runtime::spawn_blocking(move || service.open(spec, on_event))
         .await
         .map_err(|error| format!("终端服务不可用：{error}"))?
 }
@@ -463,10 +495,7 @@ pub fn terminal_close(state: tauri::State<'_, TerminalService>, sid: String) -> 
 #[cfg(windows)]
 enum Request {
     Open {
-        sid: String,
-        cwd: String,
-        cols: u16,
-        rows: u16,
+        spec: OpenSpec,
         event: Channel<TerminalEvent>,
         reply: mpsc::SyncSender<Result<TerminalOpened, String>>,
     },
@@ -634,14 +663,7 @@ fn service_loop(receiver: mpsc::Receiver<Request>) {
 #[cfg(windows)]
 fn handle_request(runtime: &mut Runtime, request: Request) {
     match request {
-        Request::Open {
-            sid,
-            cwd,
-            cols,
-            rows,
-            event,
-            reply,
-        } => open_session(runtime, sid, cwd, cols, rows, event, reply),
+        Request::Open { spec, event, reply } => open_session(runtime, spec, event, reply),
         Request::List { reply } => list_sessions(runtime, reply),
         Request::ShutdownAll { reply } => shutdown_all(runtime, reply),
         Request::Input { sid, bytes } => {
@@ -780,6 +802,7 @@ fn list_sessions(
                     cwd: info.cwd,
                     pid: info.pid,
                     incarnation_id: info.incarnation_id,
+                    agent_id: info.agent_id,
                 })
                 .collect()));
         }
@@ -795,13 +818,18 @@ fn list_sessions(
 #[cfg(windows)]
 fn open_session(
     runtime: &mut Runtime,
-    sid: String,
-    cwd: String,
-    cols: u16,
-    rows: u16,
+    spec: OpenSpec,
     event: Channel<TerminalEvent>,
     reply: mpsc::SyncSender<Result<TerminalOpened, String>>,
 ) {
+    let OpenSpec {
+        sid,
+        cwd,
+        cols,
+        rows,
+        agent_id,
+        command,
+    } = spec;
     if let Err(error) = ensure_client(runtime) {
         let _ = reply.send(Err(error));
         return;
@@ -845,7 +873,8 @@ fn open_session(
         sid: sid.clone(),
         cwd,
         shell: None,
-        command: None,
+        command,
+        agent_id,
         cols,
         rows,
         env: Vec::new(),

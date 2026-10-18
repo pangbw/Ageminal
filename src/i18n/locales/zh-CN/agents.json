@@ -1,1 +1,5 @@
-{}
+{
+  "menuTitle": "启动 Agent",
+  "launch": "启动 {name}",
+  "openMenu": "启动 Agent"
+}

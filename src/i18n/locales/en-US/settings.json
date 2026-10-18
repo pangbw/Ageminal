@@ -22,5 +22,15 @@
   "general": {
     "confirmClose": "Confirm before closing a running terminal",
     "confirmCloseHint": "Ask before closing a terminal tab whose command is still running."
+  },
+  "agents": {
+    "subtitle": "Configure each agent launch command, arguments and icon color. Plain terminals remain available.",
+    "name": "Name",
+    "command": "Command",
+    "args": "Arguments",
+    "argsPlaceholder": "e.g. --model sonnet",
+    "color": "Icon color",
+    "save": "Save",
+    "hint": "Runs in the worktree directory. Put the executable in Command and flags in Arguments."
   }
 }

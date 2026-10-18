@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   terminalList: vi.fn(),
+  getAgents: vi.fn(),
 }));
 
 vi.mock("../../../bindings", () => ({
-  commands: { terminalList: mocks.terminalList },
+  commands: { terminalList: mocks.terminalList, getAgents: mocks.getAgents },
 }));
 
 import { useTabsStore } from "../../../stores/tabs";
@@ -18,18 +19,29 @@ const SESSIONS = [
     cwd: "/ws/a",
     pid: 100,
     incarnationId: "inc-1",
+    agentId: "claude",
   },
   {
     sid: "terminal:/ws/b:2",
     cwd: "/ws/b",
     pid: 200,
     incarnationId: "inc-2",
+    agentId: null,
   },
 ];
 
 describe("restore terminal tabs", () => {
   beforeEach(() => {
     mocks.terminalList.mockReset();
+    mocks.getAgents.mockReset().mockResolvedValue({
+      status: "ok",
+      data: [
+        { id: "claude", name: "Claude Code", command: "claude", args: "", color: "#d97757" },
+        { id: "opencode", name: "opencode", command: "opencode", args: "", color: "#f5a742" },
+        { id: "codex", name: "Codex", command: "codex", args: "", color: "#10a37f" },
+        { id: "pi", name: "pi", command: "pi", args: "", color: "#8b5cf6" },
+      ],
+    });
     setActivePinia(createPinia());
   });
 
@@ -40,7 +52,14 @@ describe("restore terminal tabs", () => {
     await expect(restoreTerminalTabs()).resolves.toBe(2);
 
     expect(tabs.tabsFor("/ws/a")).toMatchObject([
-      { kind: "terminal", sid: SESSIONS[0]!.sid, cwd: "/ws/a" },
+      {
+        kind: "terminal",
+        sid: SESSIONS[0]!.sid,
+        cwd: "/ws/a",
+        name: "Claude Code",
+        agentId: "claude",
+        agentColor: "#d97757",
+      },
     ]);
     // 后恢复的会话成为该 worktree 的激活项。
     expect(tabs.activeTerminal("/ws/b")?.sid).toBe(SESSIONS[1]!.sid);
