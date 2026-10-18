@@ -193,19 +193,19 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 
 ### 7.2 渲染与交互 ✅（C3 #11）
 
-- 渲染层：**xterm.js 6.0.0**；addon 组合 = `fit` / `search` / `web-links` / `unicode11`（需 `allowProposedApi`，用于 **CJK 宽度**）
+- 渲染层 ✅（#85）：**xterm.js 6.0.0**；addon 组合 = `fit` / `search` / `web-links` / `unicode11`（需 `allowProposedApi`，用于 **CJK 宽度**）；可见终端额外挂 `addon-webgl`，context lost / 失败回退 DOM
   - **不收**：`serialize` / `headless`（VT 与快照在 Rust daemon 侧做，B1 路线 C）、`attach`（走 Tauri IPC 非 WebSocket）、`canvas`（不兼容 xterm 6）、`ligatures` / `image` / `clipboard`(OSC 52) / `progress`（均延后）
-- **渲染器策略**：**DOM 为常驻基线**；激活时给**当前可见终端**挂 `addon-webgl`，context lost / 挂载失败**回退 DOM**（同时可见的终端只有 1 个）
+- **渲染器策略** ✅（#85）：**DOM 为常驻基线**；激活时给**当前可见终端**挂 `addon-webgl`，context lost / 挂载失败**回退 DOM**（同时可见的终端只有 1 个；真机以 `--disable-webgl` 验证回退）
 - **中文输入法（IME）** 必须可用（硬性验收项）：走 **WebView2 系统级 IME**，不自研。✅ **H1 #38 真机实测通过**：中文经 `onData` 正确送达（码点级验证）、**候选窗锚点精确跟随光标**（各列 x 完全相等，未复现 xterm.js #5454）、**等宽网格不被破坏**；剩余风险收窄为 **ConPTY 交互（#40）** 与第三方 IME 差异
-- 复制 / 粘贴 / 全选；**右键语义**：有选中 → 复制，无选中 → 粘贴菜单；`Ctrl+C` 有选区复制、无选区发 SIGINT；`Ctrl+Shift+C/V` 同义
+- 复制 / 粘贴 / 全选 ✅（#85）；**右键语义**：有选中 → 复制，无选中 → 粘贴菜单；`Ctrl+C` 有选区复制、无选区发 SIGINT；`Ctrl+Shift+C/V` 同义
 - 链接识别与点击：URL 在**外部浏览器**打开；**文件路径跳预览 🕓 延后**；OSC 8 走同一 handler
-- **终端内搜索**：`addon-search` + `Ctrl+Shift+F`；范围 = 渲染端缓冲（10k 行）
+- **终端内搜索** ✅（#85）：`addon-search` + `Ctrl+Shift+F`；范围 = 渲染端缓冲（10k 行）
 - **字体外观**：**Ageminal Mono**（等宽，含简繁日 CJK）；默认字号 13 / 行高 1.2 / 光标 block + 闪烁；可调项归「外观」
 - 滚动缓冲上限（**默认 10k 行**，可配置）✅
 - **终端背景**：默认**不透明** `#080909`；透出 OS 毛玻璃是「外观」开关（`allowTransparency`，默认关）
 - **resize 同步**：`CreateSession` 带初始 `cols/rows`；`ResizeObserver` 去抖 **~120 ms** → `resize` 帧 → ConPTY；隐藏 / 0 尺寸不发；重新可见先 fit 再发
 - 其他选项：`convertEol: false`、`windowsPty: { backend: 'conpty', buildNumber }`、`rightClickSelectsWord: false`
-- **终端标题**：支持 OSC 序列动态改标题，并在页签上显示
+- **终端标题** ✅（#85）：支持 OSC 序列动态改标题，并在页签上显示
 - **数据通路**（C2 #10）：终端数据走 **每会话一条 `Channel`** 的 `Raw` 帧，**合批 ≥16 KiB 或 ≥8 ms**（Tauri 的 `Raw` 帧 <1024 字节会退化为 eval + JSON 数字数组）；该会话的控制消息（exit / title / 状态）走同一条 Channel 的 `Json` 帧以**保序**
 
 ### 7.3 关闭与确认

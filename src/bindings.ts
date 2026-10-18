@@ -6,6 +6,8 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 export const commands = {
 	/**  首个贯通 Rust → TS 的命令。 */
 	appInfo: () => __TAURI_INVOKE<AppInfo>("app_info"),
+	/**  Windows build number（xterm `windowsPty.buildNumber`，#85）。 */
+	windowsBuildNumber: () => __TAURI_INVOKE<number | null>("windows_build_number"),
 	/**
 	 *  系统 locale（BCP-47）。
 	 * 
@@ -113,6 +115,10 @@ export const commands = {
 	deleteEntry: (root: string, path: string) => typedError<null, string>(__TAURI_INVOKE("delete_entry", { root, path })),
 	/**  写文本到系统剪贴板（复制路径 / 相对路径，#62）。 */
 	writeClipboard: (text: string) => typedError<null, string>(__TAURI_INVOKE("write_clipboard", { text })),
+	/**  读系统剪贴板文本（终端粘贴，#85）。 */
+	readClipboard: () => typedError<string, string>(__TAURI_INVOKE("read_clipboard")),
+	/**  用外部浏览器打开 http(s) URL（终端链接 / OSC 8，#85）。 */
+	openUrl: (url: string) => typedError<null, string>(__TAURI_INVOKE("open_url", { url })),
 	/**  把文件放进系统剪贴板（`CF_HDROP`，可在资源管理器粘贴；#62；Windows 专有）。 */
 	copyFiles: (root: string, paths: string[]) => typedError<null, string>(__TAURI_INVOKE("copy_files", { root, paths })),
 	/**  在文件资源管理器中显示（#62；选中该条目）。 */

@@ -8,15 +8,22 @@
 import IconClose from "~icons/codicon/close";
 import IconSparkle from "~icons/codicon/sparkle";
 import IconTerminal from "~icons/codicon/terminal";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import { translate as t } from "../../i18n/translate";
 import type { TerminalTab } from "../../stores/tabs";
 import {
+  clearTerminalSearch,
+  copySelection,
+  findInTerminal,
   fitTerm,
+  hasSelection,
   hide,
   mountTerm,
+  onSearchRequest,
+  pasteClipboard,
   resize,
+  selectAll,
   show,
   terminalState,
 } from "./runtime";
@@ -35,6 +42,12 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let lastCols = 0;
 let lastRows = 0;
 let disposed = false;
+let searchDispose: { dispose(): void } | null = null;
+
+const searchOpen = ref(false);
+const searchQuery = ref("");
+const searchInput = ref<HTMLInputElement | null>(null);
+const menu = ref<{ x: number; y: number } | null>(null);
 
 function syncSize(): void {
   if (disposed || !statesVisible()) return;
@@ -45,6 +58,63 @@ function syncSize(): void {
   lastCols = cols;
   lastRows = rows;
   resize(props.tab.sid, cols, rows);
+}
+
+function openSearch(): void {
+  searchOpen.value = true;
+  void nextTick(() => searchInput.value?.focus());
+}
+
+function closeSearch(): void {
+  searchOpen.value = false;
+  searchQuery.value = "";
+  clearTerminalSearch(props.tab.sid);
+}
+
+function runSearch(backwards = false): void {
+  if (!searchQuery.value) {
+    clearTerminalSearch(props.tab.sid);
+    return;
+  }
+  findInTerminal(props.tab.sid, searchQuery.value, backwards);
+}
+
+function onSearchKey(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSearch();
+    return;
+  }
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runSearch(event.shiftKey);
+  }
+}
+
+function closeMenu(): void {
+  menu.value = null;
+}
+
+function onContextMenu(event: MouseEvent): void {
+  event.preventDefault();
+  if (hasSelection(props.tab.sid)) {
+    copySelection(props.tab.sid);
+    return;
+  }
+  menu.value = {
+    x: Math.min(event.clientX, window.innerWidth - 150),
+    y: Math.min(event.clientY, window.innerHeight - 90),
+  };
+}
+
+function onPaste(): void {
+  pasteClipboard(props.tab.sid);
+  closeMenu();
+}
+
+function onSelectAll(): void {
+  selectAll(props.tab.sid);
+  closeMenu();
 }
 
 function statesVisible(): boolean {
@@ -59,6 +129,9 @@ function scheduleSync(): void {
 onMounted(() => {
   const element = host.value;
   if (!element) return;
+
+  searchDispose = onSearchRequest(props.tab.sid, openSearch);
+  window.addEventListener("pointerdown", closeMenu);
 
   const { cols, rows } = mountTerm(props.tab.sid, element);
   lastCols = cols;
@@ -84,6 +157,9 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disposed = true;
+  searchDispose?.dispose();
+  searchDispose = null;
+  window.removeEventListener("pointerdown", closeMenu);
   clearTimeout(timer);
   observer?.disconnect();
   observer = null;
@@ -135,6 +211,49 @@ onBeforeUnmount(() => {
       </button>
     </header>
 
+    <div
+      v-if="searchOpen"
+      class="terminal__search"
+    >
+      <input
+        ref="searchInput"
+        v-model="searchQuery"
+        class="terminal__search-input"
+        type="text"
+        :placeholder="t('terminal.searchPlaceholder')"
+        :aria-label="t('terminal.searchPlaceholder')"
+        @input="runSearch(false)"
+        @keydown="onSearchKey"
+      >
+      <button
+        class="icon-button"
+        type="button"
+        :title="t('terminal.searchPrevious')"
+        :aria-label="t('terminal.searchPrevious')"
+        @click="runSearch(true)"
+      >
+        ↑
+      </button>
+      <button
+        class="icon-button"
+        type="button"
+        :title="t('terminal.searchNext')"
+        :aria-label="t('terminal.searchNext')"
+        @click="runSearch(false)"
+      >
+        ↓
+      </button>
+      <button
+        class="icon-button"
+        type="button"
+        :title="t('terminal.searchClose')"
+        :aria-label="t('terminal.searchClose')"
+        @click="closeSearch"
+      >
+        ×
+      </button>
+    </div>
+
     <p
       v-if="state?.error"
       class="terminal__error"
@@ -146,7 +265,33 @@ onBeforeUnmount(() => {
     <div
       ref="host"
       class="terminal__host"
+      @contextmenu.prevent="onContextMenu"
     />
+
+    <div
+      v-if="menu"
+      class="terminal__menu"
+      role="menu"
+      :style="{ left: `${menu.x}px`, top: `${menu.y}px` }"
+      @pointerdown.stop
+    >
+      <button
+        class="terminal__menu-item"
+        type="button"
+        role="menuitem"
+        @click="onPaste"
+      >
+        {{ t("terminal.paste") }}
+      </button>
+      <button
+        class="terminal__menu-item"
+        type="button"
+        role="menuitem"
+        @click="onSelectAll"
+      >
+        {{ t("terminal.selectAll") }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -198,6 +343,57 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
+}
+
+.terminal__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border-soft);
+  background: var(--color-bg);
+}
+
+.terminal__search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-accent-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: inherit;
+}
+
+.terminal__search .icon-button {
+  width: 22px;
+  height: 22px;
+  font-size: var(--font-size-sm);
+}
+
+.terminal__menu {
+  position: fixed;
+  z-index: 30;
+  min-width: 140px;
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 45%);
+}
+
+.terminal__menu-item {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  font-size: var(--font-size-sm);
+  text-align: left;
+}
+
+.terminal__menu-item:hover {
+  background: var(--color-hover);
 }
 
 .terminal__error {

@@ -26,6 +26,7 @@ import {
   pendingClose,
   requestClose,
 } from "./features/tabs/actions";
+import { setWindowsBuildNumber } from "./features/terminal/platform";
 import { restoreWorkspaceTabs } from "./features/tabs/restore";
 import TerminalPanel from "./features/terminal/TerminalPanel.vue";
 import { translate as t } from "./i18n/translate";
@@ -82,7 +83,12 @@ function closeTerminal(): void {
 /** 启动顺序：工作区快照 → 设置 / agent 配置 → 页签对账。 */
 async function bootstrap(): Promise<void> {
   await workspace.refresh();
-  await Promise.all([preferences.load(), agents.ensureLoaded(), agentStatus.start()]);
+  await Promise.all([
+    preferences.load(),
+    agents.ensureLoaded(),
+    agentStatus.start(),
+    commands.windowsBuildNumber().then(setWindowsBuildNumber).catch(() => undefined),
+  ]);
   // #78：Rust 会先按 state.json + daemon ListSessions 做四象限对账，再把骨架交回这里。
   try {
     await restoreWorkspaceTabs();

@@ -71,6 +71,24 @@ fn app_info(app: tauri::AppHandle) -> AppInfo {
     }
 }
 
+/// Windows build number（xterm `windowsPty.buildNumber`，#85）。
+#[tauri::command]
+#[specta::specta]
+fn windows_build_number() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        use tauri_plugin_os::Version;
+        match tauri_plugin_os::version() {
+            Version::Semantic(_, _, build) => u32::try_from(build).ok(),
+            _ => None,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// 系统 locale（BCP-47）。
 ///
 /// 直接调 `tauri_plugin_os` 的 Rust 函数，**不注册插件**：前端不拿 `os:*` 权限，
@@ -129,6 +147,7 @@ fn set_confirm_close(
 pub fn builder() -> Builder<tauri::Wry> {
     Builder::new().commands(collect_commands![
         app_info,
+        windows_build_number,
         system_locale,
         get_language,
         set_language,
@@ -160,6 +179,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         files::rename_entry,
         files::delete_entry,
         files::write_clipboard,
+        files::read_clipboard,
+        files::open_url,
         files::copy_files,
         files::reveal_in_explorer,
         files::open_terminal,

@@ -6,5 +6,12 @@
   "error": "Terminal error",
   "exited": "Session ended",
   "exitedWithCode": "Session ended (exit code {code})",
-  "reconnected": "—— Reconnected ——"
+  "reconnected": "—— Reconnected ——",
+  "copy": "Copy",
+  "paste": "Paste",
+  "selectAll": "Select all",
+  "searchPlaceholder": "Search terminal",
+  "searchPrevious": "Previous result",
+  "searchNext": "Next result",
+  "searchClose": "Close search"
 }

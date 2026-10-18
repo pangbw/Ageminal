@@ -11,6 +11,9 @@
  */
 import { Channel } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { Terminal, type IDisposable } from "@xterm/xterm";
 import { reactive } from "vue";
@@ -18,6 +21,8 @@ import { reactive } from "vue";
 import { commands } from "../../bindings";
 import { translate as t } from "../../i18n/translate";
 import { errorMessage, unwrap } from "../../lib/ipc";
+import { useTabsStore } from "../../stores/tabs";
+import { windowsBuildNumber } from "./platform";
 
 import "@xterm/xterm/css/xterm.css";
 
@@ -61,8 +66,12 @@ export type TerminalState = {
 type Pooled = {
   term: Terminal;
   fit: FitAddon;
+  search: SearchAddon;
   host: HTMLDivElement;
   input: IDisposable;
+  /** WebGL 只在可见终端上挂载；失败 / context lost 后回到 DOM 渲染。 */
+  webgl: WebglAddon | null;
+  webglFailed: boolean;
   /** xterm 已解析的字节数（本次 attach 内）。 */
   parsed: number;
   /** 已报给 app-core 的字节数。 */
@@ -86,6 +95,7 @@ const states = reactive(new Map<string, TerminalState>());
 const pooledTerms = new Map<string, Pooled>();
 const opened = new Set<string>();
 const opening = new Map<string, Promise<void>>();
+const searchRequests = new Map<string, Set<() => void>>();
 
 /** 未挂载时的暂存区：必须可见 / 有尺寸，xterm 首次 `open()` 才量得到格子大小。 */
 let offstage: HTMLDivElement | null = null;
@@ -114,6 +124,7 @@ export function ensureTerm(sid: string): Pooled {
 
   const host = document.createElement("div");
   host.className = "terminal-host";
+  host.dataset.renderer = "dom";
   host.style.cssText = "width:100%;height:100%;";
   stage().appendChild(host);
 
@@ -121,13 +132,18 @@ export function ensureTerm(sid: string): Pooled {
     allowProposedApi: true,
     convertEol: false,
     scrollback: 10_000,
+    allowTransparency: false,
     cursorBlink: true,
     cursorStyle: "block",
     fontFamily: '"Ageminal Mono", "Cascadia Mono", Consolas, "Courier New", monospace',
     fontSize: 13,
     lineHeight: 1.2,
     rightClickSelectsWord: false,
-    windowsPty: { backend: "conpty" },
+    windowsPty: { backend: "conpty", buildNumber: windowsBuildNumber() },
+    linkHandler: {
+      activate: (_event, text) => openExternal(text),
+      allowNonHttpProtocols: false,
+    },
     theme: {
       background: "#080909",
       foreground: "#d4d4d4",
@@ -137,8 +153,53 @@ export function ensureTerm(sid: string): Pooled {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new Unicode11Addon());
+  const search = new SearchAddon();
+  term.loadAddon(search);
+  term.loadAddon(
+    new WebLinksAddon((event, uri) => {
+      event.preventDefault();
+      openExternal(uri);
+    }),
+  );
+  term.onTitleChange((title) => {
+    const name = title.trim();
+    if (name) useTabsStore().setTerminalTitle(sid, name);
+  });
   term.unicode.activeVersion = "11";
   term.open(host);
+  term.attachCustomKeyEventHandler((event) => {
+    if (event.type !== "keydown") return true;
+    const key = event.key.toLowerCase();
+    if (event.ctrlKey && event.shiftKey) {
+      if (key === "f") {
+        event.preventDefault();
+        requestSearch(sid);
+        return false;
+      }
+      if (key === "c") {
+        event.preventDefault();
+        copySelection(sid);
+        return false;
+      }
+      if (key === "v") {
+        event.preventDefault();
+        pasteClipboard(sid);
+        return false;
+      }
+      if (key === "a") {
+        event.preventDefault();
+        term.selectAll();
+        return false;
+      }
+    }
+    // Ctrl+C 有选区时复制，否则照常把 SIGINT 交给 shell。
+    if (event.ctrlKey && !event.shiftKey && key === "c" && term.hasSelection()) {
+      event.preventDefault();
+      copySelection(sid);
+      return false;
+    }
+    return true;
+  });
   // 暂存区尺寸异常时忽略；真正挂载后会再 fit。
   try {
     fit.fit();
@@ -156,8 +217,11 @@ export function ensureTerm(sid: string): Pooled {
   const entry: Pooled = {
     term,
     fit,
+    search,
     host,
     input,
+    webgl: null,
+    webglFailed: false,
     parsed: 0,
     acked: 0,
     epoch: 0,
@@ -174,6 +238,7 @@ export function mountTerm(sid: string, pane: HTMLElement): { cols: number; rows:
   const entry = ensureTerm(sid);
   if (entry.host.parentElement !== pane) pane.appendChild(entry.host);
   const size = fitTerm(entry);
+  enableWebgl(entry);
   entry.term.focus();
   return size;
 }
@@ -233,6 +298,8 @@ export function hide(sid: string): void {
   const state = states.get(sid);
   if (!state || !state.visible) return;
   state.visible = false;
+  const entry = pooledTerms.get(sid);
+  if (entry) disableWebgl(entry);
   if (!opened.has(sid)) return;
   void commands
     .terminalSetVisible(sid, false)
@@ -254,6 +321,7 @@ export async function close(sid: string): Promise<void> {
 
   const entry = pooledTerms.get(sid);
   if (entry) {
+    disableWebgl(entry);
     if (entry.ackTimer !== undefined) window.clearTimeout(entry.ackTimer);
     entry.input.dispose();
     entry.term.dispose();
@@ -315,6 +383,125 @@ function open(sid: string, cwd: string, agentId?: string): Promise<void> {
       setError(sid, errorMessage(failure));
       throw failure;
     });
+}
+
+/** 订阅当前终端的搜索快捷键（Ctrl+Shift+F）。 */
+export function onSearchRequest(sid: string, listener: () => void): IDisposable {
+  const listeners = searchRequests.get(sid) ?? new Set<() => void>();
+  listeners.add(listener);
+  searchRequests.set(sid, listeners);
+  return {
+    dispose: () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) searchRequests.delete(sid);
+    },
+  };
+}
+
+function requestSearch(sid: string): void {
+  for (const listener of searchRequests.get(sid) ?? []) listener();
+}
+
+/** 复制当前选区；返回是否真的复制了内容。 */
+export function copySelection(sid: string): boolean {
+  const entry = pooledTerms.get(sid);
+  const text = entry?.term.getSelection() ?? "";
+  if (!text) return false;
+  void commands
+    .writeClipboard(text)
+    .then(unwrap)
+    .catch((failure: unknown) => console.warn("[terminal] copy failed", failure));
+  return true;
+}
+
+/** 粘贴系统剪贴板文本；xterm 会处理 bracketed paste。 */
+export function pasteClipboard(sid: string): void {
+  void commands
+    .readClipboard()
+    .then(unwrap)
+    .then((text) => {
+      const entry = pooledTerms.get(sid);
+      if (entry && text) entry.term.paste(text);
+    })
+    .catch((failure: unknown) => console.warn("[terminal] paste failed", failure));
+}
+
+export function selectAll(sid: string): void {
+  pooledTerms.get(sid)?.term.selectAll();
+}
+
+export function hasSelection(sid: string): boolean {
+  return pooledTerms.get(sid)?.term.hasSelection() ?? false;
+}
+
+/** 搜索当前渲染端缓冲（scrollback 10k 行）；返回是否找到。 */
+export function findInTerminal(
+  sid: string,
+  query: string,
+  backwards = false,
+): boolean {
+  const entry = pooledTerms.get(sid);
+  if (!entry || !query) return false;
+  const options = {
+    incremental: !backwards,
+    decorations: {
+      matchBackground: "#3d6b96",
+      matchBorder: "#61afef",
+      matchOverviewRuler: "#61afef",
+      activeMatchBackground: "#d19a66",
+      activeMatchBorder: "#e5c07b",
+      activeMatchColorOverviewRuler: "#e5c07b",
+    },
+  };
+  return backwards
+    ? entry.search.findPrevious(query, options)
+    : entry.search.findNext(query, options);
+}
+
+export function clearTerminalSearch(sid: string): void {
+  pooledTerms.get(sid)?.search.clearDecorations();
+}
+
+function openExternal(uri: string): void {
+  const lower = uri.trim().toLowerCase();
+  if (!lower.startsWith("http://") && !lower.startsWith("https://")) return;
+  void commands
+    .openUrl(uri.trim())
+    .then(unwrap)
+    .catch((failure: unknown) => console.warn("[terminal] open url failed", failure));
+}
+
+function enableWebgl(entry: Pooled): void {
+  if (entry.webgl || entry.webglFailed) return;
+  try {
+    const addon = new WebglAddon();
+    addon.onContextLoss(() => {
+      try {
+        addon.dispose();
+      } finally {
+        entry.webgl = null;
+        entry.webglFailed = true;
+        entry.host.dataset.renderer = "dom";
+      }
+    });
+    entry.term.loadAddon(addon);
+    entry.webgl = addon;
+    entry.host.dataset.renderer = "webgl";
+  } catch (failure) {
+    // 没有 WebGL / 驱动拒绝时保持 DOM 基线，不影响终端可用性。
+    entry.webglFailed = true;
+    console.warn("[terminal] WebGL unavailable, using DOM", failure);
+  }
+}
+
+function disableWebgl(entry: Pooled): void {
+  if (!entry.webgl) return;
+  try {
+    entry.webgl.dispose();
+  } catch {
+    /* context already lost */
+  }
+  entry.webgl = null;
 }
 
 function onMessage(sid: string, message: ArrayBuffer | TerminalControl): void {

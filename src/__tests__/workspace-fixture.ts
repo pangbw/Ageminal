@@ -30,6 +30,7 @@ export function createBindingsMock() {
   return {
     commands: {
       appInfo: vi.fn(),
+      windowsBuildNumber: vi.fn().mockResolvedValue(22631),
       systemLocale: vi.fn().mockResolvedValue(null),
       getLanguage: vi.fn().mockResolvedValue(null),
       setLanguage: vi.fn().mockResolvedValue({ status: "ok", data: null }),
@@ -61,6 +62,8 @@ export function createBindingsMock() {
       renameEntry: vi.fn(),
       deleteEntry: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       writeClipboard: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      readClipboard: vi.fn().mockResolvedValue({ status: "ok", data: "" }),
+      openUrl: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       copyFiles: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       revealInExplorer: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       openTerminal: vi.fn().mockResolvedValue({ status: "ok", data: null }),

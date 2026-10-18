@@ -194,6 +194,19 @@ export const useTabsStore = defineStore("tabs", () => {
     return tab;
   }
 
+  /** OSC 0/2 标题：更新所有 worktree 中同一 sid 的终端页签名（#85）。 */
+  function setTerminalTitle(sid: string, title: string): void {
+    const name = title.trim();
+    if (!name) return;
+    for (const tabs of Object.values(tabsByRoot.value)) {
+      const tab = tabs.find(
+        (candidate): candidate is TerminalTab =>
+          candidate.kind === "terminal" && candidate.sid === sid,
+      );
+      if (tab) tab.name = name;
+    }
+  }
+
   /** 后台变更：标记 stale，等激活时才刷新（#61）。 */
   function markStale(root: string, path: string): void {
     const tab = findPreview(root, path);
@@ -316,6 +329,7 @@ export const useTabsStore = defineStore("tabs", () => {
     closeUnder,
     movePath,
     markStale,
+    setTerminalTitle,
     clearStale,
     isStale,
     allPaths,

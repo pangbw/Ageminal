@@ -342,6 +342,32 @@ pub fn write_clipboard(app: tauri::AppHandle, text: String) -> Result<(), String
         .map_err(|error| error.to_string())
 }
 
+/// 读系统剪贴板文本（终端粘贴，#85）。
+#[tauri::command]
+#[specta::specta]
+pub fn read_clipboard(app: tauri::AppHandle) -> Result<String, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    app.clipboard()
+        .read_text()
+        .map_err(|error| error.to_string())
+}
+
+/// 用外部浏览器打开 http(s) URL（终端链接 / OSC 8，#85）。
+#[tauri::command]
+#[specta::specta]
+pub fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let lower = url.to_ascii_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        return Err("只允许打开 http(s) 链接".to_owned());
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 /// 把文件放进系统剪贴板（`CF_HDROP`，可在资源管理器粘贴；#62；Windows 专有）。
 #[tauri::command]
 #[specta::specta]

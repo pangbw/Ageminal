@@ -135,6 +135,18 @@ describe("useTabsStore", () => {
     expect(tabs.tabsFor(A)).toHaveLength(2);
   });
 
+  it("updates a terminal tab title from an OSC title event", () => {
+    const tabs = useTabsStore();
+    const sid = "terminal:/ws/a:title";
+    tabs.openTerminal(A, sid, A, "Terminal");
+
+    tabs.setTerminalTitle(sid, "  build logs  ");
+
+    expect(
+      tabs.tabsFor(A).find((tab) => tab.kind === "terminal" && tab.sid === sid)?.name,
+    ).toBe("build logs");
+  });
+
   it("falls back to a neighbour when the active terminal closes", () => {
     const tabs = useTabsStore();
     const sid = "terminal:/ws/a:1";
