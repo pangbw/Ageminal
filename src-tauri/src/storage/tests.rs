@@ -14,7 +14,9 @@ use serde_json::{Map, Value};
 use crate::agents::{resolve, AgentOverride};
 
 use super::doc::{self, Document, Migration};
-use super::{atomic, settings, Notice, Store, WindowState};
+use super::{
+    atomic, settings, LaunchSpec, Notice, SavedTab, SavedTabKind, Store, WindowState, WorktreeTabs,
+};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -326,6 +328,91 @@ fn flush_writes_pending_state_before_exit() {
 
     let raw = read_json(&dir.path().join("state.json"));
     assert_eq!(raw["window"]["maximized"], true);
+}
+
+#[test]
+fn legacy_state_without_tabs_still_loads() {
+    let dir = TempDir::new("legacy-state");
+    fs::write(
+        dir.path().join("state.json"),
+        r#"{"schemaVersion":1,"activeWorktree":"D:\\code\\wt","projects":[]}"#,
+    )
+    .unwrap();
+
+    let store = Store::open(dir.path()).unwrap();
+    assert!(store.state().tabs.is_empty());
+    assert!(store.state().launch_specs.is_empty());
+    assert_eq!(
+        store.state().active_worktree.as_deref(),
+        Some(Path::new(r"D:\code\wt"))
+    );
+}
+
+#[test]
+fn state_round_trips_tab_skeleton_and_launch_spec() {
+    let dir = TempDir::new("tabs-state");
+
+    {
+        let mut store = Store::open(dir.path()).unwrap();
+        store
+            .update_state(
+                |state| {
+                    state.tabs = vec![WorktreeTabs {
+                        root: PathBuf::from(r"D:\code\wt"),
+                        active: Some("terminal:1".to_owned()),
+                        tabs: vec![
+                            SavedTab {
+                                kind: SavedTabKind::Terminal,
+                                name: "Claude Code".to_owned(),
+                                sid: Some("terminal:1".to_owned()),
+                                path: None,
+                                cwd: Some(PathBuf::from(r"D:\code\wt")),
+                                agent_id: Some("claude".to_owned()),
+                                extra: Default::default(),
+                            },
+                            SavedTab {
+                                kind: SavedTabKind::Preview,
+                                name: "README.md".to_owned(),
+                                sid: None,
+                                path: Some(PathBuf::from(r"D:\code\wt\README.md")),
+                                cwd: None,
+                                agent_id: None,
+                                extra: Default::default(),
+                            },
+                        ],
+                        extra: Default::default(),
+                    }];
+                    state.launch_specs = vec![LaunchSpec {
+                        sid: "terminal:1".to_owned(),
+                        cwd: PathBuf::from(r"D:\code\wt"),
+                        shell: None,
+                        command: Some("claude".to_owned()),
+                        program: Some("claude".to_owned()),
+                        args: Some("--model sonnet".to_owned()),
+                        agent_id: Some("claude".to_owned()),
+                        agent_session_id: Some("agent-1".to_owned()),
+                        incarnation_id: Some("inc-1".to_owned()),
+                        updated_at_ms: Some(1),
+                        extra: Default::default(),
+                    }];
+                },
+                Instant::now(),
+            )
+            .unwrap();
+        store.flush().unwrap();
+    }
+
+    let store = Store::open(dir.path()).unwrap();
+    assert_eq!(store.state().tabs[0].tabs.len(), 2);
+    assert_eq!(store.state().tabs[0].tabs[0].kind, SavedTabKind::Terminal);
+    assert_eq!(
+        store.state().launch_specs[0].agent_session_id.as_deref(),
+        Some("agent-1")
+    );
+    let raw = read_json(&dir.path().join("state.json"));
+    assert_eq!(raw["tabs"][0]["tabs"][0]["kind"], "terminal");
+    assert_eq!(raw["launchSpecs"][0]["agentSessionId"], "agent-1");
+    assert_eq!(raw["launchSpecs"][0]["args"], "--model sonnet");
 }
 
 #[test]

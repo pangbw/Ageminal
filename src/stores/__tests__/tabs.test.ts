@@ -174,6 +174,59 @@ describe("useTabsStore", () => {
     expect(tabs.activePreview(A)?.name).toBe("one.ts");
   });
 
+  it("hydrates persisted tabs and projects them back for Rust", () => {
+    const tabs = useTabsStore();
+    const sid = "terminal:/ws/a:1";
+    tabs.hydrate([
+      {
+        root: A,
+        active: sid,
+        tabs: [
+          {
+            kind: "terminal",
+            sid,
+            cwd: A,
+            name: "Claude Code",
+            agentId: "claude",
+            agentColor: "#d97757",
+          },
+          { kind: "preview", path: `${A}/one.ts`, name: "one.ts", stale: false },
+        ],
+      },
+    ]);
+
+    expect(tabs.activeTerminal(A)?.sid).toBe(sid);
+    expect(tabs.snapshot()).toEqual([
+      {
+        root: A,
+        active: sid,
+        tabs: [
+          { kind: "terminal", name: "Claude Code", sid, cwd: A, agentId: "claude" },
+          { kind: "preview", name: "one.ts", path: `${A}/one.ts` },
+        ],
+      },
+    ]);
+  });
+
+  it("falls back to the last hydrated tab and deduplicates ids", () => {
+    const tabs = useTabsStore();
+    const sid = "terminal:/ws/a:1";
+    tabs.hydrate([
+      {
+        root: A,
+        active: "missing",
+        tabs: [
+          { kind: "terminal", sid, cwd: A, name: "one" },
+          { kind: "terminal", sid, cwd: A, name: "duplicate" },
+          { kind: "preview", path: `${A}/two.ts`, name: "two.ts", stale: false },
+        ],
+      },
+    ]);
+
+    expect(tabs.tabsFor(A)).toHaveLength(2);
+    expect(tabs.activePreview(A)?.path).toBe(`${A}/two.ts`);
+  });
+
   it("closes a batch and falls back to the nearest surviving neighbour", () => {
     const tabs = useTabsStore();
     tabs.openFile(A, `${A}/one.ts`, "one.ts");

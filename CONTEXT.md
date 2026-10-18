@@ -48,7 +48,8 @@
 | 词 | 适用 | 做了什么 |
 | --- | --- | --- |
 | **恢复（resume）** | **agent 页签** | 用 agent CLI 自身的 resume 恢复**对话**（`claude --resume` / `codex resume` / `opencode -s` / `pi --session`）。**恢复时必须重传首次启动的注入参数**，否则「恢复了但事件不再回调」。 |
-| **重建（rebuild）** | **纯 shell 页签** | 进程已死（daemon 崩溃 / OS 重启）→ 只能重建骨架，**不是恢复** |
+| **重建（rebuild）** | **纯 shell 页签** / 没有 `agentSessionId` 的 agent 页签 | 进程已死（daemon 崩溃 / OS 重启）→ 只能重建骨架，**不是恢复** |
+| **启动对账（四象限）** | 启动恢复（#78） | `state.json` 页签 + launch spec 与 daemon `ListSessions` 求交：**两侧都有 → attach；仅 UI 有 → agent 有 id 则 resume、否则 rebuild；仅 daemon 有 → 收养；都无 → 忽略**。`ListSessions` 失败不等于进程死亡；真正建会话前仍会先查一次 daemon。 |
 
 > ⚠️ 「会话恢复」**不是**「把死掉的终端屏幕恢复出来」。终端屏幕的重建走 §3 的快照。
 

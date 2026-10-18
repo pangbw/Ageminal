@@ -5,12 +5,13 @@
  * - 文件预览（#60）：`{ kind: "preview", path }`
  * - 终端（#68）：`{ kind: "terminal", sid }`，背后的 ConPTY 会话由 daemon 持有。
  *
- * 纯 UI 状态，不落盘（§14：页签骨架归属 state.json 是 #69 / #30 的事）。
- * 拖拽排序、右键菜单、关闭其它页签归 #69。
+ * `state.json` 的页签骨架由 #78 持久化：本 store 仍是运行期投影，`App.vue` 在恢复后把
+ * 每次变化 debounce 回 Rust。拖拽排序、右键菜单、关闭其它页签归 #69。
  */
 import { defineStore } from "pinia";
 import { ref } from "vue";
 
+import type { TabsTab, TabsWorktree } from "../bindings";
 import { basename, isSameOrUnder } from "../lib/path";
 
 /** 一个文件预览页签。 */
@@ -42,6 +43,13 @@ export type TerminalTab = {
 
 /** 一个页签。 */
 export type Tab = PreviewTab | TerminalTab;
+
+/** 启动恢复后交给 store 的一组页签（#78）。 */
+export type HydratedWorktree = {
+  root: string;
+  active: string | null;
+  tabs: Tab[];
+};
 
 export const useTabsStore = defineStore("tabs", () => {
   /** worktree 根 → 页签列表。 */
@@ -93,6 +101,64 @@ export const useTabsStore = defineStore("tabs", () => {
     if (tabsFor(root).some((tab) => tabId(tab) === id)) {
       activeByRoot.value[root] = id;
     }
+  }
+
+  /** 启动恢复：整体替换页签骨架与激活项（#78）。 */
+  function hydrate(groups: readonly HydratedWorktree[]): void {
+    const nextTabs: Record<string, Tab[]> = {};
+    const nextActive: Record<string, string | null> = {};
+    for (const group of groups) {
+      if (!group.root) continue;
+      const seen = new Set<string>();
+      const tabs = group.tabs.filter((tab) => {
+        const id = tabId(tab);
+        if (seen.has(id)) return false;
+        seen.add(id);
+        return true;
+      });
+      if (tabs.length === 0) continue;
+      nextTabs[group.root] = tabs;
+      const requested = group.active;
+      nextActive[group.root] =
+        requested !== null && seen.has(requested)
+          ? requested
+          : tabId(tabs[tabs.length - 1]!);
+    }
+    tabsByRoot.value = nextTabs;
+    activeByRoot.value = nextActive;
+  }
+
+  /** 持久化投影：只保留 Rust 需要的字段，顺序 = 当前页签顺序。 */
+  function snapshot(): TabsWorktree[] {
+    const worktrees: TabsWorktree[] = [];
+    for (const [root, tabs] of Object.entries(tabsByRoot.value)) {
+      const items: TabsTab[] = [];
+      for (const tab of tabs) {
+        if (tab.kind === "terminal") {
+          items.push({
+            kind: "terminal",
+            name: tab.name,
+            sid: tab.sid,
+            cwd: tab.cwd,
+            agentId: tab.agentId ?? null,
+          });
+        } else {
+          items.push({
+            kind: "preview",
+            name: tab.name,
+            path: tab.path,
+          });
+        }
+      }
+      if (items.length > 0) {
+        worktrees.push({
+          root,
+          active: activeByRoot.value[root] ?? null,
+          tabs: items,
+        });
+      }
+    }
+    return worktrees;
   }
 
   /** 打开（或激活已有的）文件预览页签。 */
@@ -239,6 +305,8 @@ export const useTabsStore = defineStore("tabs", () => {
     activePreview,
     activeTerminal,
     setActive,
+    hydrate,
+    snapshot,
     openFile,
     openTerminal,
     closeFile,

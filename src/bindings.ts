@@ -26,6 +26,16 @@ export const commands = {
 	getAgents: () => typedError<AgentConfig[], string>(__TAURI_INVOKE("get_agents")),
 	/**  保存一个 agent 的配置，返回合并后的完整清单。 */
 	setAgent: (config: AgentConfig) => typedError<AgentConfig[], string>(__TAURI_INVOKE("set_agent", { config })),
+	/**  保存前端页签骨架；未知字段从旧状态按 root / tab id 合并保留。 */
+	saveTabs: (worktrees: TabsWorktree[]) => typedError<null, string>(__TAURI_INVOKE("save_tabs", { worktrees })),
+	/**  启动对账：读持久骨架 + 问 daemon → 纯函数 → 回写 incarnation / 占位 spec。 */
+	restoreTabs: () => typedError<RestoredWorktree[], string>(__TAURI_INVOKE("restore_tabs")),
+	/**
+	 *  更新 agentSessionId（#79 的事件通道会调用）。
+	 * 
+	 *  只在 launch spec 已存在时更新；未知 `sid` 返回错误，避免静默丢事件。
+	 */
+	terminalSetAgentSession: (sid: string, agentSessionId: string | null) => typedError<null, string>(__TAURI_INVOKE("terminal_set_agent_session", { sid, agentSessionId })),
 	/**  启动 hydrate：前端拿到的唯一工作区事实。 */
 	workspaceSnapshot: () => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("workspace_snapshot")),
 	/**
@@ -116,7 +126,12 @@ export const commands = {
 	terminalAck: (sid: string, ackedBytes: number | null) => typedError<null, string>(__TAURI_INVOKE("terminal_ack", { sid, ackedBytes })),
 	/**  Tauri 命令：页签可见性变化。 */
 	terminalSetVisible: (sid: string, visible: boolean) => typedError<null, string>(__TAURI_INVOKE("terminal_set_visible", { sid, visible })),
-	/**  Tauri 命令：结束会话并释放服务端状态。 */
+	/**
+	 *  Tauri 命令：结束会话并释放服务端状态。
+	 * 
+	 *  同时删掉持久化的 launch spec 与页签骨架：用户关页签是明确意图，不能下次启动又被
+	 *  对账成「仅 UI 有 → 重建」。前端稍后的 `save_tabs` 会再覆盖一次，二者幂等。
+	 */
 	terminalClose: (sid: string) => typedError<null, string>(__TAURI_INVOKE("terminal_close", { sid })),
 	/**  用前端当前打开着的预览文件替换监听集合（#61）。 */
 	setWatchedFiles: (paths: string[]) => typedError<null, string>(__TAURI_INVOKE("set_watched_files", { paths })),
@@ -208,6 +223,47 @@ export type ProjectView = {
 	error: string | null,
 };
 
+/**  对账结论。 */
+export type RestoreAction = 
+/**  两侧都有：live reattach。 */
+"attach" | 
+/**  仅 UI 有，agent 有可恢复的会话 id：CLI resume。 */
+"resume" | 
+/**  仅 UI 有：纯 shell 或没有 agentSessionId 的 agent，重新建立会话。 */
+"rebuild" | 
+/**  仅 daemon 有：收养孤儿。 */
+"adopt" | 
+/**  文件预览，不需要会话。 */
+"preview";
+
+/**  对账后要交回前端的一条页签。 */
+export type RestoredTab = {
+	/**  类型。 */
+	kind: TabsTabKind,
+	/**  显示标题；孤儿可能为空，由前端填缺省名。 */
+	name: string,
+	/**  终端 `sid`。 */
+	sid?: string | null,
+	/**  预览路径。 */
+	path?: string | null,
+	/**  终端 cwd。 */
+	cwd?: string | null,
+	/**  一等入口 agent id。 */
+	agentId?: string | null,
+	/**  对账动作。 */
+	action: RestoreAction,
+};
+
+/**  对账后的一个 worktree 分组。 */
+export type RestoredWorktree = {
+	/**  worktree 根。 */
+	root: string,
+	/**  激活页签 id；无效时回落到最后一个页签。 */
+	active?: string | null,
+	/**  页签顺序。 */
+	tabs: RestoredTab[],
+};
+
 /**  一条搜索命中（与 `ageminal-files::SearchHit` 字段一一对应）。 */
 export type SearchHitView = {
 	/**  绝对路径。 */
@@ -228,6 +284,39 @@ export type SearchResultView = {
 	timedOut: boolean,
 };
 
+/**  前端保存的一条页签。 */
+export type TabsTab = {
+	/**  类型。 */
+	kind: TabsTabKind,
+	/**  显示标题。 */
+	name: string,
+	/**  终端 `sid`；预览为 `None`。 */
+	sid?: string | null,
+	/**  预览绝对路径；终端为 `None`。 */
+	path?: string | null,
+	/**  终端 cwd；预览为 `None`。 */
+	cwd?: string | null,
+	/**  一等入口 agent id；普通终端为 `None`。 */
+	agentId?: string | null,
+};
+
+/**  前端保存页签骨架时的页签类型。 */
+export type TabsTabKind = 
+/**  终端。 */
+"terminal" | 
+/**  文件预览。 */
+"preview";
+
+/**  一个 worktree 的页签骨架（前端 → Rust）。 */
+export type TabsWorktree = {
+	/**  worktree 根。 */
+	root: string,
+	/**  激活页签 id。 */
+	active?: string | null,
+	/**  页签顺序。 */
+	tabs?: TabsTab[],
+};
+
 /**  前端拿到的建会话结果。 */
 export type TerminalOpened = {
 	/**  逻辑会话 id。 */
@@ -236,6 +325,8 @@ export type TerminalOpened = {
 	pid: number,
 	/**  本次 spawn 的世代 id。 */
 	incarnationId: string,
+	/**  `true` = 本次新建了会话；`false` = attach 了 daemon 里的已有会话。 */
+	created: boolean,
 };
 
 /**  一个存活终端会话的概要（`terminal_list`，UI 重开恢复用）。 */

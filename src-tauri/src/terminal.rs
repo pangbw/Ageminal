@@ -46,15 +46,16 @@
 //! `CreateSession.command`。daemon 在 shell 起来后把这一行写进 PTY，所以 `.cmd` / `.exe` /
 //! Git Bash 脚本都由 shell 解析，agent 仍留在 shell 的进程树里（#79 的可识别路径）。
 
+use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use specta::Type;
 use tauri::ipc::{Channel, InvokeResponseBody, IpcResponse};
 
 use crate::agents;
-use crate::storage::Store;
+use crate::storage::{LaunchSpec, Store};
 
 /// 合批上限：攒到这个字节数立刻发，不等 8 ms 窗口。
 const BATCH_BYTES: usize = 16 * 1024;
@@ -95,6 +96,24 @@ pub struct TerminalOpened {
     pub pid: u32,
     /// 本次 spawn 的世代 id。
     pub incarnation_id: String,
+    /// `true` = 本次新建了会话；`false` = attach 了 daemon 里的已有会话。
+    pub created: bool,
+}
+
+/// 解析后的启动参数：既要交给 daemon，也要写回 `state.json`。
+#[derive(Debug, Clone)]
+struct LaunchResolution {
+    /// 本次实际写入 PTY 的命令。
+    command: Option<String>,
+    /// 首次启动的命令（resume 时不会把它覆盖成 resume 命令）。
+    original_command: Option<String>,
+    /// 程序与原始参数串；resume 时重新组合。
+    program: Option<String>,
+    args: Option<String>,
+    /// 一等入口 agent id。
+    agent_id: Option<String>,
+    /// 已捕获的 agent 对话 id。
+    agent_session_id: Option<String>,
 }
 
 /// 打开一个终端所需的参数（避免服务内部函数参数太多）。
@@ -384,6 +403,212 @@ fn windows_only() -> String {
     "终端会话仅支持 Windows（daemon / ConPTY）".to_owned()
 }
 
+/// 从持久化 launch spec / 当前设置解析本次启动参数。
+///
+/// 已有 spec 的 terminal 页签在 daemon 死后重建时，**优先使用首次启动参数**；如果
+/// `agentSessionId` 已捕获，则改写成对应 CLI 的 resume 命令。新页签才读当前设置。
+fn resolve_launch(
+    store: &Store,
+    sid: &str,
+    agent_id: Option<&str>,
+) -> Result<LaunchResolution, String> {
+    let saved = store
+        .state()
+        .launch_specs
+        .iter()
+        .find(|spec| spec.sid == sid)
+        .cloned();
+    let Some(saved) = saved else {
+        let Some(id) = agent_id else {
+            return Ok(LaunchResolution {
+                command: None,
+                original_command: None,
+                program: None,
+                args: None,
+                agent_id: None,
+                agent_session_id: None,
+            });
+        };
+        let config =
+            agents::resolve(store.settings(), id).ok_or_else(|| format!("未知的 agent：{id}"))?;
+        let command = agents::launch_command(store.settings(), id)?;
+        return Ok(LaunchResolution {
+            command: Some(command.clone()),
+            original_command: Some(command),
+            program: Some(config.command),
+            args: Some(config.args),
+            agent_id: Some(id.to_owned()),
+            agent_session_id: None,
+        });
+    };
+
+    let agent = agent_id
+        .map(str::to_owned)
+        .or_else(|| saved.agent_id.clone());
+    let config = agent
+        .as_deref()
+        .and_then(|id| agents::resolve(store.settings(), id));
+    let program = saved
+        .program
+        .clone()
+        .or_else(|| config.as_ref().map(|config| config.command.clone()));
+    let args = saved
+        .args
+        .clone()
+        .or_else(|| config.as_ref().map(|config| config.args.clone()));
+    let fresh_command = match agent.as_deref() {
+        Some(id) => agents::launch_command(store.settings(), id).ok(),
+        None => None,
+    };
+    let resume = match (agent.as_deref(), saved.agent_session_id.as_deref()) {
+        (Some(id), Some(session_id)) => {
+            match agents::resume_command(
+                store.settings(),
+                id,
+                session_id,
+                program.as_deref(),
+                args.as_deref(),
+            ) {
+                Ok(command) => Some(command),
+                Err(error) => {
+                    eprintln!("[terminal] resume 命令生成失败，回退重建：{error}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    let command = resume
+        .or_else(|| saved.command.clone())
+        .or_else(|| fresh_command.clone());
+    let original_command = saved.command.clone().or_else(|| {
+        if saved.agent_session_id.is_none() {
+            fresh_command
+        } else {
+            None
+        }
+    });
+
+    Ok(LaunchResolution {
+        command,
+        original_command,
+        program,
+        args,
+        agent_id: agent,
+        agent_session_id: saved.agent_session_id.clone(),
+    })
+}
+
+/// 建会话前先写占位 launch spec（没有 incarnation）；失败也不阻止建会话。
+fn ensure_launch_spec(store: &Mutex<Store>, sid: &str, cwd: &str, resolution: &LaunchResolution) {
+    let Ok(mut store) = store.lock() else {
+        return;
+    };
+    let now = crate::now_ms();
+    let result = store.update_state(
+        |state| {
+            if state.launch_specs.iter().any(|spec| spec.sid == sid) {
+                return;
+            }
+            state.launch_specs.push(LaunchSpec {
+                sid: sid.to_owned(),
+                cwd: PathBuf::from(cwd),
+                shell: None,
+                command: resolution.original_command.clone(),
+                program: resolution.program.clone(),
+                args: resolution.args.clone(),
+                agent_id: resolution.agent_id.clone(),
+                agent_session_id: resolution.agent_session_id.clone(),
+                incarnation_id: None,
+                updated_at_ms: Some(now),
+                extra: Default::default(),
+            });
+        },
+        Instant::now(),
+    );
+    if let Err(error) = result {
+        eprintln!("[terminal] 写入占位 launch spec 失败：{error}");
+    }
+}
+
+/// 把本次 spawn 的 launch spec / 世代写回 `state.json`（去抖落盘）。
+fn record_launch(
+    store: &Mutex<Store>,
+    sid: &str,
+    cwd: &str,
+    resolution: &LaunchResolution,
+    opened: &TerminalOpened,
+) {
+    let Ok(mut store) = store.lock() else {
+        eprintln!("[terminal] 状态锁已被污染，跳过 launch spec 写入");
+        return;
+    };
+    let now = crate::now_ms();
+    let result = store.update_state(
+        |state| {
+            let existing = state.launch_specs.iter().position(|spec| spec.sid == sid);
+            let previous = existing
+                .and_then(|index| state.launch_specs.get(index))
+                .cloned();
+            let extra = previous
+                .as_ref()
+                .map(|spec| spec.extra.clone())
+                .unwrap_or_default();
+            if opened.created {
+                let spec = LaunchSpec {
+                    sid: sid.to_owned(),
+                    cwd: PathBuf::from(cwd),
+                    shell: None,
+                    command: resolution.original_command.clone(),
+                    program: resolution.program.clone(),
+                    args: resolution.args.clone(),
+                    agent_id: resolution.agent_id.clone(),
+                    // 事件可能在建会话返回前就回写了 id（#79），不能被 None 覆盖。
+                    agent_session_id: resolution
+                        .agent_session_id
+                        .clone()
+                        .or_else(|| previous.and_then(|spec| spec.agent_session_id)),
+                    incarnation_id: Some(opened.incarnation_id.clone()),
+                    updated_at_ms: Some(now),
+                    extra,
+                };
+                if let Some(index) = existing {
+                    state.launch_specs[index] = spec;
+                } else {
+                    state.launch_specs.push(spec);
+                }
+            } else if let Some(index) = existing {
+                let spec = &mut state.launch_specs[index];
+                spec.incarnation_id = Some(opened.incarnation_id.clone());
+                spec.cwd = PathBuf::from(cwd);
+                spec.updated_at_ms = Some(now);
+                if spec.agent_id.is_none() {
+                    spec.agent_id = resolution.agent_id.clone();
+                }
+            } else {
+                // 孤儿会话：没有历史 launch spec，至少记下 cwd / agent / 世代。
+                state.launch_specs.push(LaunchSpec {
+                    sid: sid.to_owned(),
+                    cwd: PathBuf::from(cwd),
+                    shell: None,
+                    command: None,
+                    program: None,
+                    args: None,
+                    agent_id: resolution.agent_id.clone(),
+                    agent_session_id: None,
+                    incarnation_id: Some(opened.incarnation_id.clone()),
+                    updated_at_ms: Some(now),
+                    extra,
+                });
+            }
+        },
+        Instant::now(),
+    );
+    if let Err(error) = result {
+        eprintln!("[terminal] 写入 launch spec 失败：{error}");
+    }
+}
+
 /// Tauri 命令：建会话。`async` + `spawn_blocking`，建会话期间不占住 UI 线程。
 #[tauri::command]
 #[specta::specta]
@@ -399,26 +624,29 @@ pub async fn terminal_open(
     agent_id: Option<String>,
     on_event: Channel<TerminalEvent>,
 ) -> Result<TerminalOpened, String> {
-    // Agent 启动命令在进入服务线程前解析：设置是单一事实来源，失败就直接报给 UI。
-    let command = match agent_id.as_deref() {
-        Some(id) => {
-            let store = store.lock().map_err(|_| "设置锁已被污染".to_owned())?;
-            Some(agents::launch_command(store.settings(), id)?)
-        }
-        None => None,
+    // launch spec 是恢复的权威：已有 spec 时优先用它（agent 有 agentSessionId 则走 resume），
+    // 新页签才从当前设置解析。
+    let resolution = {
+        let store = store.lock().map_err(|_| "设置锁已被污染".to_owned())?;
+        resolve_launch(&store, &sid, agent_id.as_deref())?
     };
+    // 先落一个占位 spec：daemon 写完启动命令就可能触发 agent 事件（#79），
+    // `terminal_set_agent_session` 不能因为 record_launch 还没执行而丢 id。
+    ensure_launch_spec(store.inner(), &sid, &cwd, &resolution);
     let spec = OpenSpec {
-        sid,
-        cwd,
+        sid: sid.clone(),
+        cwd: cwd.clone(),
         cols,
         rows,
-        agent_id,
-        command,
+        agent_id: resolution.agent_id.clone(),
+        command: resolution.command.clone(),
     };
     let service = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.open(spec, on_event))
+    let opened = tauri::async_runtime::spawn_blocking(move || service.open(spec, on_event))
         .await
-        .map_err(|error| format!("终端服务不可用：{error}"))?
+        .map_err(|error| format!("终端服务不可用：{error}"))??;
+    record_launch(store.inner(), &sid, &cwd, &resolution, &opened);
+    Ok(opened)
 }
 
 /// Tauri 命令：枚举存活会话（UI 重开时恢复终端页签，#75）。
@@ -485,10 +713,40 @@ pub fn terminal_set_visible(
 }
 
 /// Tauri 命令：结束会话并释放服务端状态。
+///
+/// 同时删掉持久化的 launch spec 与页签骨架：用户关页签是明确意图，不能下次启动又被
+/// 对账成「仅 UI 有 → 重建」。前端稍后的 `save_tabs` 会再覆盖一次，二者幂等。
 #[tauri::command]
 #[specta::specta]
-pub fn terminal_close(state: tauri::State<'_, TerminalService>, sid: String) -> Result<(), String> {
-    state.inner().close(sid)
+pub fn terminal_close(
+    state: tauri::State<'_, TerminalService>,
+    store: tauri::State<'_, Mutex<Store>>,
+    sid: String,
+) -> Result<(), String> {
+    let result = state.inner().close(sid.clone());
+    if result.is_ok() {
+        if let Ok(mut store) = store.lock() {
+            let removed = store.update_state(
+                |state| {
+                    state.launch_specs.retain(|spec| spec.sid != sid);
+                    for group in &mut state.tabs {
+                        group
+                            .tabs
+                            .retain(|tab| tab.sid.as_deref() != Some(sid.as_str()));
+                        if group.active.as_deref() == Some(sid.as_str()) {
+                            group.active = None;
+                        }
+                    }
+                    state.tabs.retain(|group| !group.tabs.is_empty());
+                },
+                Instant::now(),
+            );
+            if let Err(error) = removed {
+                eprintln!("[terminal] 清理关闭页签的持久状态失败：{error}");
+            }
+        }
+    }
+    result
 }
 
 /// 发往服务线程的请求。
@@ -907,6 +1165,7 @@ fn open_session(
                 sid,
                 pid: created.pid,
                 incarnation_id: created.incarnation_id,
+                created: true,
             };
             // 调用方超时 / 页签已关：别把孤儿会话留在 daemon 里。
             if reply.send(Ok(opened)).is_err() {
@@ -988,6 +1247,7 @@ fn attach_existing(
         sid: sid.to_owned(),
         pid: info.pid,
         incarnation_id: info.incarnation_id.clone(),
+        created: false,
     })
 }
 

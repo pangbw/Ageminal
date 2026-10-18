@@ -4,7 +4,7 @@
 //! 入版本控制，由 `pnpm check:bindings` 校验它与源码之间无 diff。
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use specta::Type;
@@ -14,6 +14,7 @@ use tauri_specta::{collect_commands, Builder};
 pub mod agents;
 pub mod daemon;
 pub mod files;
+pub mod restore;
 pub mod storage;
 pub mod terminal;
 pub mod tray;
@@ -22,6 +23,14 @@ pub mod workspace;
 
 /// 状态类文档的巡检间隔（去抖窗口是 500 ms，巡检比它更密）。
 const STORAGE_TICK: Duration = Duration::from_millis(250);
+
+/// Unix 毫秒；启动对账 / launch spec 的时间戳用（#78）。
+pub(crate) fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// 生成绑定的落点。基于 crate 根定位，不依赖运行时的 cwd。
 pub fn bindings_path() -> std::path::PathBuf {
@@ -124,6 +133,9 @@ pub fn builder() -> Builder<tauri::Wry> {
         set_confirm_close,
         agents::get_agents,
         agents::set_agent,
+        restore::save_tabs,
+        restore::restore_tabs,
+        restore::terminal_set_agent_session,
         workspace::workspace_snapshot,
         workspace::add_project,
         workspace::remove_project,
@@ -183,6 +195,137 @@ fn spawn_state_flusher(handle: tauri::AppHandle) {
     });
 }
 
+/// 把当前窗口几何写进 `state.json`（去抖落盘）。
+///
+/// 用物理像素保存 / 恢复：同一台机器同一缩放下精确；DPI 改变时仍按尺寸恢复，位置若
+/// 已不在任何显示器内会被忽略。最小化时不写，避免把 0×0 或托盘尺寸存进去。
+fn persist_window_geometry(window: &tauri::Window) {
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    let Ok(size) = window.inner_size() else {
+        return;
+    };
+    if size.width == 0 || size.height == 0 {
+        return;
+    }
+    let position = window.outer_position().ok();
+    let maximized = window.is_maximized().unwrap_or(false);
+    let Some(store) = window.app_handle().try_state::<Mutex<storage::Store>>() else {
+        return;
+    };
+    let Ok(mut store) = store.lock() else {
+        return;
+    };
+    let result = store.update_state(
+        |state| {
+            let previous = state.window.take();
+            // 最大化时保留「还原后」的普通几何，否则下次启动取消最大化会得到一个最大化尺寸。
+            let (width, height, x, y) = if maximized {
+                previous
+                    .as_ref()
+                    .map(|window| (window.width, window.height, window.x, window.y))
+                    .unwrap_or((
+                        f64::from(size.width),
+                        f64::from(size.height),
+                        position.map(|position| f64::from(position.x)),
+                        position.map(|position| f64::from(position.y)),
+                    ))
+            } else {
+                (
+                    f64::from(size.width),
+                    f64::from(size.height),
+                    position.map(|position| f64::from(position.x)),
+                    position.map(|position| f64::from(position.y)),
+                )
+            };
+            state.window = Some(storage::WindowState {
+                width,
+                height,
+                x,
+                y,
+                maximized,
+                extra: previous.map(|window| window.extra).unwrap_or_default(),
+            });
+        },
+        Instant::now(),
+    );
+    if let Err(error) = result {
+        eprintln!("[window] 保存窗口几何失败：{error}");
+    }
+}
+
+/// 启动时应用上次的窗口尺寸 / 位置 / 最大化状态。
+fn restore_window_geometry(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let Some(saved) = app.try_state::<Mutex<storage::Store>>().and_then(|store| {
+        store
+            .lock()
+            .ok()
+            .and_then(|store| store.state().window.clone())
+    }) else {
+        return;
+    };
+    if !saved.width.is_finite()
+        || !saved.height.is_finite()
+        || saved.width < 200.0
+        || saved.height < 200.0
+    {
+        return;
+    }
+    let size = tauri::PhysicalSize::new(
+        saved.width.round().clamp(200.0, 16_384.0) as u32,
+        saved.height.round().clamp(200.0, 16_384.0) as u32,
+    );
+    if let Err(error) = window.set_size(size) {
+        eprintln!("[window] 恢复尺寸失败：{error}");
+    }
+    if let (Some(x), Some(y)) = (saved.x, saved.y) {
+        if x.is_finite() && y.is_finite() {
+            let position = tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32);
+            if window_position_visible(&window, position, size) {
+                if let Err(error) = window.set_position(position) {
+                    eprintln!("[window] 恢复位置失败：{error}");
+                }
+            }
+        }
+    }
+    if saved.maximized {
+        if let Err(error) = window.maximize() {
+            eprintln!("[window] 恢复最大化失败：{error}");
+        }
+    }
+}
+
+/// 位置至少与某个显示器相交才恢复，避免换显示器后窗口落到屏幕外。
+fn window_position_visible(
+    window: &tauri::WebviewWindow,
+    position: tauri::PhysicalPosition<i32>,
+    size: tauri::PhysicalSize<u32>,
+) -> bool {
+    let Ok(monitors) = window.available_monitors() else {
+        return true;
+    };
+    if monitors.is_empty() {
+        return true;
+    }
+    let left = i64::from(position.x);
+    let top = i64::from(position.y);
+    let right = left + i64::from(size.width);
+    let bottom = top + i64::from(size.height);
+    monitors.iter().any(|monitor| {
+        let origin = monitor.position();
+        let extent = monitor.size();
+        let monitor_left = i64::from(origin.x);
+        let monitor_top = i64::from(origin.y);
+        let monitor_right = monitor_left + i64::from(extent.width);
+        let monitor_bottom = monitor_top + i64::from(extent.height);
+        left < monitor_right && right > monitor_left && top < monitor_bottom && bottom > monitor_top
+    })
+}
+
 /// 启动 Tauri 应用。
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -199,15 +342,23 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(builder().invoke_handler())
         .on_window_event(|window, event| match event {
-            // #76：关窗 = 隐藏到托盘；只有托盘的两条退出路径会放行真正的 close。
-            tauri::WindowEvent::CloseRequested { api, .. } if !tray::exit_allowed() => {
-                api.prevent_close();
-                let _ = window.hide();
+            // 关窗先记录几何；托盘退出路径放行，普通关窗改成隐藏（#76）。
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                persist_window_geometry(window);
+                if !tray::exit_allowed() {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
             // 最小化也收进托盘（Windows 没有单独的 Minimized 事件，靠 Resized 查状态）。
-            tauri::WindowEvent::Resized(_) if window.is_minimized().unwrap_or(false) => {
-                let _ = window.hide();
+            tauri::WindowEvent::Resized(_) => {
+                if window.is_minimized().unwrap_or(false) {
+                    let _ = window.hide();
+                } else {
+                    persist_window_geometry(window);
+                }
             }
+            tauri::WindowEvent::Moved(_) => persist_window_geometry(window),
             _ => {}
         })
         .setup(|app| {
@@ -219,6 +370,7 @@ pub fn run() {
                     }
                     app.manage(Mutex::new(store));
                     spawn_state_flusher(app.handle().clone());
+                    restore_window_geometry(app.handle());
                 }
                 Err(error) => eprintln!("[storage] 初始化失败：{error}"),
             }

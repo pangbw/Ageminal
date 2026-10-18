@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub use settings::{General, Settings};
-pub use state::{AppState, WindowState};
+pub use state::{AppState, LaunchSpec, SavedTab, SavedTabKind, WindowState, WorktreeTabs};
 
 /// 应用数据目录名（`%LOCALAPPDATA%\Ageminal\`）。
 pub const APP_DIR: &str = "Ageminal";

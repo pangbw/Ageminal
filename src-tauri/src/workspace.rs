@@ -184,7 +184,16 @@ pub fn remove_project(
     store
         .update_state(
             |state| {
+                let removed = state
+                    .projects
+                    .iter()
+                    .find(|project| project.path == target)
+                    .cloned();
                 state.projects.retain(|project| project.path != target);
+                if let Some(project) = removed {
+                    state.tabs.retain(|group| !project.owns(&group.root));
+                    state.launch_specs.retain(|spec| !project.owns(&spec.cwd));
+                }
                 if clears_active {
                     state.active_worktree = None;
                 }

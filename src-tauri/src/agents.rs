@@ -194,6 +194,58 @@ pub fn launch_command(settings: &Settings, id: &str) -> Result<String, String> {
     Ok(command)
 }
 
+/// 拼出 agent CLI 的 resume 命令（#78）。
+///
+/// `program` / `args` 是 launch spec 里保存的**首次启动**值：恢复时必须重传原始参数
+/// （例如 Claude 的 `--settings`），不能只依赖当前设置。缺省时才回落到当前设置。
+pub fn resume_command(
+    settings: &Settings,
+    id: &str,
+    session_id: &str,
+    program: Option<&str>,
+    args: Option<&str>,
+) -> Result<String, String> {
+    let config = resolve(settings, id).ok_or_else(|| format!("未知的 agent：{id}"))?;
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("agent 会话 id 为空，无法恢复".to_owned());
+    }
+    if session_id.contains(['\r', '\n']) {
+        return Err("agent 会话 id 不能包含换行".to_owned());
+    }
+
+    let program = program
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&config.command);
+    let args = args.unwrap_or(&config.args);
+    if program.contains(['\r', '\n']) || args.contains(['\r', '\n']) {
+        return Err("Agent 命令 / 参数不能包含换行".to_owned());
+    }
+
+    let mut command = quote_program(program);
+    match id {
+        "claude" => {
+            command.push_str(" --resume ");
+        }
+        "codex" => {
+            command.push_str(" resume ");
+        }
+        "opencode" | "pi" => {
+            command.push_str(" --session ");
+        }
+        _ => return Err(format!("Agent {id} 不支持 CLI resume")),
+    }
+    command.push_str(&quote_argument(session_id));
+
+    let args = args.trim();
+    if !args.is_empty() {
+        command.push(' ');
+        command.push_str(args);
+    }
+    Ok(command)
+}
+
 /// 取全部 agent 配置（设置页 / 菜单初始化）。
 #[tauri::command]
 #[specta::specta]
@@ -264,6 +316,18 @@ fn quote_program(program: &str) -> String {
         format!("\"{}\"", program.replace('"', "\\\""))
     } else {
         program.to_owned()
+    }
+}
+
+/// 会话 id 通常是 UUID / `ses_…`；只在含 shell 元字符时加引号。
+fn quote_argument(argument: &str) -> String {
+    if argument
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || "-_./:@".contains(character))
+    {
+        argument.to_owned()
+    } else {
+        format!("\"{}\"", argument.replace('"', "\\\""))
     }
 }
 
@@ -361,6 +425,57 @@ mod tests {
         );
         assert!(launch_command(&settings, "claude").is_err());
         assert!(launch_command(&settings, "dsh").is_err());
+    }
+
+    #[test]
+    fn resume_command_keeps_the_original_launch_arguments() {
+        let settings = settings_with(
+            "claude",
+            AgentOverride {
+                args: Some("--settings \"C:\\tmp\\ageminal.json\"".to_owned()),
+                ..AgentOverride::default()
+            },
+        );
+        assert_eq!(
+            resume_command(&settings, "claude", "abc-123", None, None).unwrap(),
+            "claude --resume abc-123 --settings \"C:\\tmp\\ageminal.json\""
+        );
+
+        // launch spec 里的原始 program / args 优先于当前设置（恢复时重传首次参数）。
+        assert_eq!(
+            resume_command(
+                &settings,
+                "codex",
+                "thr_1",
+                Some("codex"),
+                Some("--dangerously-bypass-hook-trust"),
+            )
+            .unwrap(),
+            "codex resume thr_1 --dangerously-bypass-hook-trust"
+        );
+        assert_eq!(
+            resume_command(
+                &settings,
+                "opencode",
+                "ses_1",
+                Some("opencode.exe"),
+                Some("")
+            )
+            .unwrap(),
+            "opencode.exe --session ses_1"
+        );
+        assert_eq!(
+            resume_command(&settings, "pi", "pi-id", Some("pi"), None).unwrap(),
+            "pi --session pi-id"
+        );
+    }
+
+    #[test]
+    fn resume_command_rejects_bad_ids_and_unknown_agents() {
+        let settings = Settings::default();
+        assert!(resume_command(&settings, "claude", "", None, None).is_err());
+        assert!(resume_command(&settings, "claude", "a\rb", None, None).is_err());
+        assert!(resume_command(&settings, "dsh", "id", None, None).is_err());
     }
 
     #[test]

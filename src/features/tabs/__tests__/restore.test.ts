@@ -2,37 +2,61 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  terminalList: vi.fn(),
+  restoreTabs: vi.fn(),
   getAgents: vi.fn(),
 }));
 
 vi.mock("../../../bindings", () => ({
-  commands: { terminalList: mocks.terminalList, getAgents: mocks.getAgents },
+  commands: { restoreTabs: mocks.restoreTabs, getAgents: mocks.getAgents },
 }));
 
+import { localeString } from "../../../i18n/__tests__/locale-files";
 import { useTabsStore } from "../../../stores/tabs";
-import { restoreTerminalTabs } from "../restore";
+import { restoreWorkspaceTabs } from "../restore";
 
-const SESSIONS = [
+const RESTORED = [
   {
-    sid: "terminal:/ws/a:1",
-    cwd: "/ws/a",
-    pid: 100,
-    incarnationId: "inc-1",
-    agentId: "claude",
+    root: "/ws/a",
+    active: "terminal:/ws/a:1",
+    tabs: [
+      {
+        kind: "terminal",
+        name: "Claude Code",
+        sid: "terminal:/ws/a:1",
+        cwd: "/ws/a",
+        agentId: "claude",
+        action: "attach",
+      },
+    ],
   },
   {
-    sid: "terminal:/ws/b:2",
-    cwd: "/ws/b",
-    pid: 200,
-    incarnationId: "inc-2",
-    agentId: null,
+    root: "/ws/b",
+    active: "/ws/b/README.md",
+    tabs: [
+      {
+        kind: "terminal",
+        name: "",
+        sid: "terminal:/ws/b:2",
+        cwd: "/ws/b",
+        agentId: null,
+        action: "adopt",
+      },
+      {
+        kind: "preview",
+        name: "README.md",
+        sid: null,
+        path: "/ws/b/README.md",
+        cwd: null,
+        agentId: null,
+        action: "preview",
+      },
+    ],
   },
 ];
 
-describe("restore terminal tabs", () => {
+describe("restore workspace tabs", () => {
   beforeEach(() => {
-    mocks.terminalList.mockReset();
+    mocks.restoreTabs.mockReset();
     mocks.getAgents.mockReset().mockResolvedValue({
       status: "ok",
       data: [
@@ -45,42 +69,52 @@ describe("restore terminal tabs", () => {
     setActivePinia(createPinia());
   });
 
-  it("rebuilds a tab for every live daemon session", async () => {
-    mocks.terminalList.mockResolvedValue({ status: "ok", data: SESSIONS });
+  it("hydrates terminal, preview and active tabs from the reconciliation", async () => {
+    mocks.restoreTabs.mockResolvedValue({ status: "ok", data: RESTORED });
     const tabs = useTabsStore();
 
-    await expect(restoreTerminalTabs()).resolves.toBe(2);
+    await expect(restoreWorkspaceTabs()).resolves.toBe(3);
 
     expect(tabs.tabsFor("/ws/a")).toMatchObject([
       {
         kind: "terminal",
-        sid: SESSIONS[0]!.sid,
+        sid: "terminal:/ws/a:1",
         cwd: "/ws/a",
         name: "Claude Code",
         agentId: "claude",
         agentColor: "#d97757",
       },
     ]);
-    // 后恢复的会话成为该 worktree 的激活项。
-    expect(tabs.activeTerminal("/ws/b")?.sid).toBe(SESSIONS[1]!.sid);
+    expect(tabs.tabsFor("/ws/b")[0]).toMatchObject({
+      kind: "terminal",
+      name: localeString("zh-CN", "terminal", ["defaultName"]),
+      agentId: undefined,
+    });
+    expect(tabs.tabsFor("/ws/b")[1]).toMatchObject({
+      kind: "preview",
+      path: "/ws/b/README.md",
+      name: "README.md",
+    });
+    expect(tabs.activeTab("/ws/a")?.kind).toBe("terminal");
+    expect(tabs.activeTab("/ws/b")?.kind).toBe("preview");
   });
 
-  it("does not duplicate tabs when restore runs again", async () => {
-    mocks.terminalList.mockResolvedValue({ status: "ok", data: SESSIONS });
+  it("replaces the projection instead of duplicating tabs", async () => {
+    mocks.restoreTabs.mockResolvedValue({ status: "ok", data: RESTORED });
     const tabs = useTabsStore();
 
-    await restoreTerminalTabs();
-    await restoreTerminalTabs();
+    await restoreWorkspaceTabs();
+    await restoreWorkspaceTabs();
 
     expect(tabs.tabsFor("/ws/a")).toHaveLength(1);
-    expect(tabs.tabsFor("/ws/b")).toHaveLength(1);
+    expect(tabs.tabsFor("/ws/b")).toHaveLength(2);
   });
 
   it("propagates a daemon error so the caller can log it", async () => {
-    mocks.terminalList.mockResolvedValue({ status: "error", error: "daemon down" });
+    mocks.restoreTabs.mockResolvedValue({ status: "error", error: "daemon down" });
     const tabs = useTabsStore();
 
-    await expect(restoreTerminalTabs()).rejects.toThrow("daemon down");
+    await expect(restoreWorkspaceTabs()).rejects.toThrow("daemon down");
     expect(tabs.tabsFor("/ws/a")).toHaveLength(0);
   });
 });

@@ -36,6 +36,9 @@ export function createBindingsMock() {
       getConfirmClose: vi.fn().mockResolvedValue(true),
       setConfirmClose: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       getAgents: vi.fn().mockResolvedValue({ status: "ok", data: defaultAgents() }),
+      saveTabs: vi.fn().mockResolvedValue({ status: "ok", data: null }),
+      restoreTabs: vi.fn().mockResolvedValue({ status: "ok", data: [] }),
+      terminalSetAgentSession: vi.fn().mockResolvedValue({ status: "ok", data: null }),
       setAgent: vi.fn().mockImplementation((config: AgentConfig) =>
         Promise.resolve({
           status: "ok",
