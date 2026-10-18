@@ -10,12 +10,15 @@ import IconAdd from "~icons/codicon/add";
 import IconChevronDown from "~icons/codicon/chevron-down";
 import IconGitBranch from "~icons/codicon/git-branch";
 import IconLock from "~icons/codicon/lock";
+import IconTerminal from "~icons/codicon/terminal";
 
 import { translate as t } from "../../i18n/translate";
+import { useTabsStore } from "../../stores/tabs";
 import { useWorkspaceStore } from "../../stores/workspace";
 import EmptyState from "../shell/EmptyState.vue";
 
 const workspace = useWorkspaceStore();
+const tabs = useTabsStore();
 
 function addProject(): void {
   void workspace.addProject();
@@ -27,6 +30,17 @@ function toggleGroup(project: (typeof workspace.sidebarProjects)[number]): void 
 
 function activate(path: string): void {
   void workspace.setActive(path);
+}
+
+/** 在这个 worktree 里开一个终端页签；会话本身由面板挂载时创建（#68）。 */
+function openTerminal(path: string): void {
+  const unique =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  // 从非激活 worktree 的快捷入口点进来时，先把该 worktree 切为激活项。
+  if (!workspace.isActive(path)) void workspace.setActive(path);
+  tabs.openTerminal(path, `terminal:${path}:${unique}`, path, t("terminal.defaultName"));
 }
 </script>
 
@@ -90,42 +104,52 @@ function activate(path: string): void {
           v-for="worktree in project.worktrees"
           :key="worktree.path"
         >
-          <button
-            class="row"
-            :class="{ 'row--active': workspace.isActive(worktree.path) }"
-            type="button"
-            @click="activate(worktree.path)"
-          >
-            <span class="row__main">
-              <span class="row__name">{{ worktree.name }}</span>
-              <span
-                v-if="worktree.branchLabel"
-                class="row__branch"
-              >
-                <IconGitBranch />
-                {{ worktree.branchLabel }}
+          <div class="row-wrap">
+            <button
+              class="row"
+              :class="{ 'row--active': workspace.isActive(worktree.path) }"
+              type="button"
+              @click="activate(worktree.path)"
+            >
+              <span class="row__main">
+                <span class="row__name">{{ worktree.name }}</span>
+                <span
+                  v-if="worktree.branchLabel"
+                  class="row__branch"
+                >
+                  <IconGitBranch />
+                  {{ worktree.branchLabel }}
+                </span>
               </span>
-            </span>
-            <span
-              v-if="worktree.bare"
-              class="row__tag"
+              <span
+                v-if="worktree.bare"
+                class="row__tag"
+              >
+                {{ t("shell.projectPanel.bare") }}
+              </span>
+              <span
+                v-if="worktree.locked"
+                class="row__mark"
+                :title="t('shell.projectPanel.locked')"
+              >
+                <IconLock />
+              </span>
+              <span
+                v-if="worktree.stale"
+                class="row__tag row__tag--stale"
+              >
+                {{ t("shell.projectPanel.stale") }}
+              </span>
+            </button>
+            <button
+              class="icon-button row__terminal"
+              type="button"
+              :title="t('terminal.new')"
+              @click.stop="openTerminal(worktree.path)"
             >
-              {{ t("shell.projectPanel.bare") }}
-            </span>
-            <span
-              v-if="worktree.locked"
-              class="row__mark"
-              :title="t('shell.projectPanel.locked')"
-            >
-              <IconLock />
-            </span>
-            <span
-              v-if="worktree.stale"
-              class="row__tag row__tag--stale"
-            >
-              {{ t("shell.projectPanel.stale") }}
-            </span>
-          </button>
+              <IconTerminal />
+            </button>
+          </div>
         </li>
       </ul>
     </div>
@@ -211,13 +235,35 @@ function activate(path: string): void {
   list-style: none;
 }
 
+.row-wrap {
+  position: relative;
+  display: flex;
+}
+
 .row {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   width: 100%;
-  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-6);
+  padding: var(--space-2) 34px var(--space-2) var(--space-6);
   text-align: left;
+}
+
+.row__terminal {
+  position: absolute;
+  top: 50%;
+  right: var(--space-2);
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.row-wrap:hover .row__terminal,
+.row-wrap:focus-within .row__terminal {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .row:hover {

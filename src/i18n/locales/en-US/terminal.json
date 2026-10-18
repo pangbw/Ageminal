@@ -1,1 +1,9 @@
-{}
+{
+  "defaultName": "Terminal",
+  "new": "New terminal",
+  "close": "Close terminal",
+  "starting": "Starting…",
+  "error": "Terminal error",
+  "exited": "Session ended",
+  "exitedWithCode": "Session ended (exit code {code})"
+}

@@ -116,7 +116,7 @@ describe("FileTree", () => {
 
     await wrapper.find(".files__row").trigger("click");
 
-    expect(tabs.activeTab(ROOT)?.path).toBe(`${ROOT}/README.md`);
+    expect(tabs.activePreview(ROOT)?.path).toBe(`${ROOT}/README.md`);
   });
 
   it("reveals ignored entries when the switch is turned on", async () => {
@@ -156,7 +156,7 @@ describe("FileTree", () => {
     await vi.waitFor(() => expect(wrapper.find(".files__hit").exists()).toBe(true));
 
     await wrapper.find(".files__hit").trigger("click");
-    await vi.waitFor(() => expect(tabs.activeTab(ROOT)?.path).toBe(`${ROOT}/src/main.ts`));
+    await vi.waitFor(() => expect(tabs.activePreview(ROOT)?.path).toBe(`${ROOT}/src/main.ts`));
 
     expect(commands.searchFiles).toHaveBeenCalledWith(ROOT, "main", false, false);
     expect(files.visibleRows.map((row) => row.name)).toEqual(["src", "main.ts"]);

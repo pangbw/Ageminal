@@ -1,1 +1,9 @@
-{}
+{
+  "defaultName": "终端",
+  "new": "新建终端",
+  "close": "关闭终端",
+  "starting": "正在启动…",
+  "error": "终端错误",
+  "exited": "会话已结束",
+  "exitedWithCode": "会话已结束（退出码 {code}）"
+}

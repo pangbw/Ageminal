@@ -30,6 +30,7 @@ dependencies = [
  "ageminal-daemon",
  "ageminal-files",
  "ageminal-git",
+ "ageminal-protocol",
  "ageminal-workspace",
  "clipboard-win",
  "serde",

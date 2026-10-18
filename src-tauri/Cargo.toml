@@ -29,6 +29,7 @@ tauri-build = { version = "2", features = [] }
 ageminal-daemon = { path = "../crates/daemon" }
 ageminal-files = { path = "../crates/files" }
 ageminal-git = { path = "../crates/git" }
+ageminal-protocol = { path = "../crates/protocol" }
 ageminal-workspace = { path = "../crates/workspace" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }

@@ -17,7 +17,7 @@ describe("useTabsStore", () => {
     tabs.openFile(A, `${A}/src/main.ts`, "main.ts");
 
     expect(tabs.tabsFor(A)).toHaveLength(1);
-    expect(tabs.activeTab(A)).toMatchObject({ path: `${A}/src/main.ts`, name: "main.ts" });
+    expect(tabs.activePreview(A)).toMatchObject({ path: `${A}/src/main.ts`, name: "main.ts" });
   });
 
   it("activates an already open tab instead of duplicating it", () => {
@@ -28,7 +28,7 @@ describe("useTabsStore", () => {
     tabs.openFile(A, `${A}/one.ts`, "one.ts");
 
     expect(tabs.tabsFor(A)).toHaveLength(2);
-    expect(tabs.activeTab(A)?.path).toBe(`${A}/one.ts`);
+    expect(tabs.activePreview(A)?.path).toBe(`${A}/one.ts`);
   });
 
   it("picks a neighbour when the active tab closes", () => {
@@ -39,7 +39,7 @@ describe("useTabsStore", () => {
 
     tabs.closeFile(A, `${A}/two.ts`);
 
-    expect(tabs.activeTab(A)?.path).toBe(`${A}/three.ts`);
+    expect(tabs.activePreview(A)?.path).toBe(`${A}/three.ts`);
     expect(tabs.tabsFor(A).map((tab) => tab.name)).toEqual(["one.ts", "three.ts"]);
   });
 
@@ -49,7 +49,7 @@ describe("useTabsStore", () => {
 
     tabs.closeFile(A, `${A}/one.ts`);
 
-    expect(tabs.activeTab(A)).toBeNull();
+    expect(tabs.activePreview(A)).toBeNull();
     expect(tabs.tabsFor(A)).toHaveLength(0);
   });
 
@@ -60,7 +60,7 @@ describe("useTabsStore", () => {
 
     expect(tabs.tabsFor(A).map((tab) => tab.name)).toEqual(["a.ts"]);
     expect(tabs.tabsFor(B).map((tab) => tab.name)).toEqual(["b.ts"]);
-    expect(tabs.activeTab(A)?.name).toBe("a.ts");
+    expect(tabs.activePreview(A)?.name).toBe("a.ts");
   });
 
   it("tracks a background tab's staleness", () => {
@@ -99,7 +99,7 @@ describe("useTabsStore", () => {
     tabs.closeUnder(A, `${A}/src`);
 
     expect(tabs.tabsFor(A).map((tab) => tab.name)).toEqual(["readme.md"]);
-    expect(tabs.activeTab(A)?.name).toBe("readme.md");
+    expect(tabs.activePreview(A)?.name).toBe("readme.md");
   });
 
   it("rewrites the open tabs when a parent is renamed", () => {
@@ -109,7 +109,7 @@ describe("useTabsStore", () => {
     tabs.movePath(A, `${A}/src`, `${A}/lib`);
 
     expect(tabs.tabsFor(A)[0]).toMatchObject({ path: `${A}/lib/one.ts`, name: "one.ts" });
-    expect(tabs.activeTab(A)?.path).toBe(`${A}/lib/one.ts`);
+    expect(tabs.activePreview(A)?.path).toBe(`${A}/lib/one.ts`);
   });
 
   it("tolerates movePath and closeUnder when nothing is open", () => {
@@ -117,5 +117,44 @@ describe("useTabsStore", () => {
 
     expect(() => tabs.movePath(A, `${A}/x`, `${A}/y`)).not.toThrow();
     expect(() => tabs.closeUnder(A, `${A}/x`)).not.toThrow();
+  });
+
+  it("opens a terminal tab and keeps it independent from previews", () => {
+    const tabs = useTabsStore();
+    const sid = "terminal:/ws/a:1";
+
+    tabs.openFile(A, `${A}/one.ts`, "one.ts");
+    tabs.openTerminal(A, sid, A, "Terminal");
+
+    expect(tabs.activeTerminal(A)).toMatchObject({ sid, cwd: A, name: "Terminal" });
+    expect(tabs.activePreview(A)).toBeNull();
+    expect(tabs.allPaths()).toEqual([`${A}/one.ts`]);
+
+    // 再次打开同一个 sid 只激活，不重复建页签。
+    tabs.openTerminal(A, sid, A, "Terminal");
+    expect(tabs.tabsFor(A)).toHaveLength(2);
+  });
+
+  it("falls back to a neighbour when the active terminal closes", () => {
+    const tabs = useTabsStore();
+    const sid = "terminal:/ws/a:1";
+
+    tabs.openFile(A, `${A}/one.ts`, "one.ts");
+    tabs.openTerminal(A, sid, A, "Terminal");
+    tabs.closeTerminal(A, sid);
+
+    expect(tabs.activePreview(A)?.path).toBe(`${A}/one.ts`);
+    expect(tabs.tabsFor(A)).toHaveLength(1);
+  });
+
+  it("does not rewrite terminal tabs on file rename or delete", () => {
+    const tabs = useTabsStore();
+    const sid = "terminal:/ws/a:1";
+
+    tabs.openTerminal(A, sid, A, "Terminal");
+    tabs.movePath(A, A, `${A}/moved`);
+    tabs.closeUnder(A, A);
+
+    expect(tabs.activeTerminal(A)?.sid).toBe(sid);
   });
 });

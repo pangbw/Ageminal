@@ -36,8 +36,8 @@ const bus = vi.hoisted(() => {
 vi.mock("@tauri-apps/api/event", () => ({ listen: bus.listen }));
 
 const ROOT = "/ws/a";
-const TAB = { path: `${ROOT}/a.txt`, name: "a.txt", stale: false };
-const OTHER = { path: `${ROOT}/b.txt`, name: "b.txt", stale: false };
+const TAB = { kind: "preview" as const, path: `${ROOT}/a.txt`, name: "a.txt", stale: false };
+const OTHER = { kind: "preview" as const, path: `${ROOT}/b.txt`, name: "b.txt", stale: false };
 
 async function mountPanel(
   overrides: Partial<PreviewView> = {},

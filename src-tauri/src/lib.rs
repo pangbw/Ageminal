@@ -14,6 +14,7 @@ use tauri_specta::{collect_commands, Builder};
 pub mod daemon;
 pub mod files;
 pub mod storage;
+pub mod terminal;
 pub mod watch;
 pub mod workspace;
 
@@ -112,6 +113,12 @@ pub fn builder() -> Builder<tauri::Wry> {
         files::copy_files,
         files::reveal_in_explorer,
         files::open_terminal,
+        terminal::terminal_open,
+        terminal::terminal_write,
+        terminal::terminal_resize,
+        terminal::terminal_ack,
+        terminal::terminal_set_visible,
+        terminal::terminal_close,
         watch::set_watched_files
     ])
 }
@@ -188,6 +195,8 @@ pub fn run() {
             }
             // 守护进程常驻（#64）：后台确保它在跑（复用优先），不阻塞窗口创建。
             daemon::spawn_ensure();
+            // 终端服务（#68）：连接 daemon、按会话合批转发到前端 Channel。
+            app.manage(terminal::TerminalService::start());
             Ok(())
         })
         .build(tauri::generate_context!())
