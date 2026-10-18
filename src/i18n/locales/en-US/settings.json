@@ -34,6 +34,13 @@
       "agentsHint": "Leave empty to inherit global settings; command is the program, args go on the right.",
       "saved": "Saved",
       "save": "Save project settings"
+    },
+    "userWorkspace": {
+      "title": "User workspace",
+      "name": "Display name",
+      "hint": "A non-git workspace pointing at your home directory; the display name is local only.",
+      "defaultName": "Default ~",
+      "save": "Save name"
     }
   },
   "general": {

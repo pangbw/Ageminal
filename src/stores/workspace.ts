@@ -12,6 +12,7 @@ import { computed, ref } from "vue";
 import {
   commands,
   type ProjectView,
+  type UserWorkspaceView,
   type WorkspaceSnapshot,
   type WorktreeView,
 } from "../bindings";
@@ -25,6 +26,7 @@ export type ActiveWorktree = {
 
 export const useWorkspaceStore = defineStore("workspace", () => {
   const projects = ref<ProjectView[]>([]);
+  const userWorkspace = ref<UserWorkspaceView>({ path: "", name: "~" });
   const activePath = ref<string | null>(null);
   /** 最近一次命令的失败原因（Rust 侧文案）；下次成功即清空。 */
   const lastError = ref<string | null>(null);
@@ -32,6 +34,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
   /** Rust 快照 → 内存投影（启动 hydrate 与每个改动命令的返回值都走这里）。 */
   function hydrate(snapshot: WorkspaceSnapshot): void {
     projects.value = snapshot.projects;
+    userWorkspace.value = snapshot.userWorkspace;
     activePath.value = snapshot.activeWorktree;
   }
 
@@ -87,6 +90,10 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     return applyCommand(commands.renameWorktree(projectPath, worktreePath, name));
   }
 
+  function renameUserWorkspace(name: string | null): Promise<boolean> {
+    return applyCommand(commands.renameUserWorkspace(name));
+  }
+
   function setActive(worktreePath: string | null): Promise<boolean> {
     return applyCommand(commands.setActiveWorktree(worktreePath));
   }
@@ -96,6 +103,20 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     const index = new Map<string, WorktreeView>();
     for (const project of projects.value) {
       for (const worktree of project.worktrees) index.set(worktree.path, worktree);
+    }
+    const special = userWorkspace.value;
+    if (special.path) {
+      index.set(special.path, {
+        path: special.path,
+        name: special.name,
+        branchLabel: null,
+        isMain: false,
+        bare: false,
+        locked: false,
+        detached: false,
+        stale: false,
+        pinned: true,
+      });
     }
     return index;
   });
@@ -126,6 +147,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
 
   return {
     projects,
+    userWorkspace,
     activePath,
     lastError,
     byPath,
@@ -138,6 +160,7 @@ export const useWorkspaceStore = defineStore("workspace", () => {
     toggleProject,
     setWorktreePinned,
     renameWorktree,
+    renameUserWorkspace,
     setActive,
     isActive,
   };

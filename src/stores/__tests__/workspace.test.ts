@@ -66,6 +66,18 @@ describe("useWorkspaceStore", () => {
     expect(store.activeWorktree).toEqual({ name: "my-feature", branch: "feat" });
   });
 
+  it("treats the user workspace as a pinned branchless active node", () => {
+    const store = useWorkspaceStore();
+    const state = snapshot([], "/home/user");
+    state.userWorkspace = { path: "/home/user", name: "scratch" };
+
+    store.hydrate(state);
+
+    expect(store.userWorkspace.name).toBe("scratch");
+    expect(store.activeWorktree).toEqual({ name: "scratch", branch: null });
+    expect(store.byPath.get("/home/user")?.pinned).toBe(true);
+  });
+
   it("replaces the projection from a command result and clears lastError", async () => {
     const store = useWorkspaceStore();
     vi.mocked(commands.setWorktreePinned).mockReturnValue(

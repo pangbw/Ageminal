@@ -50,14 +50,15 @@ describe("ProjectTree", () => {
     const { wrapper } = mountTree(snapshot([]));
 
     expect(wrapper.find(".tree__hint").exists()).toBe(true);
-    expect(wrapper.findAll(".row")).toHaveLength(0);
+    expect(wrapper.findAll(".user-workspace .row")).toHaveLength(1);
+    expect(wrapper.findAll(".group")).toHaveLength(0);
   });
 
   it("renders only the worktrees that joined the sidebar", () => {
     const { wrapper } = mountTree();
 
     const names = wrapper.findAll(".row__name").map((node) => node.text());
-    expect(names).toEqual(["a", "feat"]);
+    expect(names).toEqual(["~", "a", "feat"]);
   });
 
   it("drops a project whose worktrees all left the sidebar", () => {
@@ -79,7 +80,7 @@ describe("ProjectTree", () => {
     const { wrapper } = mountTree();
     vi.mocked(commands.setActiveWorktree).mockReturnValue(ok(snapshot(groups(), "/ws/a/feat")));
 
-    await wrapper.findAll(".row")[1].trigger("click");
+    await wrapper.findAll(".group .row")[1].trigger("click");
 
     expect(commands.setActiveWorktree).toHaveBeenCalledWith("/ws/a/feat");
   });
@@ -87,7 +88,7 @@ describe("ProjectTree", () => {
   it("opens the worktree agent menu with the four configured agents and no dsh", async () => {
     const { wrapper, tabs } = mountTree();
 
-    await wrapper.findAll(".row__agent")[0].trigger("click");
+    await wrapper.findAll(".group .row__agent")[0].trigger("click");
 
     const entries = wrapper.findAll("[data-agent-id]");
     expect(entries.map((entry) => entry.attributes("data-agent-id"))).toEqual([
@@ -106,6 +107,15 @@ describe("ProjectTree", () => {
       agentId: "claude",
       agentColor: "#d97757",
     });
+  });
+
+  it("shows the pinned non-git user workspace row", () => {
+    const { wrapper } = mountTree();
+
+    const row = wrapper.get(".user-workspace");
+    expect(row.text()).toContain("~");
+    expect(row.find(".row__branch").exists()).toBe(false);
+    expect(row.find(".row__home-icon").exists()).toBe(true);
   });
 
   it("shows the aggregate agent status and marks degraded snapshots", async () => {

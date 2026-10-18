@@ -34,6 +34,13 @@
       "agentsHint": "留空继承全局设置；命令只填程序，参数填右侧。",
       "saved": "已保存",
       "save": "保存项目设置"
+    },
+    "userWorkspace": {
+      "title": "用户工作区",
+      "name": "显示名",
+      "hint": "指向用户主目录的非 git 工作区；显示名只保存在本地。",
+      "defaultName": "默认 ~",
+      "save": "保存显示名"
     }
   },
   "general": {

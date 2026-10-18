@@ -45,8 +45,20 @@ impl GitTool {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceSnapshot {
     pub projects: Vec<ProjectView>,
+    /// 用户工作区（非 git，始终置顶）。
+    pub user_workspace: UserWorkspaceView,
     /// 激活 worktree 的路径；`None` = 没有激活项。
     pub active_worktree: Option<String>,
+}
+
+/// 非 git 的用户工作区视图（#93）。
+#[derive(Debug, Clone, Serialize, Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UserWorkspaceView {
+    /// `%USERPROFILE%`（缺失时回退 HOME）。
+    pub path: String,
+    /// 显示名：本地覆盖 > `~`。
+    pub name: String,
 }
 
 /// 一个项目的视图（侧栏分组 + 设置页「项目」分页共用，#16 D6）。
@@ -295,6 +307,32 @@ pub fn rename_worktree(
     Ok(build_snapshot(&store, git.inner()))
 }
 
+/// 用户工作区路径：`%USERPROFILE%`，非 Windows / 缺失时回退 `HOME`。
+fn user_workspace_path() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 改用户工作区显示名；`None` / 空白 = 恢复默认 `~`。
+#[tauri::command]
+#[specta::specta]
+pub fn rename_user_workspace(
+    store: tauri::State<'_, Mutex<Store>>,
+    git: tauri::State<'_, GitTool>,
+    name: Option<String>,
+) -> Result<WorkspaceSnapshot, String> {
+    let mut store = lock(&store)?;
+    let name = name
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty());
+    store
+        .update_settings(|settings| settings.user_workspace_name = name)
+        .map_err(|error| error.to_string())?;
+    Ok(build_snapshot(&store, git.inner()))
+}
+
 /// 设置激活的 worktree（窗口标题与侧栏高亮都跟着它走）。
 #[tauri::command]
 #[specta::specta]
@@ -342,6 +380,16 @@ fn build_snapshot(store: &Store, tool: &GitTool) -> WorkspaceSnapshot {
 
     WorkspaceSnapshot {
         projects,
+        user_workspace: UserWorkspaceView {
+            path: crate::path_text(&user_workspace_path()),
+            name: settings
+                .user_workspace_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .unwrap_or("~")
+                .to_owned(),
+        },
         active_worktree: state
             .active_worktree
             .as_ref()

@@ -34,6 +34,9 @@ pub struct Settings {
     /// Agent 一等入口的覆盖项（#77）；缺省值在 [`crate::agents`]。
     #[serde(default)]
     pub agents: AgentOverrides,
+    /// 用户工作区显示名（#93）；`None` = 默认 `~`。
+    #[serde(default)]
+    pub user_workspace_name: Option<String>,
     /// 项目级设置（§14；#57 只填 worktree 显示名，#86 再加 shell 覆盖 / 环境变量 / agent 覆盖）。
     #[serde(default)]
     pub projects: Vec<ProjectSettings>,
@@ -48,6 +51,7 @@ impl Default for Settings {
             general: General::default(),
             appearance: Appearance::default(),
             agents: BTreeMap::new(),
+            user_workspace_name: None,
             projects: Vec::new(),
             extra: Map::new(),
         }

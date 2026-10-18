@@ -183,6 +183,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         workspace::set_project_collapsed,
         workspace::set_worktree_pinned,
         workspace::rename_worktree,
+        workspace::rename_user_workspace,
         workspace::set_active_worktree,
         files::read_dir,
         files::search_files,

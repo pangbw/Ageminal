@@ -77,6 +77,8 @@ export const commands = {
 	 */
 	addProject: () => typedError<{
 	projects: ProjectView[],
+	/**  用户工作区（非 git，始终置顶）。 */
+	userWorkspace: UserWorkspaceView,
 	/**  激活 worktree 的路径；`None` = 没有激活项。 */
 	activeWorktree: string | null,
 } | null, string>(__TAURI_INVOKE("add_project")),
@@ -88,6 +90,8 @@ export const commands = {
 	setWorktreePinned: (projectPath: string, worktreePath: string, pinned: boolean) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("set_worktree_pinned", { projectPath, worktreePath, pinned })),
 	/**  改 worktree 的本地显示名；`name` 为 `None`（或只有空白）= 回到默认名。 */
 	renameWorktree: (projectPath: string, worktreePath: string, name: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("rename_worktree", { projectPath, worktreePath, name })),
+	/**  改用户工作区显示名；`None` / 空白 = 恢复默认 `~`。 */
+	renameUserWorkspace: (name: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("rename_user_workspace", { name })),
 	/**  设置激活的 worktree（窗口标题与侧栏高亮都跟着它走）。 */
 	setActiveWorktree: (worktreePath: string | null) => typedError<WorkspaceSnapshot, string>(__TAURI_INVOKE("set_active_worktree", { worktreePath })),
 	/**
@@ -662,9 +666,19 @@ export type TerminalSession = {
 	agentId: string | null,
 };
 
+/**  非 git 的用户工作区视图（#93）。 */
+export type UserWorkspaceView = {
+	/**  `%USERPROFILE%`（缺失时回退 HOME）。 */
+	path: string,
+	/**  显示名：本地覆盖 > `~`。 */
+	name: string,
+};
+
 /**  前端唯一的工作区事实来源。 */
 export type WorkspaceSnapshot = {
 	projects: ProjectView[],
+	/**  用户工作区（非 git，始终置顶）。 */
+	userWorkspace: UserWorkspaceView,
 	/**  激活 worktree 的路径；`None` = 没有激活项。 */
 	activeWorktree: string | null,
 };

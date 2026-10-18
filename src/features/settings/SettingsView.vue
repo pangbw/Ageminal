@@ -87,6 +87,8 @@ const diagnosticsBusy = ref(false);
 const diagnosticsNotice = ref<string | null>(null);
 const diagnosticsError = ref<string | null>(null);
 const metricsNotice = ref<string | null>(null);
+const userWorkspaceDraft = ref("");
+const savingUserWorkspace = ref(false);
 const generalDraft = reactive({
   defaultShell: "",
   confirmClose: true,
@@ -143,6 +145,14 @@ watch(
   () => agents.list,
   (list) => {
     for (const agent of list) agentDrafts[agent.id] = { ...agent };
+  },
+  { immediate: true },
+);
+
+watch(
+  () => workspace.userWorkspace,
+  (view) => {
+    userWorkspaceDraft.value = view.name === "~" ? "" : view.name;
   },
   { immediate: true },
 );
@@ -305,6 +315,15 @@ async function testIntegration(agentId: string): Promise<void> {
     integrationError.value = failure instanceof Error ? failure.message : String(failure);
   } finally {
     integrationBusy.value = null;
+  }
+}
+
+async function saveUserWorkspace(): Promise<void> {
+  savingUserWorkspace.value = true;
+  try {
+    await workspace.renameUserWorkspace(userWorkspaceDraft.value.trim() || null);
+  } finally {
+    savingUserWorkspace.value = false;
   }
 }
 
@@ -1068,6 +1087,38 @@ async function openLogs(): Promise<void> {
             </p>
           </div>
         </template>
+
+        <article
+          v-if="section === 'project'"
+          class="project user-workspace-settings"
+        >
+          <header class="project__head">
+            <div class="project__ident">
+              <span class="project__name">{{ t("settings.project.userWorkspace.title") }}</span>
+              <span class="project__path">{{ workspace.userWorkspace.path }}</span>
+            </div>
+            <button
+              class="button button--primary"
+              type="button"
+              :disabled="savingUserWorkspace"
+              @click="saveUserWorkspace"
+            >
+              {{ t("settings.project.userWorkspace.save") }}
+            </button>
+          </header>
+          <p class="setting__hint">
+            {{ t("settings.project.userWorkspace.hint") }}
+          </p>
+          <label class="project-settings__field">
+            <span>{{ t("settings.project.userWorkspace.name") }}</span>
+            <input
+              v-model="userWorkspaceDraft"
+              class="setting__input"
+              type="text"
+              :placeholder="t('settings.project.userWorkspace.defaultName')"
+            >
+          </label>
+        </article>
 
         <p
           v-else-if="workspace.projects.length === 0"

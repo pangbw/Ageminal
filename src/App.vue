@@ -137,8 +137,10 @@ function scheduleTabsPersist(): void {
     const worktrees =
       projects.length === 0
         ? snapshot
-        : snapshot.filter((group) =>
-            projects.some((project) => isSameOrUnder(group.root, project.path)),
+        : snapshot.filter(
+            (group) =>
+              group.root === workspace.userWorkspace.path ||
+              projects.some((project) => isSameOrUnder(group.root, project.path)),
           );
     void commands
       .saveTabs(worktrees)

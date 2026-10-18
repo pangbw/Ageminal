@@ -6,6 +6,7 @@
  * 行显示名称 + 分支 + 标记（bare / locked / 已失效）与 agent 状态彩点（#82）。
  * 状态是运行期事件、不在工作区快照里；本组件只投影 `stores/agentStatus`。
  */
+import IconAccount from "~icons/codicon/account";
 import IconAdd from "~icons/codicon/add";
 import IconChevronDown from "~icons/codicon/chevron-down";
 import IconGitBranch from "~icons/codicon/git-branch";
@@ -35,6 +36,14 @@ const agentStatus = useAgentStatusStore();
 /** worktree 根 → 该组终端页签里最需要展示的一条状态。 */
 const statusByRoot = computed<Record<string, AgentStatusView | null>>(() => {
   const result: Record<string, AgentStatusView | null> = {};
+  const special = workspace.userWorkspace.path;
+  if (special) {
+    const statuses = tabs
+      .tabsFor(special)
+      .filter((tab) => tab.kind === "terminal")
+      .map((tab) => agentStatus.statusFor(tab.sid));
+    result[special] = aggregateStatus(statuses);
+  }
   for (const project of workspace.sidebarProjects) {
     for (const worktree of project.worktrees) {
       const statuses = tabs
@@ -110,6 +119,54 @@ function openTerminal(path: string): void {
     >
       {{ workspace.lastError }}
     </p>
+
+    <div
+      v-if="workspace.userWorkspace.path"
+      class="user-workspace"
+    >
+      <div class="row-wrap">
+        <button
+          class="row"
+          :class="{ 'row--active': workspace.isActive(workspace.userWorkspace.path) }"
+          type="button"
+          @click="activate(workspace.userWorkspace.path)"
+        >
+          <span class="row__main">
+            <IconAccount class="row__home-icon" />
+            <span class="row__name">{{ workspace.userWorkspace.name }}</span>
+          </span>
+          <span
+            v-if="statusOf(workspace.userWorkspace.path)"
+            class="row__status"
+            :class="[
+              statusToneOf(workspace.userWorkspace.path),
+              { 'row__status--degraded': statusOf(workspace.userWorkspace.path)?.degraded },
+            ]"
+            :title="statusTitleOf(workspace.userWorkspace.path)"
+            :aria-label="statusTitleOf(workspace.userWorkspace.path)"
+            role="img"
+          />
+        </button>
+        <div class="row__actions">
+          <button
+            class="icon-button row__agent"
+            type="button"
+            :title="t('agents.openMenu')"
+            @click.stop="openAgentMenu($event, workspace.userWorkspace.path)"
+          >
+            <IconSparkle />
+          </button>
+          <button
+            class="icon-button row__terminal"
+            type="button"
+            :title="t('terminal.new')"
+            @click.stop="openTerminal(workspace.userWorkspace.path)"
+          >
+            <IconTerminal />
+          </button>
+        </div>
+      </div>
+    </div>
 
     <EmptyState
       v-if="workspace.sidebarProjects.length === 0"
@@ -247,6 +304,20 @@ function openTerminal(path: string): void {
   display: flex;
   flex-direction: column;
   padding: var(--space-2) 0 var(--space-4);
+}
+
+.user-workspace {
+  padding: 0 var(--space-2);
+}
+
+.user-workspace .row {
+  padding-right: var(--space-2);
+}
+
+.row__home-icon {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+  font-size: 14px;
 }
 
 .tree__error {

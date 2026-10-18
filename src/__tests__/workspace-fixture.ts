@@ -97,6 +97,7 @@ export function createBindingsMock() {
       setProjectCollapsed: vi.fn(),
       setWorktreePinned: vi.fn(),
       renameWorktree: vi.fn(),
+      renameUserWorkspace: vi.fn(),
       setActiveWorktree: vi.fn(),
       readDir: vi.fn(),
       searchFiles: vi.fn(),
@@ -175,7 +176,11 @@ export function snapshot(
   projects: ProjectView[],
   activeWorktree: string | null = null,
 ): WorkspaceSnapshot {
-  return { projects, activeWorktree };
+  return {
+    projects,
+    userWorkspace: { path: "/home/user", name: "~" },
+    activeWorktree,
+  };
 }
 
 /** 一个文件预览视图；只改用例关心的字段。 */

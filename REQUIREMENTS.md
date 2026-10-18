@@ -99,7 +99,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 
 - **worktree 名称来源** ✅：名称 = worktree **目录 basename**；若该 worktree 就是仓库根，则用项目名。允许在设置页重命名（仅本地显示名，不写回 git）。
 - **分支显示** ✅：取 porcelain 的分支名；**detached HEAD** 显示短 SHA；bare 仓库主 worktree 单独标注。
-- **「用户工作区」** ✅（取代 v1 的「默认项目 `~`」）：指向 `%USERPROFILE%` 的**非 git 工作区**，图标区别于普通项目，**不显示分支、不参与 worktree 发现**，用于跑无仓库归属的临时任务。`~` 仅作为可选显示名。
+- **「用户工作区」** ✅（#93，取代 v1 的「默认项目 `~`」）：指向 `%USERPROFILE%` 的**非 git 工作区**，侧栏置顶、图标区别于普通项目，**不显示分支、不参与 worktree 发现**，用于跑无仓库归属的临时任务；支持终端 / Agent 页签，`~` 默认显示名可在设置页本地重命名并跨重启保留。
 
 ---
 
