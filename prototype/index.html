@@ -12,9 +12,8 @@
        1. 左侧栏的项目行 / worktree 行该用什么信息层级？
        2. 浅色主题长什么样、有没有漏掉的令牌？
 
-     三个（+一个胜出组合）变体切换：?variant=D|A|B|C  （默认 D = B 项目行 + A 两行 worktree）
-     ⮑ 已定：**侧栏 = B 的项目行 + A 的两行 worktree + 动作常显**（2026-09-21）；
-        A/B/C 三个原始变体保留为「主要源」，不再作为候选。
+     侧栏已定：**B 的项目行 + A 的两行 worktree + 动作常显**（2026-09-21，原型 variant D）。
+     ⮑ A/B/C 三个原始变体见分支 `prototype/sidebar-variants`（一手来源）；主线只保留胜出的 D。
      主题：        ?theme=dark|light|system
      缩放：        ?zoom=1|1.25       （模拟 WebView2 ZoomFactor，见 ADR-0001）
 
@@ -305,63 +304,7 @@
   .wt-run:hover{background:var(--active);color:var(--accent)}
   .wt-run svg{width:13px;height:13px}
 
-  /* ============================================================
-     侧栏三变体（?variant=A|B|C）—— 结构不同，不是换色
-       A 两行式：名称行 + 分支行，动作常显
-       B 单行 + 右对齐元信息；层级靠缩进引导线，动作 hover 覆盖行尾
-       C 卡片分组：项目是容器，worktree 行左侧状态色竖条
-     ============================================================ */
-  /* ---- A ---- */
-  .vA .proj-row{gap:7px;padding:9px 10px 5px;align-items:center}
-  .vA .proj-name{font-size:12.5px;font-weight:600;color:var(--text)}
-  .vA .proj-count{
-    margin-left:auto;flex:0 0 auto;font:600 10.5px/1 var(--mono);color:var(--faint);
-    background:var(--element);border-radius:999px;padding:2px 6px 3px
-  }
-  .vA .wt-list{padding:0 6px 6px}
-  .vA .wt-row{align-items:center;gap:8px;padding:6px 8px 6px 10px}
-  .vA .wt-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.34}
-  .vA .wt-name{font-size:12.5px;font-weight:500}
-  .vA .wt-branch{display:flex;align-items:center;gap:3px;font:11px/1.3 var(--mono);color:var(--faint)}
-  .vA .wt-branch .branch-ico{display:inline-flex}
-  .vA .wt-actions{display:flex;align-items:center;gap:3px;flex:0 0 auto}
-  .vA .wt-run{opacity:.5}
-  .vA .wt-row:hover .wt-run,.vA .wt-row.active .wt-run{opacity:1}
-
-  /* ---- B ---- */
-  .vB .proj-row{gap:6px;padding:7px 10px;align-items:center}
-  .vB .proj-name{flex:0 0 auto;font-size:12.5px;font-weight:600;color:var(--text)}
-  .vB .proj-path{flex:1 1 auto;text-align:right;font:10.5px/1 var(--mono);color:var(--faint)}
-  .vB .wt-list{position:relative;padding:0 6px 4px 0}
-  .vB .wt-list::before{content:"";position:absolute;left:17px;top:-3px;bottom:7px;width:1px;background:var(--border-soft)}
-  .vB .wt-row{position:relative;gap:6px;padding:5px 8px 5px 26px}
-  .vB .wt-name{flex:1 1 auto;min-width:0;font-size:12.5px}
-  .vB .wt-branch{
-    flex:0 0 auto;max-width:100px;font:10.5px/1 var(--mono);color:var(--faint);
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-    border:1px solid var(--border-soft);border-radius:999px;padding:3px 6px 2px
-  }
-  .vB .wt-run{position:absolute;right:4px;top:50%;transform:translateY(-50%);opacity:0;background:var(--hover)}
-  .vB .wt-row:hover .wt-run,.vB .wt-row.active .wt-run{opacity:1}
-
-  /* ---- C ---- */
-  .vC .proj{padding:0 8px 8px}
-  .vC .vC-card{
-    background:color-mix(in srgb,var(--text) 6%,var(--bg));
-    border:1px solid var(--border-soft);border-radius:var(--r-lg);overflow:hidden
-  }
-  .vC .proj-row{gap:7px;padding:8px 10px;border-bottom:1px solid var(--border-soft)}
-  .vC .proj-name{font-size:12.5px;font-weight:600;color:var(--text)}
-  .vC .proj-count{margin-left:auto;font:500 10.5px/1 var(--mono);color:var(--faint)}
-  .vC .wt-list{padding:3px 0}
-  .vC .wt-row{gap:8px;padding:6px 8px 6px 10px;border-radius:0;border-left:3px solid var(--tone,transparent)}
-  .vC .wt-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.3}
-  .vC .wt-name{font-size:12.5px}
-  .vC .wt-branch{font:10.5px/1.2 var(--mono);color:var(--faint)}
-  .vC .wt-run{opacity:.45}
-  .vC .wt-row:hover .wt-run,.vC .wt-row.active .wt-run{opacity:1}
-
-  /* ---- D（胜出方案，默认）：B 的项目行 + A 的两行 worktree ---- */
+  /* ---- D（胜出方案）：B 的项目行 + A 的两行 worktree ---- */
   .vD .proj-row{gap:6px;padding:7px 10px;align-items:center}
   .vD .proj-name{flex:0 0 auto;font-size:12.5px;font-weight:600;color:var(--text)}
   .vD .proj-path{text-align:right;font:10.5px/1 var(--mono);color:var(--faint)}
@@ -387,8 +330,6 @@
   #protoBar button.on{background:#2f6fd0;color:#fff}
   #protoBar .pv-cap{color:#6b7484;padding:0 2px 0 4px}
   #protoBar .pv-sep{width:1px;height:16px;background:#2a303a;margin:0 3px}
-  #protoBar .pv-label{min-width:156px;text-align:center;color:#fff;font-family:var(--mono);font-size:11px}
-  #protoBar .pv-nav{font-size:14px;padding:2px 9px}
 
   /* ---------- main area ---------- */
   .pane-main{display:flex;flex-direction:column}
@@ -933,7 +874,7 @@ function renderTabs() {
    渲染：左侧项目树
    ================================================================== */
 /* ==================================================================
-   渲染：左侧项目树 —— 三个结构不同的变体（?variant=A|B|C）
+   渲染：左侧项目树 —— 胜出方案 D
    ================================================================== */
 const dotOf = w => w.agentState
   ? `<span class="agent-dot ${w.agentState === "waiting" ? "waiting" : w.agentState === "running" ? "running" : ""}" style="background:${statusColor(w.agentState)}" title="${statusText(w.agentState)}"></span>`
@@ -944,81 +885,9 @@ const clsOf = id => state.collapsed[id] ? "collapsed" : "";
 
 function renderLeft() {
   const box = $("#projectTree");
-  box.className = "pane-scroll v" + state.variant;
+  box.className = "pane-scroll vD";
   if (state.empty) { box.innerHTML = ""; return; }
-  box.innerHTML = state.variant === "B" ? leftB()
-    : state.variant === "C" ? leftC()
-    : state.variant === "D" ? leftD()
-    : leftA();
-}
-
-/* A 两行式：名称行 + 分支行，动作常显；项目行只给名称与数量，路径进 title */
-function leftA() {
-  return projects.map(p => {
-    const ws = visWts(p); if (!ws.length) return "";
-    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
-      <div class="proj-row" data-proj-toggle="${p.id}" title="${esc(p.path)}">
-        <span class="chev">${ICON.chevDown}</span>
-        <span class="proj-name">${esc(p.name)}</span>
-        <span class="proj-count">${ws.length}</span>
-      </div>
-      <div class="wt-list">${ws.map(w => `
-        <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}" title="${esc(w.dir)}">
-          ${dotOf(w)}
-          <span class="wt-body">
-            <span class="wt-name">${esc(w.name)}</span>
-            <span class="wt-branch"><span class="branch-ico">${w.branch ? ICON.branch : ""}</span>${esc(w.branch || "非 git 工作区")}</span>
-          </span>
-          <span class="wt-actions">${runOf(w)}</span>
-        </div>`).join("")}</div>
-    </div>`;
-  }).join("");
-}
-
-/* B 单行 + 右对齐元信息；层级靠缩进引导线，动作 hover 覆盖行尾 */
-function leftB() {
-  return projects.map(p => {
-    const ws = visWts(p); if (!ws.length) return "";
-    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
-      <div class="proj-row" data-proj-toggle="${p.id}">
-        <span class="chev">${ICON.chevDown}</span>
-        <span class="proj-name">${esc(p.name)}</span>
-        <span class="proj-path">${esc(p.path)}</span>
-      </div>
-      <div class="wt-list">${ws.map(w => `
-        <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}" title="${esc(w.dir)}">
-          ${dotOf(w)}
-          <span class="wt-name">${esc(w.name)}</span>
-          <span class="wt-branch">${esc(w.branch || "非 git")}</span>
-          ${runOf(w)}
-        </div>`).join("")}</div>
-    </div>`;
-  }).join("");
-}
-
-/* C 卡片分组：项目是容器，worktree 行左侧状态色竖条 */
-function leftC() {
-  return projects.map(p => {
-    const ws = visWts(p); if (!ws.length) return "";
-    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
-      <div class="vC-card">
-        <div class="proj-row" data-proj-toggle="${p.id}" title="${esc(p.path)}">
-          <span class="chev">${ICON.chevDown}</span>
-          <span class="proj-name">${esc(p.name)}</span>
-          <span class="proj-count">${ws.length} 工作树</span>
-        </div>
-        <div class="wt-list">${ws.map(w => `
-          <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}"
-               style="--tone:${w.agentState ? statusColor(w.agentState) : "transparent"}" title="${esc(w.dir)}">
-            <span class="wt-body">
-              <span class="wt-name">${esc(w.name)}</span>
-              <span class="wt-branch">${esc(w.branch || "非 git 工作区")}</span>
-            </span>
-            ${runOf(w)}
-          </div>`).join("")}</div>
-      </div>
-    </div>`;
-  }).join("");
+  box.innerHTML = leftD();
 }
 
 /* D 胜出方案：B 的项目行（名称 + 右对齐路径）+ A 的两行 worktree（名称行 / 分支行）+ 动作常显 */
@@ -1578,18 +1447,10 @@ $("#mockNavPanel").addEventListener("click", e => {
 });
 
 /* ==================================================================
-   原型外壳：?variant=A|B|C · ?theme=dark|light|system · ?zoom=1|1.25
+   原型外壳：?theme=dark|light|system · ?zoom=1|1.25
    （不是设计的一部分；正式产品不会有这个浮条）
    ================================================================== */
-const VARIANTS = [
-  { k:"D", name:"胜出：B 项目行 + A 两行 worktree" },
-  { k:"A", name:"两行式" },
-  { k:"B", name:"单行 + 右对齐元信息" },
-  { k:"C", name:"卡片分组" },
-];
 const qp = new URLSearchParams(location.search);
-state.variant = (qp.get("variant") || "D").toUpperCase();
-if (!VARIANTS.some(v => v.k === state.variant)) state.variant = "A";
 state.theme = ["dark", "light", "system"].includes(qp.get("theme")) ? qp.get("theme") : "dark";
 state.zoom = Math.min(2, Math.max(.5, Number(qp.get("zoom")) || 1));
 
@@ -1597,10 +1458,6 @@ const mqLight = matchMedia("(prefers-color-scheme: light)");
 
 document.body.insertAdjacentHTML("beforeend", `
 <div id="protoBar">
-  <button class="pv-nav" data-pv="-1" title="上一个变体（←）">‹</button>
-  <span class="pv-label"></span>
-  <button class="pv-nav" data-pv="1" title="下一个变体（→）">›</button>
-  <span class="pv-sep"></span>
   <span class="pv-cap">主题</span>
   <button data-pt="dark">深</button><button data-pt="light">浅</button><button data-pt="system">跟随</button>
   <span class="pv-sep"></span>
@@ -1615,8 +1472,6 @@ function setParam(k, v) {
 }
 function renderProtoBar() {
   const bar = $("#protoBar"); if (!bar) return;
-  const v = VARIANTS.find(x => x.k === state.variant);
-  bar.querySelector(".pv-label").textContent = `${v.k} · ${v.name}`;
   bar.querySelectorAll("[data-pt]").forEach(b => b.classList.toggle("on", b.dataset.pt === state.theme));
   bar.querySelectorAll("[data-pz]").forEach(b => b.classList.toggle("on", Number(b.dataset.pz) === state.zoom));
 }
@@ -1624,30 +1479,15 @@ function applyTheme() {
   const light = state.theme === "light" || (state.theme === "system" && mqLight.matches);
   document.documentElement.dataset.theme = light ? "light" : "dark";
 }
-function cycleVariant(step) {
-  const i = VARIANTS.findIndex(v => v.k === state.variant);
-  state.variant = VARIANTS[(i + step + VARIANTS.length) % VARIANTS.length].k;
-  setParam("variant", state.variant);
-  renderProtoBar(); renderLeft();
-}
-
 $("#protoBar").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.pv) cycleVariant(Number(b.dataset.pv));
-  else if (b.dataset.pt) { state.theme = b.dataset.pt; setParam("theme", state.theme); applyTheme(); renderProtoBar(); }
+  if (b.dataset.pt) { state.theme = b.dataset.pt; setParam("theme", state.theme); applyTheme(); renderProtoBar(); }
   else if (b.dataset.pz) {
     state.zoom = Number(b.dataset.pz); setParam("zoom", String(state.zoom));
     document.documentElement.style.zoom = String(state.zoom); renderProtoBar();
   }
 });
 mqLight.addEventListener("change", () => { if (state.theme === "system") applyTheme(); });
-
-addEventListener("keydown", e => {
-  const el = document.activeElement;
-  if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
-  if (e.key === "ArrowLeft") { cycleVariant(-1); e.preventDefault(); }
-  else if (e.key === "ArrowRight") { cycleVariant(1); e.preventDefault(); }
-});
 
 /* 启动 */
 applyTheme();
