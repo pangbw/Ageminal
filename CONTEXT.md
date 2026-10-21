@@ -30,8 +30,8 @@
 | **`sid`** | 会话的**持久逻辑 id**（字符串，含 worktree 归属）。跨 UI 重启不变。 |
 | **`incarnationId`** | **每次 spawn** 生成的世代 id；用于丢弃迟到的 exit 事件。 |
 | **启动规格（launch spec）** | `sid` / `incarnationId` / cwd / shell / 启动命令 / `agentSessionId` / 页签骨架。**只存在 app 的 `state.json`**——daemon 死了也要能重建。 |
-| **页签（Tab）** | UI 概念：会话在界面上的呈现。**关页签 ≠ 会话终止**。 |
-| **面板（Pane）** | 页签内承载终端的稳定容器；终端实例的宿主 `<div>` 被 re-parent 进来。 |
+| **页签（Tab）** | UI 概念：会话在界面上的呈现。**关页签 ≠ 会话终止**。页签**只存在于顶部页签栏**——面板内部没有第二层标签条。 |
+| **面板（Pane）** | 页签内承载终端的稳定容器；终端实例的宿主 `<div>` 被 re-parent 进来。**面板没有自己的标题栏**：名字归页签，状态归页签彩点。 |
 | **守护进程（daemon）** | 常驻独立进程，持有所有 ConPTY 与**服务端 VT 内核**。 |
 | **daemon-host** | 版本化镜像目录 `%LOCALAPPDATA%\Ageminal\daemon-host\<version>\`，活过 NSIS 更新（保留 2 版）。 |
 
@@ -66,6 +66,8 @@
 | **隐藏会话不推流** | 不可见的页签不接收数据；切回时用**快照 attach**。 |
 | **PTY 层** | 藏在 `Pty` trait 之后（可替换实现）；关闭 HPCON 即终止该会话的进程树。 |
 | **服务端 VT 内核** | 守护进程侧（`alacritty_terminal`）：既产出快照，也保证**有界回放**不会重建出错——**它是必需项，不是优化项**（#42）。 |
+| **鼠标上报（mouse reporting）** | 应用通过 `SGR 1006` / `1002` / `1003` 接管鼠标，xterm.js **不再做本地选择**。agent TUI（pi / opencode / claude）在 alt-screen 下普遍开启，是「选中自动复制」与「滚轮滚动」两处行为冲突的共同根源。 |
+| **选中自动复制（copy-on-select）** | 拖选结束即写系统剪贴板。**不是**中键粘贴。在开启 `鼠标上报` 的 TUI 里，本地选择会先被应用抢走，需要显式仲裁规则。 |
 
 ## 4. Agent、事件与集成
 
@@ -94,7 +96,14 @@
 | **Acrylic（可选）** | 设置页开关，**需重启生效**（`transparent` 是窗口**创建期**属性）。 |
 | **材质（Mica / Acrylic）** | OS 提供的真实背景模糊。**Mica 弃用**（可见性取决于壁纸）、**Blur 弃用**（22621+ 性能差）。 |
 | **`backdrop-filter`** | **不得**用于「桌面模糊」——WebView2 采不到桌面像素（WebView2Feedback #4945）；只可用于应用内叠层。 |
+| **调色板（palette）** | 终端自己的 **16 个 ANSI 色**（+ bright 8 个）+ 默认前景/背景/光标/选区。**不是一个 CSS 概念**——它必须同时交给 CSS 和 xterm，所以由令牌派生、在一处定义。与 `主题` 区分：主题换的是「外观」，调色板换的是「终端里程序输出的颜色含义」。 |
 | **同一 `EditorView`** | 预览页签共享一个 CodeMirror `EditorView`，每个页签缓存自己的 `EditorState`（LRU 12），**不做 DOM re-parent**。 |
+| **主题（theme）** | 界面配色的一套完整取值：**深色**（One Dark Pro Glass）/ **浅色**（One Light Pro Glass 方向）/ **跟随系统**（随 OS 切换）。`color-scheme` 属于主题的一部分，**终端配色也跟着主题走**。 |
+| **令牌（token）** | `src/styles/tokens.css` 的 CSS 变量，**唯一的主题机制**；组件样式一律引用令牌，不写魔法值。 |
+| **缩放（zoom）** | **界面比例因子**。改变**可用空间**：视口 CSS 尺寸按比例缩小 → 终端算出更少的 cols/rows，UI 同步放大。 |
+| **字号（font size）** | **终端字符度量**（xterm `fontSize`）。改变**每字符占位**，不改变界面比例。**没有独立的「界面字号」**——UI 文本大小一律由 `缩放` 承担。 |
+| **字号 vs 缩放**（★ 易混） | 两者都能让字变大：缩放放大**一切**（UI 文本、图标、栏宽、间距），并使终端拿到更少的 cols/rows；字号**只改终端里字符的占位**，UI 一点不变。 |
+| **状态信号的两种时态**（★ 易混） | **稳态**（`exited` / 降级）走页签彩点 + tooltip；**瞬态事件**（重连中 / 已重新连接 / 文件已更新）走会自隐的轻提示。**不设面板内的状态条**。 |
 
 ## 6. 文件与可见性
 
@@ -114,6 +123,13 @@
 > 其余 UI 文案以 **zh-CN 为类型来源**；键结构须与其它语言一致（CI 两道检查：CJK 字面量 + 键结构 parity）。
 > 英文化的落笔（不译词补集 + 中英对照）见 `docs/i18n-glossary.md`。
 
-## 8. 待补
+## 8. ADR
 
-- **`docs/adr/`**：把最难回退的决策固化为 ADR——自研 daemon、路线 C 的服务端 VT 内核、默认实色、JSON 而非 SQLite、git CLI 而非 `gix`、Apache-2.0 等。当前决策全集见 `REQUIREMENTS.md` 与 issue #1 的 `Decisions so far`。
+已固化（`docs/adr/`）：
+
+- `0001` UI 缩放走 WebView2 `ZoomFactor`，不做 rem 重构
+- `0002` 主题用双份 CSS 令牌，终端配色跟随令牌
+- `0003` OSC 52 默认关闭
+- `0004` 终端调色板取 One Half Dark，浅色下修正三个语义锚点
+
+仍待固化（最难回退的既有决策）：自研 daemon、路线 C 的服务端 VT 内核、默认实色、JSON 而非 SQLite、git CLI 而非 `gix`、Apache-2.0。当前决策全集见 `REQUIREMENTS.md` 与 issue #1 的 `Decisions so far`。

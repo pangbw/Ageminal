@@ -1,9 +1,10 @@
 # Ageminal 需求文档
 
-> 状态：**v6 · 开工前决策全部定稿**（原型阶段 · wayfinder 地图 #1 已清）
+> 状态：**v7 · 外观 / 缩放 / 字体 / TUI 适配决议定稿**（原型变体 D 已获选；仍不含真实实现）
 > 图例：✅ 已确认 ｜ 🕓 延后（含分支验证 / 专项调研）｜ ❓ 待调研
 >
 > v1 整理自前期原型与 grill 讨论；v2 补齐终端、进程模型、Agent 集成等空白；v3 敲定技术路线与应用级行为；v4 做一致性清理并回写架构/协议决议；v5 回写 C 组与工程决议；**v6 回写 wayfinder 地图（issue #1）的**全部**决议**——进程拓扑与守护进程（B1–B5）、前端与终端栈（C1–C8）、Git 与文件系统（D1–D5）、Agent 集成（E1–E6）、持久化（F1–F3）、工程/测试/CI/分发（G1–G7，见 §19–§22），以及**真机 spike 结论**（H1 中文 IME、#39 窗口材质、#40 ConPTY 守护进程 PoC、#42 VT parity、#48 通知点击）。
+> **v7 回写外观 / 缩放 / 字体 / TUI 适配的定案决议 + 原型验收获选侧栏形态（variant D）**，并新增 §23 ADR 索引。
 > 当前交付物仍为**布局原型（静态 HTML）**，不含真实实现。调研报告见 `docs/research/`。
 
 ---
@@ -43,7 +44,8 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - **系统下限**：Windows 10 **1809+**（ConPTY 与 WebView2 各自的门槛都在此之下）
 - **WSL 支持延后**（现有 WSL 仅作为开发环境，不作为运行目标）
 - **隐藏系统标题栏**，使用自绘标题栏；窗口操作按钮（最小化 / 最大化 / 关闭）置于页签栏右侧
-- **深色主题**，界面文案 **中文**（i18n 见 §11）
+- **主题**：深色（默认）/ 浅色 / **跟随系统**三选项（ADR-0002）；界面可整体缩放 **0.8–2.0**（ADR-0001）
+- 界面文案 **中文**（i18n 见 §11）
 
 ---
 
@@ -57,7 +59,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 | **许可证** | **Apache-2.0**（含显式专利授权与商标条款） | ✅ 已确认（G5 #35） |
 | **终端渲染** | **xterm.js 6.0.0**（VS Code 同款）；addon = `fit` / `search` / `web-links` / `unicode11`；DOM 基线 + 可见终端挂 WebGL（失败回退 DOM） | ✅ 已确认（C3 #11） |
 | **文件高亮** | **CodeMirror 6**（只读预览）；语言覆盖用 `@codemirror/language-data` 懒加载 | ✅ 已确认（C4 #12） |
-| **终端字体** | **Ageminal Mono** —— 由 Maple Mono NF CN v7.9 的四个样式自转 woff2（**25.1 MB**），因 OFL 保留字名而改名 | ✅ 已确认（C3 #11） |
+| **终端字体** | **Ageminal Mono** —— 由 Maple Mono NF CN v7.9 的四个样式自转 woff2（**25.1 MB**），因 OFL 保留字名而改名；**构建期从固定 URL 拉取 + 校验和**写入 `src/assets/fonts/`（不进 git、不走 LFS，见 §19） | ✅ 已确认（C3 #11 / v7） |
 | 编辑器内核 | **不复用 Zed 编辑器核心**（GPL-3.0、未发布、强耦合，见调研报告） | ✅ 已确认 |
 | **会话守护进程** | **自研 Rust 常驻进程**（ConPTY + Named Pipe + 服务端 VT 内核）；独立 exe、UI detached 拉起 | ✅ 已确认（B1 #4） |
 | 终端会话持久化（tmux？） | **不引入 tmux**；用「daemon 保活 + agent CLI resume」两条路径（见 §5.2/§5.4） | ✅ 已确认（B1/B4） |
@@ -164,20 +166,22 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   - **中间主区**
   - **右侧文件树**
   - **三栏可拖拽调宽，左右栏可折叠** ✅
-- **左侧项目栏** ✅
-  - 仅渲染**已加入侧栏**的 worktree
-  - 项目节点可折叠
-  - **项目名后紧跟项目路径**（左对齐，空间不足才截断）
-  - worktree 行显示：名称 + 分支 + agent 状态
+- **左侧项目栏** ✅（原型 `?variant=D` 已验收）
+  - 仅渲染**已加入侧栏**的 worktree；项目节点可折叠
+  - **项目行**：chevron + **项目名（左）** + **右对齐的等宽路径**（空间不足截断，完整路径进 tooltip）
+  - **worktree 行（两行）**：状态点 + 名称行 + 分支行（带分支图标；detached 显示短 SHA，非 git 用户工作区不显示分支）+ 行尾动作
+  - **动作常显**（Agent / 终端），不做 hover 才出现，也不进右键菜单
   - 🕓 拖拽排序；🕓 worktree 右键菜单
 - **顶部页签栏** ✅
   - 从左侧栏右侧开始；页签**按 worktree 分组**，切换 worktree 时整组替换
   - 页签可关闭，超出可横向滚动
   - **新建页签 `+` 位于最后一个页签之后**，点击弹出类型菜单
 - **主区** ✅：**单视图**（同一时刻只显示一个页签内容）；**分屏延后**
+  - **主区不再有内层面板头**：页签是唯一的标题来源（名字归页签、状态归页签彩点）；终端面板与预览面板的 `<header>` 整层删除；预览的「用外部编辑器打开」改为**浮动按钮**
+  - 状态信号：`starting` / `reconnected` / `exited` 降级为**页签彩点 + tooltip**，**不设面板内状态条**（用户明确接受「已重新连接」基本不可见）
 - **右侧文件树** ✅：根为当前选中 worktree 的根目录；顶部搜索框；**单击文件即预览**
 - **设置页** ✅：全窗口视图，自带左导航（**通用 / 外观 / 快捷键 / Agent / 项目 → 各项目**）
-- **窗口** ✅：标题 `Ageminal — <激活 worktree 名> (<分支>)`；最小尺寸 **900×600**
+- **窗口** ✅：标题 `Ageminal — <激活 worktree 名> (<分支>)`；最小尺寸 **900×600**（逻辑像素）——**随 `ui_zoom` 放大**（`setMinSize(logical × zoom)`）；算出的最小尺寸超过屏幕工作区时，把缩放上限压到刚好放下（ADR-0001）
 - **多窗口** 🕓 延后
 
 ---
@@ -194,13 +198,20 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 ### 7.2 渲染与交互 ✅（C3 #11）
 
 - 渲染层 ✅（#85）：**xterm.js 6.0.0**；addon 组合 = `fit` / `search` / `web-links` / `unicode11`（需 `allowProposedApi`，用于 **CJK 宽度**）；可见终端额外挂 `addon-webgl`，context lost / 失败回退 DOM
-  - **不收**：`serialize` / `headless`（VT 与快照在 Rust daemon 侧做，B1 路线 C）、`attach`（走 Tauri IPC 非 WebSocket）、`canvas`（不兼容 xterm 6）、`ligatures` / `image` / `clipboard`(OSC 52) / `progress`（均延后）
+  - **不收**：`serialize` / `headless`（VT 与快照在 Rust daemon 侧做，B1 路线 C）、`attach`（走 Tauri IPC 非 WebSocket）、`canvas`（不兼容 xterm 6）、`ligatures` / `image` / `progress`（均延后）；**不用 `clipboard` addon**——OSC 52 由自建 `registerOscHandler(52)` 实现，见下
 - **渲染器策略** ✅（#85）：**DOM 为常驻基线**；激活时给**当前可见终端**挂 `addon-webgl`，context lost / 挂载失败**回退 DOM**（同时可见的终端只有 1 个；真机以 `--disable-webgl` 验证回退）
 - **中文输入法（IME）** 必须可用（硬性验收项）：走 **WebView2 系统级 IME**，不自研。✅ **H1 #38 真机实测通过**：中文经 `onData` 正确送达（码点级验证）、**候选窗锚点精确跟随光标**（各列 x 完全相等，未复现 xterm.js #5454）、**等宽网格不被破坏**；剩余风险收窄为 **ConPTY 交互（#40）** 与第三方 IME 差异
 - 复制 / 粘贴 / 全选 ✅（#85）；**右键语义**：有选中 → 复制，无选中 → 粘贴菜单；`Ctrl+C` 有选区复制、无选区发 SIGINT；`Ctrl+Shift+C/V` 同义
 - 链接识别与点击：URL 在**外部浏览器**打开；**文件路径跳预览 🕓 延后**；OSC 8 走同一 handler
-- **终端内搜索** ✅（#85）：`addon-search` + `Ctrl+Shift+F`；范围 = 渲染端缓冲（10k 行）
-- **字体外观**：**Ageminal Mono**（等宽，含简繁日 CJK）；默认字号 13 / 行高 1.2 / 光标 block + 闪烁；可调项归「外观」
+- **终端内搜索** ✅（#85）：`addon-search` + `Ctrl+F`（`Ctrl+Shift+F` 同义）；范围 = 渲染端缓冲（10k 行）
+- **字体** ✅（v7）：默认 **Ageminal Mono**（等宽，含简繁日 CJK）；回退链 `Ageminal Mono → Cascadia Mono → Consolas → monospace`；**UI 字体 / 终端字体各一个设置**（系统已装字体的策展清单 + `document.fonts.check()` 探测 + 自由输入族名），探测失败在设置页提示
+  - **字体族收敛到一处**：CSS 变量读给 xterm，消除 `tokens.css` 与 `runtime.ts` 的两份漂移
+  - 默认字号 13 / 行高 1.2 / 光标 block + 闪烁；可调项归「外观」
+- **主题与调色板** ✅（ADR-0002 / ADR-0004）：xterm `theme` **从 CSS 令牌读**，不写魔法值；16 个 ANSI 色深浅共用 **One Half Dark**，浅色下仅 `white` / `brightWhite` → `#282C34`、`cursor` 取主题前景色；会话 `attach` / `rebuild` / 实例重建时**重新应用当前主题**
+- **滚动键位** ✅（v7）：`Shift+PageUp/PageDown`、`Shift+Home/End`、`Shift+滚轮` 强制翻**本地 scrollback**（`Shift+滚轮` 用 `attachCustomWheelEventHandler` 先手拦截）；xterm.js 一个都不绑，属宿主责任
+- **鼠标上报与选中** ✅（v7）：`Shift+drag` 越过鼠标上报做本地选择是 xterm.js 在 Windows/Linux 的**硬编码默认行为**（`shouldForceSelection`），**不写代码、只做告知**；**`copy-on-select` 为独立可选项，默认关**
+- **OSC 52** ✅（v7 / ADR-0003）：`registerOscHandler(52)`，只接受 target `c`（拒绝 `p`），**默认关**；设置页必须写明「默认关」与开启后的安全面
+- **字形纵向裁剪 ❓**：图 2「字符展示不全」按「字形纵向裁剪」方向排查（行距 / 字号 / 字体度量 vs tab 高度），**根因未定位**；第一步是复现并量 tab 高度对字形高度
 - 滚动缓冲上限（**默认 10k 行**，可配置）✅
 - **终端背景**：默认**不透明** `#080909`；透出 OS 毛玻璃是「外观」开关（`allowTransparency`，默认关）
 - **resize 同步**：`CreateSession` 带初始 `cols/rows`；`ResizeObserver` 去抖 **~120 ms** → `resize` 帧 → ConPTY；隐藏 / 0 尺寸不发；重新可见先 fit 再发
@@ -251,7 +262,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - **两个开关** ✅：「显示隐藏文件」与「显示忽略文件」
 - MVP **只读 git 忽略规则**（嵌套 `.gitignore` + `.git/info/exclude` + 全局 excludes；**不认** `.ignore`），不自建忽略规则编辑器 ✅（D2 #18）
 - 预览 ✅（C4 #12）：
-  - **只读**；提供「**用外部编辑器打开**」入口（系统默认程序）
+  - **只读**；提供「**用外部编辑器打开**」入口（系统默认程序；面板头已删除，入口改为**浮动按钮**）
   - 语法高亮用 **CodeMirror 6**；扩展集取**最小集**（行号 / 折叠 / 括号匹配 / 语法高亮 / 搜索 `Ctrl+F`；**不启用** history / activeLine / autocompletion）；只读下隐藏光标，保留选择与复制
   - 语言覆盖：官方 **`@codemirror/language-data`**（Lezer 语言包 + `legacy-modes`，**全部懒加载**）；未命中 → 纯文本
   - 支持：**纯文本 + 语法高亮 + 图片 + 二进制提示**
@@ -365,10 +376,13 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 
 - 全窗口视图，自带左导航 ✅：**通用 / 外观 / 快捷键 / Agent / 项目 → 各项目**
 - **通用** ✅（#86）：默认 shell、关闭确认、启动行为（恢复上次工作区 / 空工作区）、语言、日志入口都已持久化并生效。
-- **外观** ✅（#86）：默认主题 **One Dark Pro Glass**（近黑底 `#080909`；边框 `#212121`；交互灰 `#2c313a`）；**默认不透明**（见下条）；仅深色（浅色/跟随系统 🕓 延后）；字号、行高 / 密度、光标样式可调并实时作用于当前终端。
+- **外观** ✅（#86 / v7）：主题三选项 —— **深色**（默认，One Dark Pro Glass：近黑底 `#080909`；边框 `#212121`；交互灰 `#2c313a`）/ **浅色**（One Light Pro Glass 方向）/ **跟随系统**（监听 OS 主题变更并即时反映，不能只在启动时读一次，ADR-0002）；**默认不透明**（见下条）；**浅色下 Acrylic 强制关闭**；字号、行高 / 密度、光标样式可调并实时作用于当前终端。
+- **界面缩放** ✅（v7 / ADR-0001）：`appearance.ui_zoom`（f32，0.8–2.0 步进 0.1），`Ctrl+=` / `Ctrl+-` / `Ctrl+0`；走 WebView2 `ZoomFactor`，**不做根字号 rem 重构**；**无独立「界面字号」**——UI 文本大小一律由缩放承担；缩放变化后**主动**重新 `fit()` 终端（不依赖 `ResizeObserver` 时序）；**不钳制「字号 × 缩放」乘积**。
+- **字体** ✅（v7）：**UI 字体 / 终端字体各一个下拉**（系统已装字体的策展清单，`document.fonts.check()` 探测）+ **自由输入族名**；回退链 `Ageminal Mono → Cascadia Mono → Consolas → monospace`，探测失败在设置页提示；**内置 `Ageminal Mono` 保留**。
+- **终端行为开关** ✅（v7）：`OSC 52`（默认关，ADR-0003）与 `copy-on-select`（默认关）各自独立；开关旁写明安全面与「默认关」。
 - **窗口材质 / 毛玻璃** ✅（**#39 / #87**）：**默认实色、不透明近黑 `#080909`**；设置页「外观 → 窗口材质」可**开启 Acrylic**（实测唯一明显可见的效果；**需重启应用生效**，因 `transparent` 是窗口创建期属性）。正文对比度**不依赖** OS 材质与用户壁纸（实测：近黑壁纸下 Mica 与实色无差别）。**弃用 Mica / Mica Alt**（可见性取决于壁纸）与 **Blur**（官方标注 22621+ 拖动/缩放性能差）。**`backdrop-filter` 不得用于「桌面模糊」**——WebView2 采不到桌面像素（#4945，实测 A/B 对照无差异），仅可用于应用内叠层。面板 alpha 取 `0.55`~`0.85`（#87 采用 0.72），终端区始终不透明。实现使用 `transparent:true` 创建窗口 + `window-vibrancy::apply_acrylic`；未使用 `backdrop-filter`。
-- **快捷键** ✅（#86）：MVP **只读展示**（不可自定义）；命令面板 🕓 延后
-- **关于 / 许可** ✅（G5 #35 / #86）：**第三方许可与致谢**——codicon（CC-BY-4.0）署名 + 许可证全文、`Ageminal Mono`（OFL-1.1）版权 + 派生说明、主要依赖许可清单；字体文件尚未随仓库分发。
+- **快捷键** ✅（#86 / v7）：**§13 全表已实现**；终端聚焦时**默认全部进 PTY**，应用白名单即使聚焦也拦截，可用 `-` 前缀把某项移出白名单；**键位重绑定（改键）**仍 🕓 延后；命令面板 🕓 延后
+- **关于 / 许可** ✅（G5 #35 / #86）：**第三方许可与致谢**——codicon（CC-BY-4.0）署名 + 许可证全文、`Ageminal Mono`（OFL-1.1）版权 + 派生说明、主要依赖许可清单；字体在构建期拉取 + 校验（§19），不随仓库分发。
 - **Agent** ✅（**MVP 必做**）：各 agent 名称 / 命令 / 参数 / 图标颜色
   - **集成状态** ✅（E6 #27）：`未启用` / `已启用` / `集成有更新` / `部分应用（X/Y 失败）` / `不受支持`；附**上次投递成功时间**与**失败计数**
   - **操作**：**手动启用 / 停用**（启用前 **diff 预览**、改前**自动备份**、停用即**回滚**、幂等）；「**测试投递**」按钮
@@ -409,21 +423,22 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 
 ## 13. 快捷键体系
 
-🔎 建议默认（MVP **只读展示**，不可自定义）：
+**仲裁模型** ✅（v7，VS Code `commandsToSkipShell` 的白名单模型，见 `docs/research/tui-selection-and-scroll.md` §六）：**终端聚焦时，键位默认全部进 PTY**；另有一张应用白名单，**即使终端聚焦也拦截**；白名单**可覆盖**——用户加 `-` 前缀把某项移出（`Ctrl+W` 这类与 vim/emacs 冲突的键）；**不引入 `sendKeybindingsToShell` 式的第二个总开关**（它是「为什么白名单不生效」的根源）。落点 = 应用级 keydown 层 + `term.attachCustomKeyEventHandler` 协作，后者返回 `false` 表示「我拦了，不送 PTY」。
 
-| 动作 | 建议键位 |
-| --- | --- |
-| 新建终端页签 | `Ctrl+Shift+T` |
-| 关闭当前页签 | `Ctrl+W` |
-| 下一个 / 上一个页签 | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| 按序号切页签 | `Ctrl+1..9` |
-| 下一个 / 上一个 worktree | `Ctrl+Alt+↓` / `Ctrl+Alt+↑` |
-| 切换左侧栏 / 右侧文件树 | `Ctrl+B` / `Ctrl+Shift+B` |
-| 打开设置 | `Ctrl+,` |
-| 终端内搜索 | `Ctrl+F` |
-| 命令面板 | 🕓 延后 |
-
-⚠️ 需处理与 agent TUI 的键位冲突；终端聚焦时非管理类快捷键不拦截。
+| 动作 | 键位 | 终端聚焦时 |
+| --- | --- | --- |
+| 新建终端页签 | `Ctrl+Shift+T` | 白名单（拦） |
+| 关闭当前页签 | `Ctrl+W` | 白名单（拦，可 `-` 移出） |
+| 下一个 / 上一个页签 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | 白名单（拦） |
+| 按序号切页签 | `Ctrl+1..9` | 白名单（拦） |
+| 下一个 / 上一个 worktree | `Ctrl+Alt+↓` / `Ctrl+Alt+↑` | 白名单（拦） |
+| 切换左侧栏 / 右侧文件树 | `Ctrl+B` / `Ctrl+Shift+B` | 白名单（拦） |
+| 打开设置 | `Ctrl+,` | 白名单（拦） |
+| 界面放大 / 缩小 / 重置 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 白名单（拦，ADR-0001） |
+| 终端内搜索 | `Ctrl+F`（`Ctrl+Shift+F` 同义） | 终端自行处理（不拦） |
+| 终端内复制 / 粘贴 / 全选 | `Ctrl+Shift+C` / `V` / `A` | 终端自行处理（不拦） |
+| 终端内滚动 | `Shift+PageUp/PageDown`、`Shift+Home/End`、`Shift+滚轮` | 终端自行处理（不拦，§7.2） |
+| 命令面板 | 🕓 延后 | — |
 
 ---
 
@@ -438,6 +453,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
   - 理由：**重建是 app 的职责，且必须在 daemon 已死时仍可用**（daemon 崩溃后不自行重启）
   - daemon 的 `sessions.json` **只存运行态**（`sid`/`incarnationId`/`exited`/`exitCode`/`startedAt`），用于**陈旧残留清理**与启动对账；**派生数据不双存**（「会话是否还活着」问 daemon，不落盘）
 - 设置项（通用 / 外观 / 快捷键 / Agent）
+  - **`appearance`（v7）**：`theme: dark|light|system` · `ui_zoom: f32`（0.8–2.0） · `ui_font_family` / `terminal_font_family`（空 = 回退链） · `font_size` · `line_height` · `cursor_style` · `acrylic` · `osc52` · `copy_on_select`；settings `schemaVersion` +1（字段全部 `serde(default)`，旧文件可直接读；按发布前策略「备份 + 重置」，不写迁移链）
 - 窗口尺寸与位置、最后激活的 worktree
 
 **不持久化**：worktree 列表（来自 git）。终端历史按 §5.4 落盘（有界）。
@@ -473,7 +489,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - **错误边界** ✅：未安装 Git for Windows、路径失效、非 git 目录、`git worktree` 失败，都要有明确提示
 - **安全** ✅：Named Pipe ACL 限当前用户；hook 端点仅 `127.0.0.1` + 会话令牌；路径规范化校验
 - **无障碍**：🔎 不设目标（Tauri/WebView2 本身支持较好，但 MVP 不做专项）
-- **安装器体积** ✅：应用本体之外主要是终端字体 **Ageminal Mono ≈25 MB**（woff2 已压缩，安装器压不动）；见 §19
+- **安装器体积** ✅：应用本体之外主要是终端字体 **Ageminal Mono ≈25 MB**（woff2 已压缩，安装器压不动）；字体**构建期拉取**（§19），因此**断网构建会失败**
 
 ---
 
@@ -504,8 +520,7 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - 主区分屏
 - worktree 的创建 / 删除（原型只做「发现」）
 - agent 深度集成（结构化事件、任务列表、diff 汇总）
-- 外观浅色 / 跟随系统
-- 快捷键自定义、命令面板
+- 快捷键重绑定（改键）、命令面板
 - 左侧栏拖拽排序、worktree 右键菜单
 - 多窗口
 - 外部集成（拖拽添加 / 命令行 / 资源管理器右键）
@@ -515,11 +530,22 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 - **dsh 集成**（E2；developer preview + 无官方终端 TUI）
 - **把预览升级为可编辑**（C4；CM6 已保留官方路径 `lsp-client` / `merge` / `collab`，但 §9 的「预览只读、编辑走外部编辑器」定位未变）
 
+### 16.4 明确不做（v7 否决）
+
+- `copy-on-select` **默认开**（行业默认关；ADR-0003）
+- `sendKeybindingsToShell` 式的**第二总开关**（白名单模型之外不再叠一层）
+- **根字号 rem 重构**（缩放走 WebView2 `ZoomFactor`；ADR-0001）
+- 浅色改用 **One Half Light 整套 palette**（只修三个语义锚点；ADR-0004）
+- **「缩放 × 字号」乘积钳制**（两个旋钮各自有合法域）
+- scrollback「**跳到上次输出 / 回到最底**」标记
+- 侧栏动作按钮**进右键菜单**（动作常显）
+
 ---
 
 ## 17. 原型交付物与验收
 
 - **交付物**：单个自包含 `index.html`，深色主题、中文 ✅ **（已完成）**
+- **侧栏变体**（v7）：**D（B 的项目行 + A 的两行 worktree）已验收获选**；A / B / C 三个候选变体与主题 / 缩放演示在分支 `prototype/sidebar-variants`（一手来源），主线 `prototype/index.html` 只保留 D + `?theme=dark|light|system` + `?zoom=`
 - **主题**：**Zed「One Dark Pro Glass」**（近黑底 `#080909` + `#212121` 边框）；**默认不透明**，可开启 Acrylic（#39）；UI 文字按可读性提亮（正文 `#e6e9f0` / 次级 `#b8bfcc` / 弱化 `#949cab`）✅
 - **已 mock 的 11 个屏幕** ✅
   1. 主界面（左项目树 + 页签 + 终端 + 右文件树）
@@ -569,6 +595,11 @@ Ageminal 是一个面向个人开发者的 **ADE（Agent Development Environment
 19. 仓库结构与构建编排 → ✅ **G1（#31）**（见 §19）
 20. daemon 快照 → xterm.js 一致性（VT parity）→ ✅ **#42**：**达标，保持路线 C（不回退 Node sidecar）**。真机：内核快照 `snap.ansi` 经 xterm.js 重放，与内核视角**逐格 0 差异、alt-screen 与光标一致**；同一 fixture 下**哑管道基线（512 B 有界尾巴）30 行全错、样式 128 格错且卡在普通屏**——同时证明了「为什么必须有快照」与「快照是 faithful 的」。
 
+21. **真机确认**：在 Ageminal 里跑 `pi --tui-mode fullscreen` 拖选，剪贴板是否真的不变（验证「OSC 52 被静默丢弃」的推论）→ ❓
+22. **真机确认**：`opencode` 的选中复制走不走 OSC 52（不走则痛点落在鼠标上报，必须靠 `copy-on-select`）→ ❓
+23. **图 2「字符展示不全」的根因**（方向：字形纵向裁剪，见 §7.2）→ ❓
+24. **真机确认**：WebView2 `ZoomFactor` 对 `clientWidth`（CSS px）的影响，在本仓 e2e 实测——决定缩放后是否需要额外一次 `fit()` → ❓
+
 ---
 
 ## 19. 工程结构与构建 ✅（G1 #31）
@@ -599,6 +630,7 @@ Ageminal/
 - **两个类型边界**：
   1. **app-core ↔ daemon**（Rust ↔ Rust，Named Pipe）→ **`crates/protocol`**，**Rust 单一来源、不涉及 TS**；
   2. **app ↔ 前端**（Rust ↔ TS）→ **`tauri-specta` 钉 `=2.0.0-rc.25`**，生成物入版本控制并做无 diff 校验（备选 `ts-rs`）。
+- **字体资产** ✅（v7）：`src/assets/fonts/` 由构建期脚本从**固定 URL** 拉取 `Ageminal Mono` 四个 woff2，**校验和**核对后写入；**不进 git、不走 LFS**；本地与 CI 构建都需要网络（**断网构建会失败**），校验失败即中止构建。
 - **sidecar 打包**：`scripts/build-sidecars.mjs` → `cargo build --release -p ageminal-daemon -p ageminal-notify` → 复制为 `src-tauri/binaries/<name>-<target-triple>.exe`；`bundle.externalBin` 打包。
 - **运行时落点**：daemon → `%LOCALAPPDATA%\Ageminal\daemon-host\<app 版本>\`（B4 #7，躲安装器清扫）；**shim → 稳定路径 `%LOCALAPPDATA%\Ageminal\bin\`**，使注入的 hook 配置**跨应用更新无需重写**。
 - **版本**：单一来源 = 根 `package.json`（`tauri.conf.json` 用 `"version": "../package.json"`）；**app 版本与协议版本分离**。
@@ -653,6 +685,19 @@ Ageminal/
 
 ---
 
+## 23. ADR 索引 ✅（v7）
+
+难以回退、已被接受的决策固化在 `docs/adr/`：`REQUIREMENTS.md` 记录**行为**，ADR 记录**为什么这么定、否掉了什么**。改这些决定前先改 ADR。
+
+| ADR | 决定 |
+| --- | --- |
+| [`0001`](docs/adr/0001-ui-zoom-via-webview2-zoomfactor.md) | UI 缩放走 WebView2 `ZoomFactor`，不做根字号（rem）重构 |
+| [`0002`](docs/adr/0002-theme-dual-css-tokens-terminal-follows.md) | 主题用双份 CSS 令牌，终端配色跟随令牌 |
+| [`0003`](docs/adr/0003-osc52-opt-in.md) | OSC 52 支持，但默认关闭 |
+| [`0004`](docs/adr/0004-terminal-palette-one-half-dark.md) | 终端调色板取 One Half Dark，浅色下修正三个语义锚点 |
+
+---
+
 ## 附录 A：调研结论（2026-09-19）
 
 完整报告见 **`docs/research/ui-editor-route.md`**。要点：
@@ -682,6 +727,6 @@ Ageminal/
 
 ## 附：现有原型
 
-- 布局原型文件：`prototype/index.html`（单文件自包含，双击浏览器打开）
+- 布局原型文件：`prototype/index.html`（单文件自包含，双击浏览器打开；侧栏 D 形态 + `theme` / `zoom` 参数；A/B/C 变体见 `prototype/sidebar-variants` 分支）
 - 主题：Zed「One Dark Pro Glass」；左下角「原型导航」可在 **11 个屏幕**间跳转
 - 交互为模拟实现；窗口材质见 §11（**默认实色**，可开启 Acrylic；C7 #15 的「按 build 自动选 Mica」已被 #39 取代）
