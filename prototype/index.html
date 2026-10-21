@@ -6,6 +6,26 @@
 <title>Ageminal · 多工作区 Agent 开发环境</title>
 <style>
   /* ============================================================
+     ⚠️ 原型（prototype）—— 不是产品代码，也不进 main。
+
+     这个文件在本轮要回答两个问题：
+       1. 左侧栏的项目行 / worktree 行该用什么信息层级？
+       2. 浅色主题长什么样、有没有漏掉的令牌？
+
+     三个（+一个胜出组合）变体切换：?variant=D|A|B|C  （默认 D = B 项目行 + A 两行 worktree）
+     ⮑ 已定：**侧栏 = B 的项目行 + A 的两行 worktree + 动作常显**（2026-09-21）；
+        A/B/C 三个原始变体保留为「主要源」，不再作为候选。
+     主题：        ?theme=dark|light|system
+     缩放：        ?zoom=1|1.25       （模拟 WebView2 ZoomFactor，见 ADR-0001）
+
+     已按已定决议改造（不再回翻）：
+       · REQ-1  内层标签条整层移除；预览的「用外部编辑器打开」改成浮动按钮
+       · REQ-2  主题 = 深色 / 浅色 / 跟随系统；浅色下 Acrylic 强制关闭
+       · ADR-0002  终端底色/前景/光标/选区随主题走
+       · ADR-0004  ANSI 16 色 = One Half Dark（深浅共用），浅色下修正
+                   white / brightWhite / cursor 三个语义锚点
+     ============================================================ */
+  /* ============================================================
      调色板：Zed「One Dark Pro Glass」(BoyeDarat) 官方 token
      近黑底 #080909 + 边框 #212121
 
@@ -42,19 +62,27 @@
     --purple:#c678dd;
     --cyan:#56b6c2;
 
-    /* terminal ansi */
-    --ansi-red:#e05561;
-    --ansi-green:#8cc265;
-    --ansi-yellow:#d18f52;
-    --ansi-blue:#4aa5f0;
-    --ansi-magenta:#c162de;
-    --ansi-cyan:#42b3c2;
-    --ansi-white:#d7dae0;
-    --ansi-black:#3f4451;
-    --ansi-bright-black:#6b7488;
+    /* ---- 终端 ANSI 16 色：ADR-0004 ----
+       取 Windows Terminal 内置 One Half Dark（src/cascadia/TerminalSettingsModel/defaults.json）。
+       深浅两套主题共用同一组色值；bright 8 色与普通 8 色相同（仅 brightBlack 不同）。 */
+    --ansi-black:#282C34;
+    --ansi-red:#E06C75;
+    --ansi-green:#98C379;
+    --ansi-yellow:#E5C07B;
+    --ansi-blue:#61AFEF;
+    --ansi-magenta:#C678DD;
+    --ansi-cyan:#56B6C2;
+    --ansi-white:#DCDFE4;
+    --ansi-bright-black:#5A6374;
 
     --claude:#e05561;
     --codex:#8cc265;
+
+    /* ---- 终端自身的底色 / 前景 / 光标 / 选区（ADR-0002：随主题走） ---- */
+    --term-bg:#080909;
+    --term-fg:#d4d4d4;
+    --term-cursor:#4fc1ff;
+    --term-selection:rgba(97,175,239,.22);
 
     --mono:'Zed Mono','JetBrains Mono','Cascadia Code','Consolas',ui-monospace,monospace;
     --ui:'Zed Sans','Segoe UI Variable Text','Segoe UI',system-ui,'Microsoft YaHei UI','Microsoft YaHei',sans-serif;
@@ -62,6 +90,63 @@
     --r-sm:4px; --r-md:6px; --r-lg:10px;
     --shadow:0 12px 42px rgba(0,0,0,.62);
   }
+
+  /* ============================================================
+     浅色主题「One Light Pro Glass」方向（ADR-0002）
+     同名令牌逐个覆写；浅色下 Acrylic 强制关闭 → --glass 直接不透明。
+     选择器带属性前缀 = 特异度高于后面的基础规则，与书写顺序无关。
+     ============================================================ */
+  [data-theme="light"]{
+    color-scheme:light;
+    --bg:#fafafa;
+    --glass:#fbfbfc;
+    --elevated:#ffffff;
+    --border:#d8d8db;
+    --border-soft:#e7e7ea;
+    --element:#e9e9ec;
+    --hover:#eeeff2;
+    --active:#e3e3e7;
+    --text:#2f3238;
+    --muted:#5b606b;
+    --faint:#868b96;
+    --accent:#4078f2;
+    --accent-dim:rgba(64,120,242,.12);
+    --accent-line:#a9c6f8;
+    --green:#3f8f3a;
+    --red:#c22a2f;
+    --yellow:#a27400;
+    --orange:#94591a;
+    --purple:#a626a4;
+    --cyan:#0b7c94;
+    /* ADR-0004：只有这三个语义锚点在浅色下改值，其余 13 色不动 */
+    --ansi-white:#282C34;
+    --term-bg:#ffffff;
+    --term-fg:#383a42;
+    --term-cursor:#383a42;
+    --term-selection:rgba(64,120,242,.16);
+    --claude:#c22a2f;
+    --codex:#3f8f3a;
+    --shadow:0 12px 42px rgba(20,24,32,.14);
+  }
+  [data-theme="light"] body{background:#eef0f3}
+  [data-theme="light"] .wallpaper{
+    background:
+      radial-gradient(52% 42% at 16% 20%, rgba(150,175,215,.42), transparent 70%),
+      radial-gradient(46% 40% at 84% 26%, rgba(150,200,205,.36), transparent 72%),
+      radial-gradient(64% 52% at 48% 90%, rgba(170,180,205,.40), transparent 76%),
+      #eef0f3;
+  }
+  [data-theme="light"] .wallpaper::after{opacity:.03}
+  /* 预览：行号与服务端配色在浅底下要重算 */
+  [data-theme="light"] .code .cl::before{color:#9ba0ab}
+  [data-theme="light"] .code .cl:hover{background:rgba(20,24,32,.045)}
+  [data-theme="light"] .k{color:#a626a4}
+  [data-theme="light"] .s{color:#50a14f}
+  [data-theme="light"] .c{color:#9ba0ab}
+  [data-theme="light"] .f{color:#4078f2}
+  [data-theme="light"] .n{color:#986801}
+  [data-theme="light"] .t{color:#b07c00}
+  [data-theme="light"] .p{color:#d1383d}
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
   body{
@@ -204,12 +289,10 @@
   }
   .wt-row:hover{background:var(--hover);color:var(--text)}
   .wt-row.active{background:var(--accent-dim);color:var(--text)}
-  .wt-row .wt-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;line-height:1.35}
   .wt-name{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .wt-branch{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .wt-branch .branch-ico{display:inline-flex;vertical-align:-2px;margin-right:3px}
   .branch-ico svg{width:11px;height:11px}
-  .wt-agent{display:flex;align-items:center;gap:5px;flex:0 0 auto}
   .agent-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto}
   .agent-dot.running{animation:pulse 1.9s infinite}
   .agent-dot.waiting{animation:pulse .9s infinite}
@@ -222,10 +305,95 @@
   .wt-run:hover{background:var(--active);color:var(--accent)}
   .wt-run svg{width:13px;height:13px}
 
+  /* ============================================================
+     侧栏三变体（?variant=A|B|C）—— 结构不同，不是换色
+       A 两行式：名称行 + 分支行，动作常显
+       B 单行 + 右对齐元信息；层级靠缩进引导线，动作 hover 覆盖行尾
+       C 卡片分组：项目是容器，worktree 行左侧状态色竖条
+     ============================================================ */
+  /* ---- A ---- */
+  .vA .proj-row{gap:7px;padding:9px 10px 5px;align-items:center}
+  .vA .proj-name{font-size:12.5px;font-weight:600;color:var(--text)}
+  .vA .proj-count{
+    margin-left:auto;flex:0 0 auto;font:600 10.5px/1 var(--mono);color:var(--faint);
+    background:var(--element);border-radius:999px;padding:2px 6px 3px
+  }
+  .vA .wt-list{padding:0 6px 6px}
+  .vA .wt-row{align-items:center;gap:8px;padding:6px 8px 6px 10px}
+  .vA .wt-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.34}
+  .vA .wt-name{font-size:12.5px;font-weight:500}
+  .vA .wt-branch{display:flex;align-items:center;gap:3px;font:11px/1.3 var(--mono);color:var(--faint)}
+  .vA .wt-branch .branch-ico{display:inline-flex}
+  .vA .wt-actions{display:flex;align-items:center;gap:3px;flex:0 0 auto}
+  .vA .wt-run{opacity:.5}
+  .vA .wt-row:hover .wt-run,.vA .wt-row.active .wt-run{opacity:1}
+
+  /* ---- B ---- */
+  .vB .proj-row{gap:6px;padding:7px 10px;align-items:center}
+  .vB .proj-name{flex:0 0 auto;font-size:12.5px;font-weight:600;color:var(--text)}
+  .vB .proj-path{flex:1 1 auto;text-align:right;font:10.5px/1 var(--mono);color:var(--faint)}
+  .vB .wt-list{position:relative;padding:0 6px 4px 0}
+  .vB .wt-list::before{content:"";position:absolute;left:17px;top:-3px;bottom:7px;width:1px;background:var(--border-soft)}
+  .vB .wt-row{position:relative;gap:6px;padding:5px 8px 5px 26px}
+  .vB .wt-name{flex:1 1 auto;min-width:0;font-size:12.5px}
+  .vB .wt-branch{
+    flex:0 0 auto;max-width:100px;font:10.5px/1 var(--mono);color:var(--faint);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    border:1px solid var(--border-soft);border-radius:999px;padding:3px 6px 2px
+  }
+  .vB .wt-run{position:absolute;right:4px;top:50%;transform:translateY(-50%);opacity:0;background:var(--hover)}
+  .vB .wt-row:hover .wt-run,.vB .wt-row.active .wt-run{opacity:1}
+
+  /* ---- C ---- */
+  .vC .proj{padding:0 8px 8px}
+  .vC .vC-card{
+    background:color-mix(in srgb,var(--text) 6%,var(--bg));
+    border:1px solid var(--border-soft);border-radius:var(--r-lg);overflow:hidden
+  }
+  .vC .proj-row{gap:7px;padding:8px 10px;border-bottom:1px solid var(--border-soft)}
+  .vC .proj-name{font-size:12.5px;font-weight:600;color:var(--text)}
+  .vC .proj-count{margin-left:auto;font:500 10.5px/1 var(--mono);color:var(--faint)}
+  .vC .wt-list{padding:3px 0}
+  .vC .wt-row{gap:8px;padding:6px 8px 6px 10px;border-radius:0;border-left:3px solid var(--tone,transparent)}
+  .vC .wt-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.3}
+  .vC .wt-name{font-size:12.5px}
+  .vC .wt-branch{font:10.5px/1.2 var(--mono);color:var(--faint)}
+  .vC .wt-run{opacity:.45}
+  .vC .wt-row:hover .wt-run,.vC .wt-row.active .wt-run{opacity:1}
+
+  /* ---- D（胜出方案，默认）：B 的项目行 + A 的两行 worktree ---- */
+  .vD .proj-row{gap:6px;padding:7px 10px;align-items:center}
+  .vD .proj-name{flex:0 0 auto;font-size:12.5px;font-weight:600;color:var(--text)}
+  .vD .proj-path{text-align:right;font:10.5px/1 var(--mono);color:var(--faint)}
+  .vD .wt-list{padding:0 6px 6px}
+  .vD .wt-row{align-items:center;gap:8px;padding:6px 8px 6px 10px}
+  .vD .wt-body{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px;line-height:1.34}
+  .vD .wt-name{font-size:12.5px;font-weight:500}
+  .vD .wt-branch{display:flex;align-items:center;gap:3px;font:11px/1.3 var(--mono);color:var(--faint)}
+  .vD .wt-branch .branch-ico{display:inline-flex}
+  .vD .wt-actions{display:flex;align-items:center;gap:3px;flex:0 0 auto}
+  .vD .wt-run{opacity:.5}
+  .vD .wt-row:hover .wt-run,.vD .wt-row.active .wt-run{opacity:1}
+
+  /* ---------- 原型浮条（不属于设计；生产不会出现） ---------- */
+  #protoBar{
+    position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:9999;
+    display:flex;align-items:center;gap:3px;padding:5px 7px;border-radius:999px;
+    background:#0d0f14;color:#e6e9f0;border:1px solid #333a46;
+    box-shadow:0 14px 40px rgba(0,0,0,.55);font:11.5px/1 var(--ui);user-select:none
+  }
+  #protoBar button{padding:5px 8px;border-radius:999px;color:#9aa3b2;font:inherit;line-height:1}
+  #protoBar button:hover{background:#1b2029;color:#fff}
+  #protoBar button.on{background:#2f6fd0;color:#fff}
+  #protoBar .pv-cap{color:#6b7484;padding:0 2px 0 4px}
+  #protoBar .pv-sep{width:1px;height:16px;background:#2a303a;margin:0 3px}
+  #protoBar .pv-label{min-width:156px;text-align:center;color:#fff;font-family:var(--mono);font-size:11px}
+  #protoBar .pv-nav{font-size:14px;padding:2px 9px}
+
   /* ---------- main area ---------- */
   .pane-main{display:flex;flex-direction:column}
   .editor-tabs{display:flex;align-items:stretch;height:34px;flex:0 0 34px;background:transparent;border-bottom:1px solid var(--border)}
-  .term{flex:1 1 auto;background:transparent;padding:13px 17px;font-family:var(--mono);font-size:13.5px;line-height:1.75;overflow:auto}
+  .term{flex:1 1 auto;background:var(--term-bg);color:var(--term-fg);padding:13px 17px;font-family:var(--mono);font-size:13.5px;line-height:1.75;overflow:auto}
   .p-line{white-space:pre-wrap;word-break:break-word}
   .t-user{color:var(--ansi-green)}
   .t-muted{color:var(--faint)}
@@ -256,13 +424,16 @@
   .reconnect-divider{display:flex;align-items:center;gap:10px;color:var(--ansi-bright-black);font-size:11.5px;margin:8px 0}
   .reconnect-divider::before,.reconnect-divider::after{content:"";height:1px;flex:1 1 auto;background:var(--border-soft)}
 
-  .preview{flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:transparent}
-  .preview-head{
-    height:34px;flex:0 0 34px;display:flex;align-items:center;gap:8px;padding:0 14px;
-    border-bottom:1px solid var(--border-soft);color:var(--muted);font-size:12.5px
+  /* REQ-1：预览的内层标签条整层移除（名字归页签），只留一个浮动的「用外部编辑器打开」 */
+  .preview{position:relative;flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:transparent}
+  .preview-float{
+    position:absolute;top:10px;right:14px;z-index:5;display:flex;align-items:center;gap:6px;
+    padding:4px 10px 4px 8px;border-radius:999px;border:1px solid var(--border);
+    background:var(--elevated);color:var(--muted);font-size:11.5px;
+    box-shadow:var(--shadow);opacity:.7;transition:opacity .12s,color .12s,border-color .12s
   }
-  .preview-head .ph-name{color:var(--text);font-family:var(--mono);font-size:13px}
-  .preview-head .ph-tag{margin-left:auto;font-size:11.5px;color:var(--faint);border:1px solid var(--border-soft);border-radius:20px;padding:1px 9px}
+  .preview-float:hover{opacity:1;color:var(--text);border-color:var(--accent-line)}
+  .preview-float svg{width:12px;height:12px;flex:0 0 auto}
   .code{flex:1 1 auto;overflow:auto;margin:0;padding:10px 0;font-family:var(--mono);font-size:13.5px;line-height:1.78;counter-reset:ln;color:var(--text)}
   .code .cl{display:flex;padding:0 18px;white-space:pre}
   .code .cl::before{counter-increment:ln;content:counter(ln);width:34px;flex:0 0 34px;text-align:right;margin-right:16px;color:#495162}
@@ -761,36 +932,114 @@ function renderTabs() {
 /* ==================================================================
    渲染：左侧项目树
    ================================================================== */
+/* ==================================================================
+   渲染：左侧项目树 —— 三个结构不同的变体（?variant=A|B|C）
+   ================================================================== */
+const dotOf = w => w.agentState
+  ? `<span class="agent-dot ${w.agentState === "waiting" ? "waiting" : w.agentState === "running" ? "running" : ""}" style="background:${statusColor(w.agentState)}" title="${statusText(w.agentState)}"></span>`
+  : "";
+const runOf = w => `<button class="wt-run" data-agent-start="${w.id}" title="启动 Agent / 新建终端">${ICON.agent}</button>`;
+const visWts = p => p.worktrees.filter(w => w.pinned || p.home);
+const clsOf = id => state.collapsed[id] ? "collapsed" : "";
+
 function renderLeft() {
   const box = $("#projectTree");
+  box.className = "pane-scroll v" + state.variant;
   if (state.empty) { box.innerHTML = ""; return; }
-  box.innerHTML = projects.map(p => {
-    const visible = p.worktrees.filter(w => w.pinned || p.home);
-    if (!visible.length) return "";
-    const collapsed = state.collapsed[p.id] ? "collapsed" : "";
-    const rows = visible.map(w => {
-      const active = state.activeWt === w.id;
-      const dot = w.agentState ? `<span class="agent-dot ${w.agentState === "waiting" ? "waiting" : w.agentState === "running" ? "running" : ""}" style="background:${statusColor(w.agentState)}" title="${statusText(w.agentState)}"></span>` : "";
-      const branch = w.branch
-        ? `<span class="wt-branch"><span class="branch-ico">${ICON.branch}</span>${esc(w.branch)}</span>`
-        : `<span class="wt-branch">非 git 工作区</span>`;
-      const runBtn = `<button class="wt-run" data-agent-start="${w.id}" title="启动 Agent / 新建终端">${ICON.agent}</button>`;
-      return `<div class="wt-row ${active ? "active" : ""}" data-wt="${w.id}">
-        <span class="wt-main">
-          <span class="wt-name">${esc(w.name)}</span>
-          ${branch}
-        </span>
-        <span class="wt-agent">${dot}</span>
-        ${runBtn}
-      </div>`;
-    }).join("");
-    return `<div class="proj ${collapsed}" data-proj="${p.id}">
+  box.innerHTML = state.variant === "B" ? leftB()
+    : state.variant === "C" ? leftC()
+    : state.variant === "D" ? leftD()
+    : leftA();
+}
+
+/* A 两行式：名称行 + 分支行，动作常显；项目行只给名称与数量，路径进 title */
+function leftA() {
+  return projects.map(p => {
+    const ws = visWts(p); if (!ws.length) return "";
+    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
+      <div class="proj-row" data-proj-toggle="${p.id}" title="${esc(p.path)}">
+        <span class="chev">${ICON.chevDown}</span>
+        <span class="proj-name">${esc(p.name)}</span>
+        <span class="proj-count">${ws.length}</span>
+      </div>
+      <div class="wt-list">${ws.map(w => `
+        <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}" title="${esc(w.dir)}">
+          ${dotOf(w)}
+          <span class="wt-body">
+            <span class="wt-name">${esc(w.name)}</span>
+            <span class="wt-branch"><span class="branch-ico">${w.branch ? ICON.branch : ""}</span>${esc(w.branch || "非 git 工作区")}</span>
+          </span>
+          <span class="wt-actions">${runOf(w)}</span>
+        </div>`).join("")}</div>
+    </div>`;
+  }).join("");
+}
+
+/* B 单行 + 右对齐元信息；层级靠缩进引导线，动作 hover 覆盖行尾 */
+function leftB() {
+  return projects.map(p => {
+    const ws = visWts(p); if (!ws.length) return "";
+    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
       <div class="proj-row" data-proj-toggle="${p.id}">
         <span class="chev">${ICON.chevDown}</span>
         <span class="proj-name">${esc(p.name)}</span>
         <span class="proj-path">${esc(p.path)}</span>
       </div>
-      <div class="wt-list">${rows}</div>
+      <div class="wt-list">${ws.map(w => `
+        <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}" title="${esc(w.dir)}">
+          ${dotOf(w)}
+          <span class="wt-name">${esc(w.name)}</span>
+          <span class="wt-branch">${esc(w.branch || "非 git")}</span>
+          ${runOf(w)}
+        </div>`).join("")}</div>
+    </div>`;
+  }).join("");
+}
+
+/* C 卡片分组：项目是容器，worktree 行左侧状态色竖条 */
+function leftC() {
+  return projects.map(p => {
+    const ws = visWts(p); if (!ws.length) return "";
+    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
+      <div class="vC-card">
+        <div class="proj-row" data-proj-toggle="${p.id}" title="${esc(p.path)}">
+          <span class="chev">${ICON.chevDown}</span>
+          <span class="proj-name">${esc(p.name)}</span>
+          <span class="proj-count">${ws.length} 工作树</span>
+        </div>
+        <div class="wt-list">${ws.map(w => `
+          <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}"
+               style="--tone:${w.agentState ? statusColor(w.agentState) : "transparent"}" title="${esc(w.dir)}">
+            <span class="wt-body">
+              <span class="wt-name">${esc(w.name)}</span>
+              <span class="wt-branch">${esc(w.branch || "非 git 工作区")}</span>
+            </span>
+            ${runOf(w)}
+          </div>`).join("")}</div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+/* D 胜出方案：B 的项目行（名称 + 右对齐路径）+ A 的两行 worktree（名称行 / 分支行）+ 动作常显 */
+function leftD() {
+  return projects.map(p => {
+    const ws = visWts(p); if (!ws.length) return "";
+    return `<div class="proj ${clsOf(p.id)}" data-proj="${p.id}">
+      <div class="proj-row" data-proj-toggle="${p.id}">
+        <span class="chev">${ICON.chevDown}</span>
+        <span class="proj-name">${esc(p.name)}</span>
+        <span class="proj-path">${esc(p.path)}</span>
+      </div>
+      <div class="wt-list">${ws.map(w => `
+        <div class="wt-row ${state.activeWt === w.id ? "active" : ""}" data-wt="${w.id}" title="${esc(w.dir)}">
+          ${dotOf(w)}
+          <span class="wt-body">
+            <span class="wt-name">${esc(w.name)}</span>
+            <span class="wt-branch"><span class="branch-ico">${w.branch ? ICON.branch : ""}</span>${esc(w.branch || "非 git 工作区")}</span>
+          </span>
+          <span class="wt-actions">${runOf(w)}</span>
+        </div>`).join("")}</div>
     </div>`;
   }).join("");
 }
@@ -886,11 +1135,10 @@ function previewHTML(t) {
   const src = SNIPPETS[t.file] || `// ${t.file}\n// 文件内容预览（原型占位）\n`;
   const lines = esc(src).replace(/\n$/, "").split("\n").map(l => `<div class="cl">${l || " "}</div>`).join("");
   return `<div class="preview">
-      <div class="preview-head">
-        <span style="display:flex;color:var(--faint)">${ICON.file}</span>
-        <span class="ph-name">${esc(t.file)}</span>
-        <span class="ph-tag">只读预览 · 用外部编辑器打开</span>
-      </div>
+      <button class="preview-float" title="用外部编辑器打开">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2.5h4.5V7"/><path d="M13.3 2.7L7.4 8.6"/><path d="M12.5 9.8v3.2a.5.5 0 01-.5.5H3.5a.5.5 0 01-.5-.5V4.5a.5.5 0 01.5-.5h3.2"/></svg>
+        用外部编辑器打开
+      </button>
       <pre class="code">${lines}</pre>
     </div>`;
 }
@@ -1329,7 +1577,82 @@ $("#mockNavPanel").addEventListener("click", e => {
   }
 });
 
+/* ==================================================================
+   原型外壳：?variant=A|B|C · ?theme=dark|light|system · ?zoom=1|1.25
+   （不是设计的一部分；正式产品不会有这个浮条）
+   ================================================================== */
+const VARIANTS = [
+  { k:"D", name:"胜出：B 项目行 + A 两行 worktree" },
+  { k:"A", name:"两行式" },
+  { k:"B", name:"单行 + 右对齐元信息" },
+  { k:"C", name:"卡片分组" },
+];
+const qp = new URLSearchParams(location.search);
+state.variant = (qp.get("variant") || "D").toUpperCase();
+if (!VARIANTS.some(v => v.k === state.variant)) state.variant = "A";
+state.theme = ["dark", "light", "system"].includes(qp.get("theme")) ? qp.get("theme") : "dark";
+state.zoom = Math.min(2, Math.max(.5, Number(qp.get("zoom")) || 1));
+
+const mqLight = matchMedia("(prefers-color-scheme: light)");
+
+document.body.insertAdjacentHTML("beforeend", `
+<div id="protoBar">
+  <button class="pv-nav" data-pv="-1" title="上一个变体（←）">‹</button>
+  <span class="pv-label"></span>
+  <button class="pv-nav" data-pv="1" title="下一个变体（→）">›</button>
+  <span class="pv-sep"></span>
+  <span class="pv-cap">主题</span>
+  <button data-pt="dark">深</button><button data-pt="light">浅</button><button data-pt="system">跟随</button>
+  <span class="pv-sep"></span>
+  <span class="pv-cap">缩放</span>
+  <button data-pz="1">1.0×</button><button data-pz="1.25">1.25×</button>
+</div>`);
+
+function setParam(k, v) {
+  const q = new URLSearchParams(location.search);
+  if (v === null) q.delete(k); else q.set(k, v);
+  history.replaceState(null, "", location.pathname + (q.toString() ? "?" + q : ""));
+}
+function renderProtoBar() {
+  const bar = $("#protoBar"); if (!bar) return;
+  const v = VARIANTS.find(x => x.k === state.variant);
+  bar.querySelector(".pv-label").textContent = `${v.k} · ${v.name}`;
+  bar.querySelectorAll("[data-pt]").forEach(b => b.classList.toggle("on", b.dataset.pt === state.theme));
+  bar.querySelectorAll("[data-pz]").forEach(b => b.classList.toggle("on", Number(b.dataset.pz) === state.zoom));
+}
+function applyTheme() {
+  const light = state.theme === "light" || (state.theme === "system" && mqLight.matches);
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+}
+function cycleVariant(step) {
+  const i = VARIANTS.findIndex(v => v.k === state.variant);
+  state.variant = VARIANTS[(i + step + VARIANTS.length) % VARIANTS.length].k;
+  setParam("variant", state.variant);
+  renderProtoBar(); renderLeft();
+}
+
+$("#protoBar").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.pv) cycleVariant(Number(b.dataset.pv));
+  else if (b.dataset.pt) { state.theme = b.dataset.pt; setParam("theme", state.theme); applyTheme(); renderProtoBar(); }
+  else if (b.dataset.pz) {
+    state.zoom = Number(b.dataset.pz); setParam("zoom", String(state.zoom));
+    document.documentElement.style.zoom = String(state.zoom); renderProtoBar();
+  }
+});
+mqLight.addEventListener("change", () => { if (state.theme === "system") applyTheme(); });
+
+addEventListener("keydown", e => {
+  const el = document.activeElement;
+  if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+  if (e.key === "ArrowLeft") { cycleVariant(-1); e.preventDefault(); }
+  else if (e.key === "ArrowRight") { cycleVariant(1); e.preventDefault(); }
+});
+
 /* 启动 */
+applyTheme();
+document.documentElement.style.zoom = String(state.zoom);
+renderProtoBar();
 renderAll();
 </script>
 </body>
